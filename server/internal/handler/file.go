@@ -40,20 +40,22 @@ const maxPreviewTextSize = 2 << 20 // 2 MB
 // ---------------------------------------------------------------------------
 
 type AttachmentResponse struct {
-	ID            string  `json:"id"`
-	WorkspaceID   string  `json:"workspace_id"`
-	IssueID       *string `json:"issue_id"`
-	CommentID     *string `json:"comment_id"`
-	ChatSessionID *string `json:"chat_session_id"`
-	ChatMessageID *string `json:"chat_message_id"`
-	UploaderType  string  `json:"uploader_type"`
-	UploaderID    string  `json:"uploader_id"`
-	Filename      string  `json:"filename"`
-	URL           string  `json:"url"`
-	DownloadURL   string  `json:"download_url"`
-	ContentType   string  `json:"content_type"`
-	SizeBytes     int64   `json:"size_bytes"`
-	CreatedAt     string  `json:"created_at"`
+	ID               string  `json:"id"`
+	WorkspaceID      string  `json:"workspace_id"`
+	IssueID          *string `json:"issue_id"`
+	CommentID        *string `json:"comment_id"`
+	ChatSessionID    *string `json:"chat_session_id"`
+	ChatMessageID    *string `json:"chat_message_id"`
+	ChannelSessionID *string `json:"channel_session_id"`
+	ChannelMessageID *string `json:"channel_message_id"`
+	UploaderType     string  `json:"uploader_type"`
+	UploaderID       string  `json:"uploader_id"`
+	Filename         string  `json:"filename"`
+	URL              string  `json:"url"`
+	DownloadURL      string  `json:"download_url"`
+	ContentType      string  `json:"content_type"`
+	SizeBytes        int64   `json:"size_bytes"`
+	CreatedAt        string  `json:"created_at"`
 }
 
 func (h *Handler) attachmentToResponse(a db.Attachment) AttachmentResponse {
@@ -87,6 +89,14 @@ func (h *Handler) attachmentToResponse(a db.Attachment) AttachmentResponse {
 	if a.ChatMessageID.Valid {
 		s := uuidToString(a.ChatMessageID)
 		resp.ChatMessageID = &s
+	}
+	if a.ChannelSessionID.Valid {
+		s := uuidToString(a.ChannelSessionID)
+		resp.ChannelSessionID = &s
+	}
+	if a.ChannelMessageID.Valid {
+		s := uuidToString(a.ChannelMessageID)
+		resp.ChannelMessageID = &s
 	}
 	return resp
 }
@@ -132,6 +142,30 @@ func (h *Handler) groupChatMessageAttachments(ctx context.Context, workspaceID s
 	grouped := make(map[string][]AttachmentResponse, len(messageIDs))
 	for _, a := range attachments {
 		mid := uuidToString(a.ChatMessageID)
+		grouped[mid] = append(grouped[mid], h.attachmentToResponse(a))
+	}
+	return grouped
+}
+
+// groupChannelMessageAttachments loads attachments for multiple channel
+// messages and groups them by channel_message_id. Channel messages can be
+// displayed long after the signed markdown URL expires, so callers pass this
+// metadata into ReadonlyContent to re-sign downloads at click time.
+func (h *Handler) groupChannelMessageAttachments(ctx context.Context, workspaceID string, messageIDs []pgtype.UUID) map[string][]AttachmentResponse {
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	attachments, err := h.Queries.ListAttachmentsByChannelMessageIDs(ctx, db.ListAttachmentsByChannelMessageIDsParams{
+		MessageIds:  messageIDs,
+		WorkspaceID: parseUUID(workspaceID),
+	})
+	if err != nil {
+		slog.Error("failed to load attachments for channel messages", "error", err)
+		return nil
+	}
+	grouped := make(map[string][]AttachmentResponse, len(messageIDs))
+	for _, a := range attachments {
+		mid := uuidToString(a.ChannelMessageID)
 		grouped[mid] = append(grouped[mid], h.attachmentToResponse(a))
 	}
 	return grouped
@@ -210,7 +244,8 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	// If workspace context is available, validate membership before uploading.
 	if workspaceID != "" {
-		if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
+		member, err := h.getWorkspaceMember(r.Context(), userID, workspaceID)
+		if err != nil {
 			writeError(w, http.StatusForbidden, "not a member of this workspace")
 			return
 		}
@@ -263,6 +298,39 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			params.ChatSessionID = session.ID
+		}
+		if channelSessionID := r.FormValue("channel_session_id"); channelSessionID != "" {
+			channelID := r.FormValue("channel_id")
+			if channelID == "" {
+				writeError(w, http.StatusBadRequest, "channel_id is required")
+				return
+			}
+			channelUUID, ok := parseUUIDOrBadRequest(w, channelID, "channel_id")
+			if !ok {
+				return
+			}
+			sessionUUID, ok := parseUUIDOrBadRequest(w, channelSessionID, "channel_session_id")
+			if !ok {
+				return
+			}
+			channel, err := h.Queries.GetChannelInWorkspace(r.Context(), db.GetChannelInWorkspaceParams{
+				ID:          channelUUID,
+				WorkspaceID: parseUUID(workspaceID),
+			})
+			if err != nil || !h.canReadChannel(w, r, channel, member) {
+				writeError(w, http.StatusForbidden, "invalid channel_id")
+				return
+			}
+			session, err := h.Queries.GetChannelSession(r.Context(), db.GetChannelSessionParams{
+				ID:          sessionUUID,
+				ChannelID:   channel.ID,
+				WorkspaceID: parseUUID(workspaceID),
+			})
+			if err != nil {
+				writeError(w, http.StatusForbidden, "invalid channel_session_id")
+				return
+			}
+			params.ChannelSessionID = session.ID
 		}
 
 		link, err := h.Storage.Upload(r.Context(), key, data, contentType, header.Filename)

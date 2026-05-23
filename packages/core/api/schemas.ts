@@ -80,6 +80,8 @@ export const AttachmentResponseSchema = z.object({
   filename: z.string(),
   chat_session_id: z.string().nullable().optional(),
   chat_message_id: z.string().nullable().optional(),
+  channel_session_id: z.string().nullable().optional(),
+  channel_message_id: z.string().nullable().optional(),
 }).loose();
 
 export const EMPTY_ATTACHMENT: Attachment = {
@@ -89,6 +91,8 @@ export const EMPTY_ATTACHMENT: Attachment = {
   comment_id: null,
   chat_session_id: null,
   chat_message_id: null,
+  channel_session_id: null,
+  channel_message_id: null,
   uploader_type: "",
   uploader_id: "",
   filename: "",
@@ -316,6 +320,7 @@ export const ChannelMessageSchema = z.object({
   type: z.string(),
   parent_id: z.string().nullable().optional(),
   issue_id: z.string().nullable().optional(),
+  attachments: z.array(AttachmentResponseSchema).default([]),
   created_at: z.string(),
   updated_at: z.string(),
 }).loose();
@@ -497,6 +502,7 @@ export const EMPTY_CHANNEL_MESSAGE: ChannelMessage = {
   type: "message",
   parent_id: null,
   issue_id: null,
+  attachments: [],
   created_at: "",
   updated_at: "",
 };

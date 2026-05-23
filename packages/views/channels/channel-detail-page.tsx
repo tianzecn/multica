@@ -1,8 +1,8 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Bot, Check, GitBranch, Hash, Link2, Loader2, Lock, Plus, RotateCcw, Send, ShieldCheck, SkipForward, Terminal, UserPlus, Users, X } from "lucide-react";
+import { ArrowLeft, Bot, Check, File as FileIcon, GitBranch, Hash, Link2, Loader2, Lock, Plus, RotateCcw, Send, ShieldCheck, SkipForward, Terminal, UserPlus, Users, X } from "lucide-react";
 import {
   channelAgentRunsOptions,
   channelApprovalsOptions,
@@ -23,18 +23,21 @@ import {
   useResolveApprovalRequest,
   useSkipChannelDispatchStep,
 } from "@multica/core/channels";
+import { api } from "@multica/core/api";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
-import type { Agent, ApprovalRequest, ChannelAgentRun, ChannelDispatchMode, ChannelDispatchPlan, ChannelDispatchStep, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, TaskMessagePayload } from "@multica/core/types";
+import type { Agent, ApprovalRequest, Attachment, ChannelAgentRun, ChannelDispatchMode, ChannelDispatchPlan, ChannelDispatchStep, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, TaskMessagePayload } from "@multica/core/types";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../common/actor-avatar";
-import { ContentEditor, type ContentEditorRef, ReadonlyContent } from "../editor";
+import { ContentEditor, type ContentEditorRef, FileDropOverlay, ReadonlyContent, useFileDropZone } from "../editor";
 import { AppLink, useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
@@ -216,6 +219,8 @@ function MessagePane({
   const wsId = useWorkspaceId();
   const editorRef = useRef<ContentEditorRef>(null);
   const [content, setContent] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  const [pendingUploads, setPendingUploads] = useState(0);
   const { data: messages = [] } = useQuery({
     ...channelMessagesOptions(wsId, channelId, sessionId),
     enabled: !!wsId && !!channelId && !!sessionId,
@@ -229,6 +234,7 @@ function MessagePane({
     enabled: !!wsId && !!channelId && !!sessionId,
   });
   const createMessage = useCreateChannelMessage(channelId, sessionId);
+  const { uploadWithToast } = useFileUpload(api, (error) => toast.error(error.message));
   const session = sessions.find((item) => item.id === sessionId);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const memberByUserId = useMemo(
@@ -276,14 +282,72 @@ function MessagePane({
       .flatMap(([, runs]) => runs);
   }, [activeRunsByUserMessageId, messages]);
 
+  useEffect(() => {
+    setContent("");
+    setPendingAttachments([]);
+  }, [sessionId]);
+
+  const uploadChannelFiles = useCallback(
+    async (files: File[]) => {
+      if (!sessionId) return null;
+      for (const file of files) {
+        setPendingUploads((count) => count + 1);
+        try {
+          const result = await uploadWithToast(file, {
+            channelId,
+            channelSessionId: sessionId,
+          });
+          if (result) {
+            setPendingAttachments((current) => [...current, result]);
+          }
+        } finally {
+          setPendingUploads((count) => Math.max(0, count - 1));
+        }
+      }
+    },
+    [channelId, sessionId, uploadWithToast],
+  );
+
+  const { isDragOver, dropZoneProps } = useFileDropZone({
+    onDrop: uploadChannelFiles,
+    enabled: !!sessionId,
+  });
+
+  const handlePasteCapture = useCallback(
+    (event: ClipboardEvent<HTMLDivElement>) => {
+      if (!sessionId) return;
+      const files = Array.from(event.clipboardData.files ?? []);
+      if (files.length === 0) return;
+      event.preventDefault();
+      void uploadChannelFiles(files);
+    },
+    [sessionId, uploadChannelFiles],
+  );
+
+  const removePendingAttachment = useCallback((attachmentId: string) => {
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+  }, []);
+
   const submit = () => {
-    const body = editorRef.current?.getMarkdown().trim() || content.trim();
+    const text = editorRef.current?.getMarkdown().trim() || content.trim();
+    const attachmentMarkdown = pendingAttachments
+      .map(formatChannelAttachmentMarkdown)
+      .filter(Boolean)
+      .join("\n");
+    const body = [text, attachmentMarkdown].filter(Boolean).join("\n\n").trim();
     if (!body || !sessionId) return;
+    if (editorRef.current?.hasActiveUploads()) return;
+    if (pendingUploads > 0) return;
+    const activeAttachmentIds = pendingAttachments.map((attachment) => attachment.id);
     createMessage.mutate(
-      { content: body },
+      {
+        content: body,
+        attachment_ids: activeAttachmentIds.length > 0 ? activeAttachmentIds : undefined,
+      },
       {
         onSuccess: () => {
           setContent("");
+          setPendingAttachments([]);
           editorRef.current?.clearContent();
         },
         onError: (error) => toast.error(error instanceof Error ? error.message : t(($) => $.toast.message_failed)),
@@ -364,8 +428,9 @@ function MessagePane({
         )}
         <div className="flex items-end gap-2">
           <div
+            {...(sessionId ? dropZoneProps : {})}
             className={cn(
-              "min-h-20 flex-1 rounded-lg border bg-background px-3 py-2",
+              "relative min-h-20 max-h-44 flex-1 overflow-y-auto overscroll-contain rounded-lg border bg-background px-3 py-2",
               !sessionId && "pointer-events-none opacity-50",
             )}
           >
@@ -374,13 +439,20 @@ function MessagePane({
               ref={editorRef}
               onUpdate={setContent}
               onSubmit={submit}
+              onUploadFile={sessionId ? handleUpload : undefined}
               placeholder="输入消息，@AI 同事或 @all 协作"
-              className="min-h-16"
+              className="channel-composer-editor min-h-16"
               showBubbleMenu={false}
               submitOnEnter
+              attachments={pendingAttachments}
             />
+            {sessionId && isDragOver && <FileDropOverlay />}
           </div>
-          <Button size="icon" onClick={submit} disabled={!sessionId || createMessage.isPending}>
+          <FileUploadButton
+            onSelect={(file) => editorRef.current?.uploadFile(file)}
+            disabled={!sessionId || createMessage.isPending || pendingUploads > 0}
+          />
+          <Button size="icon" onClick={submit} disabled={!sessionId || createMessage.isPending || pendingUploads > 0}>
             <Send className="size-4" />
           </Button>
         </div>
@@ -720,7 +792,11 @@ function ChannelMessageCard({
         {isSystem && <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">系统</Badge>}
         <span className="shrink-0">{new Date(message.created_at).toLocaleString()}</span>
       </div>
-      <ReadonlyContent content={message.content} className="max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0" />
+      <ReadonlyContent
+        content={message.content}
+        attachments={message.attachments}
+        className="max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+      />
     </div>
   );
 }

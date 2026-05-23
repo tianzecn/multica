@@ -15,6 +15,8 @@ export interface UploadContext {
   issueId?: string;
   commentId?: string;
   chatSessionId?: string;
+  channelId?: string;
+  channelSessionId?: string;
 }
 
 export function useFileUpload(
@@ -35,6 +37,8 @@ export function useFileUpload(
           issueId: ctx?.issueId,
           commentId: ctx?.commentId,
           chatSessionId: ctx?.chatSessionId,
+          channelId: ctx?.channelId,
+          channelSessionId: ctx?.channelSessionId,
         });
         return { ...att, link: att.url };
       } finally {

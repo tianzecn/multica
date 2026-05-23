@@ -13,10 +13,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import type {
   ApprovalRequest,
+  Attachment,
   ChannelDispatchPlan,
   ChannelMessage,
   ChannelSession,
 } from "@multica/core/types";
+import { useFileAttach } from "@/components/editor/use-file-attach";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -42,6 +44,7 @@ import {
 } from "@/data/mutations/channels";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { THEME } from "@/lib/theme";
+import { Markdown } from "@/lib/markdown";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { cn } from "@/lib/utils";
 
@@ -96,6 +99,13 @@ export default function ChannelDetailScreen() {
   const retryStep = useRetryChannelDispatchStep(channelId, activeSessionId);
   const skipStep = useSkipChannelDispatchStep(channelId, activeSessionId);
   const [draft, setDraft] = useState("");
+  const [draftAttachments, setDraftAttachments] = useState<Attachment[]>([]);
+  const { pickAndUploadFile, uploading: attachmentUploading } = useFileAttach();
+
+  useEffect(() => {
+    setDraft("");
+    setDraftAttachments([]);
+  }, [activeSessionId]);
 
   const createSessionWithTitle = useCallback(
     async (rawTitle: string) => {
@@ -149,16 +159,59 @@ export default function ChannelDetailScreen() {
   const sendMessage = async () => {
     const content = draft.trim();
     if (!content || !activeSessionId) return;
+    const attachmentIds = draftAttachments
+      .filter((attachment) => content.includes(attachment.url))
+      .map((attachment) => attachment.id);
+    const attachmentsAtSend = draftAttachments;
     try {
+      await createMessage.mutateAsync({
+        content,
+        attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
+      });
       setDraft("");
-      await createMessage.mutateAsync({ content });
+      setDraftAttachments([]);
     } catch (err) {
       setDraft(content);
+      setDraftAttachments(attachmentsAtSend);
       Alert.alert(
         "Message failed",
         err instanceof Error ? err.message : "Please try again.",
       );
     }
+  };
+
+  const attachFile = async () => {
+    if (!activeSessionId) return;
+    const result = await pickAndUploadFile({
+      channelId,
+      channelSessionId: activeSessionId,
+    });
+    if (!result) return;
+    setDraftAttachments((current) => [
+      ...current,
+      {
+        id: result.id,
+        workspace_id: wsId ?? "",
+        issue_id: null,
+        comment_id: null,
+        chat_session_id: null,
+        chat_message_id: null,
+        channel_session_id: activeSessionId,
+        channel_message_id: null,
+        uploader_type: "",
+        uploader_id: "",
+        filename: result.filename,
+        url: result.url,
+        download_url: result.url,
+        content_type: "",
+        size_bytes: 0,
+        created_at: "",
+      },
+    ]);
+    setDraft((current) => {
+      const prefix = current.trim().length > 0 ? "\n" : "";
+      return `${current}${prefix}!file[${result.filename}](${result.url})`;
+    });
   };
 
   if (channelLoading || sessionsLoading) {
@@ -323,8 +376,14 @@ export default function ChannelDetailScreen() {
             />
           </View>
           <IconButton
+            name="attach-outline"
+            disabled={!activeSessionId || attachmentUploading || createMessage.isPending}
+            onPress={attachFile}
+            accessibilityLabel="Attach file"
+          />
+          <IconButton
             name="send"
-            disabled={!draft.trim() || !activeSessionId || createMessage.isPending}
+            disabled={!draft.trim() || !activeSessionId || attachmentUploading || createMessage.isPending}
             onPress={sendMessage}
             accessibilityLabel="Send channel message"
           />
@@ -460,17 +519,10 @@ function MessageBubble({ message }: { message: ChannelMessage }) {
       <View
         className={cn(
           "max-w-[82%] rounded-md px-3 py-2",
-          isUser ? "bg-primary" : "bg-secondary",
+          isUser ? "bg-muted" : "bg-secondary",
         )}
       >
-        <Text
-          className={cn(
-            "text-sm",
-            isUser ? "text-primary-foreground" : "text-secondary-foreground",
-          )}
-        >
-          {message.content}
-        </Text>
+        <Markdown content={message.content} attachments={message.attachments} compact />
       </View>
     </View>
   );

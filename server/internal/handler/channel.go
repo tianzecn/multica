@@ -75,17 +75,18 @@ type ChannelSessionResponse struct {
 }
 
 type ChannelMessageResponse struct {
-	ID         string  `json:"id"`
-	ChannelID  string  `json:"channel_id"`
-	SessionID  string  `json:"session_id"`
-	AuthorType string  `json:"author_type"`
-	AuthorID   *string `json:"author_id"`
-	Content    string  `json:"content"`
-	Type       string  `json:"type"`
-	ParentID   *string `json:"parent_id"`
-	IssueID    *string `json:"issue_id"`
-	CreatedAt  string  `json:"created_at"`
-	UpdatedAt  string  `json:"updated_at"`
+	ID          string               `json:"id"`
+	ChannelID   string               `json:"channel_id"`
+	SessionID   string               `json:"session_id"`
+	AuthorType  string               `json:"author_type"`
+	AuthorID    *string              `json:"author_id"`
+	Content     string               `json:"content"`
+	Type        string               `json:"type"`
+	ParentID    *string              `json:"parent_id"`
+	IssueID     *string              `json:"issue_id"`
+	Attachments []AttachmentResponse `json:"attachments"`
+	CreatedAt   string               `json:"created_at"`
+	UpdatedAt   string               `json:"updated_at"`
 }
 
 type ChannelAgentRunResponse struct {
@@ -265,19 +266,24 @@ func channelSessionToResponse(session db.ChannelSession) ChannelSessionResponse 
 	}
 }
 
-func channelMessageToResponse(message db.ChannelMessage) ChannelMessageResponse {
+func channelMessageToResponse(message db.ChannelMessage, attachments ...[]AttachmentResponse) ChannelMessageResponse {
+	messageAttachments := []AttachmentResponse{}
+	if len(attachments) > 0 && attachments[0] != nil {
+		messageAttachments = attachments[0]
+	}
 	return ChannelMessageResponse{
-		ID:         uuidToString(message.ID),
-		ChannelID:  uuidToString(message.ChannelID),
-		SessionID:  uuidToString(message.SessionID),
-		AuthorType: message.AuthorType,
-		AuthorID:   uuidToPtr(message.AuthorID),
-		Content:    message.Content,
-		Type:       message.Type,
-		ParentID:   uuidToPtr(message.ParentID),
-		IssueID:    uuidToPtr(message.IssueID),
-		CreatedAt:  timestampToString(message.CreatedAt),
-		UpdatedAt:  timestampToString(message.UpdatedAt),
+		ID:          uuidToString(message.ID),
+		ChannelID:   uuidToString(message.ChannelID),
+		SessionID:   uuidToString(message.SessionID),
+		AuthorType:  message.AuthorType,
+		AuthorID:    uuidToPtr(message.AuthorID),
+		Content:     message.Content,
+		Type:        message.Type,
+		ParentID:    uuidToPtr(message.ParentID),
+		IssueID:     uuidToPtr(message.IssueID),
+		Attachments: messageAttachments,
+		CreatedAt:   timestampToString(message.CreatedAt),
+		UpdatedAt:   timestampToString(message.UpdatedAt),
 	}
 }
 
@@ -1196,9 +1202,15 @@ func (h *Handler) ListChannelMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list channel messages")
 		return
 	}
+	messageIDs := make([]pgtype.UUID, len(messages))
+	for i := range messages {
+		messageIDs[i] = messages[i].ID
+	}
+	attachmentsByMessageID := h.groupChannelMessageAttachments(r.Context(), workspaceID, messageIDs)
 	resp := make([]ChannelMessageResponse, len(messages))
 	for i := range messages {
-		resp[len(messages)-1-i] = channelMessageToResponse(messages[i])
+		message := messages[i]
+		resp[len(messages)-1-i] = channelMessageToResponse(message, attachmentsByMessageID[uuidToString(message.ID)])
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1263,10 +1275,11 @@ func (h *Handler) CreateChannelMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Content  string `json:"content"`
-		Type     string `json:"type"`
-		ParentID string `json:"parent_id"`
-		IssueID  string `json:"issue_id"`
+		Content       string   `json:"content"`
+		Type          string   `json:"type"`
+		ParentID      string   `json:"parent_id"`
+		IssueID       string   `json:"issue_id"`
+		AttachmentIDs []string `json:"attachment_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1301,6 +1314,10 @@ func (h *Handler) CreateChannelMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
+	if !ok {
+		return
+	}
 
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
@@ -1323,7 +1340,27 @@ func (h *Handler) CreateChannelMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.Queries.TouchChannelSession(r.Context(), sessionID)
-	resp := channelMessageToResponse(message)
+	var messageAttachments []AttachmentResponse
+	if len(attachmentIDs) > 0 {
+		if err := h.Queries.LinkAttachmentsToChannelMessage(r.Context(), db.LinkAttachmentsToChannelMessageParams{
+			ChannelMessageID: message.ID,
+			ChannelSessionID: sessionID,
+			AttachmentIds:    attachmentIDs,
+		}); err != nil {
+			slog.Warn("link channel attachments failed", "error", err, "message_id", uuidToString(message.ID))
+		}
+		attachments, err := h.Queries.ListAttachmentsByChannelMessage(r.Context(), db.ListAttachmentsByChannelMessageParams{
+			ChannelMessageID: message.ID,
+			WorkspaceID:      wsUUID,
+		})
+		if err == nil {
+			messageAttachments = make([]AttachmentResponse, len(attachments))
+			for i := range attachments {
+				messageAttachments[i] = h.attachmentToResponse(attachments[i])
+			}
+		}
+	}
+	resp := channelMessageToResponse(message, messageAttachments)
 	h.publish(protocol.EventChannelMessageCreated, workspaceID, actorType, actorID, map[string]any{
 		"channel_id": uuidToString(channel.ID),
 		"session_id": uuidToString(sessionID),

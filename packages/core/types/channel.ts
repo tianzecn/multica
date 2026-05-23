@@ -1,3 +1,5 @@
+import type { Attachment } from "./attachment";
+
 export type ChannelVisibility = "public" | "private";
 export type ChannelProactivity = "quiet" | "standard" | "active";
 export type ChannelMemberType = "member" | "agent" | "squad";
@@ -74,6 +76,7 @@ export interface ChannelMessage {
   type: ChannelMessageType;
   parent_id: string | null;
   issue_id: string | null;
+  attachments: Attachment[];
   created_at: string;
   updated_at: string;
 }
@@ -231,6 +234,7 @@ export interface CreateChannelMessageRequest {
   type?: ChannelMessageType;
   parent_id?: string | null;
   issue_id?: string | null;
+  attachment_ids?: string[];
 }
 
 export interface AddChannelMemberRequest {

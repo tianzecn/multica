@@ -585,6 +585,25 @@
   max-width: min(100%, 640px);
 }
 
+/* Chat-style composers must stay compact. Large pasted screenshots should
+ * preview as thumbnails while the message composer scrolls internally; the
+ * sent/read-only message keeps the full image treatment above. */
+.rich-text-editor.channel-composer-editor .image-figure {
+  max-width: min(100%, 220px);
+  margin: 0.25rem 0;
+}
+
+.rich-text-editor.channel-composer-editor .image-content,
+.rich-text-editor.channel-composer-editor img {
+  max-height: 8rem;
+  width: auto;
+  object-fit: contain;
+}
+
+.rich-text-editor.channel-composer-editor .file-card-node {
+  max-width: min(100%, 320px);
+}
+
 /* Bubble menu — floating toolbar pill */
 .bubble-menu {
   display: flex;

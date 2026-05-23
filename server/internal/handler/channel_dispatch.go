@@ -475,7 +475,8 @@ func (h *Handler) dispatchChannelDispatchStep(
 		return false
 	}
 	recentMessages := h.recentChannelPromptMessages(ctx, channel.ID, session.ID, message)
-	prompt := channelprompt.BuildWithInstruction(channel, session, message.Content, recentMessages, step.Instruction)
+	promptContent := h.channelMessagePromptContent(ctx, workspaceID, message)
+	prompt := channelprompt.BuildWithInstruction(channel, session, promptContent, recentMessages, step.Instruction)
 	chatMessage, err := h.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
 		ChatSessionID: chatSession.ID,
 		Role:          "user",
@@ -510,6 +511,34 @@ func (h *Handler) dispatchChannelDispatchStep(
 	h.markChannelDispatchStep(ctx, step.ID, "queued", "", "")
 	h.publishChannelDispatchStep(ctx, workspaceID, step.PlanID)
 	return true
+}
+
+func (h *Handler) channelMessagePromptContent(ctx context.Context, workspaceID string, message db.ChannelMessage) string {
+	attachments, err := h.Queries.ListAttachmentsByChannelMessage(ctx, db.ListAttachmentsByChannelMessageParams{
+		ChannelMessageID: message.ID,
+		WorkspaceID:      parseUUID(workspaceID),
+	})
+	if err != nil || len(attachments) == 0 {
+		return message.Content
+	}
+
+	var builder strings.Builder
+	builder.WriteString(message.Content)
+	builder.WriteString("\n\nAttached files available through Multica CLI:\n")
+	for _, attachment := range attachments {
+		builder.WriteString("- ")
+		builder.WriteString(uuidToString(attachment.ID))
+		builder.WriteString(" ")
+		builder.WriteString(attachment.Filename)
+		if attachment.ContentType != "" {
+			builder.WriteString(" (")
+			builder.WriteString(attachment.ContentType)
+			builder.WriteString(")")
+		}
+		builder.WriteString("\n")
+	}
+	builder.WriteString("Use `multica attachment download <id>` before analyzing any attached file.\n")
+	return builder.String()
 }
 
 func (h *Handler) markChannelDispatchStep(ctx context.Context, stepID pgtype.UUID, status, errText, skipReason string) {

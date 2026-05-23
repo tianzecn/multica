@@ -389,6 +389,28 @@ describe("ApiClient", () => {
       expect(body.get("comment_id")).toBeNull();
     });
 
+    it("uploadFile includes channel identifiers in the FormData body", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: "att-1", url: "https://cdn/x", download_url: "https://cdn/x", filename: "x.txt" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+      const file = new File(["hi"], "x.txt", { type: "text/plain" });
+      await client.uploadFile(file, {
+        channelId: "channel-123",
+        channelSessionId: "session-123",
+      });
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      const body = init?.body as FormData;
+      expect(body.get("channel_id")).toBe("channel-123");
+      expect(body.get("channel_session_id")).toBe("session-123");
+    });
+
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "" }), {
@@ -425,6 +447,37 @@ describe("ApiClient", () => {
 
       expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello" });
       expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again" });
+    });
+
+    it("createChannelMessage serialises attachment_ids onto the JSON body when present", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({
+          id: "m1",
+          channel_id: "c1",
+          session_id: "s1",
+          author_type: "member",
+          content: "hello",
+          type: "message",
+          created_at: "",
+          updated_at: "",
+        }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+      await client.createChannelMessage("c1", "s1", {
+        content: "hello",
+        attachment_ids: ["att-1"],
+      });
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(JSON.parse(init?.body as string)).toEqual({
+        content: "hello",
+        attachment_ids: ["att-1"],
+      });
     });
   });
 });

@@ -53,6 +53,8 @@ export const AttachmentSchema: z.ZodType<Attachment> = z.object({
   comment_id: z.string().nullable().default(null),
   chat_session_id: z.string().nullable().default(null),
   chat_message_id: z.string().nullable().default(null),
+  channel_session_id: z.string().nullable().default(null),
+  channel_message_id: z.string().nullable().default(null),
   uploader_type: z.string().default(""),
   uploader_id: z.string().default(""),
   filename: z.string(),
