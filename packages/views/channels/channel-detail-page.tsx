@@ -289,7 +289,7 @@ function MessagePane({
 
   const uploadChannelFiles = useCallback(
     async (files: File[]) => {
-      if (!sessionId) return null;
+      if (!sessionId) return;
       for (const file of files) {
         setPendingUploads((count) => count + 1);
         try {
@@ -426,39 +426,127 @@ function MessagePane({
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2">
-          <div
-            {...(sessionId ? dropZoneProps : {})}
-            className={cn(
-              "relative min-h-20 max-h-44 flex-1 overflow-y-auto overscroll-contain rounded-lg border bg-background px-3 py-2",
-              !sessionId && "pointer-events-none opacity-50",
-            )}
-          >
+        <div
+          {...(sessionId ? dropZoneProps : {})}
+          onPasteCapture={handlePasteCapture}
+          className={cn(
+            "relative rounded-2xl border bg-background p-2 shadow-sm",
+            !sessionId && "pointer-events-none opacity-50",
+          )}
+        >
+          <ChannelAttachmentTray
+            attachments={pendingAttachments}
+            pendingUploads={pendingUploads}
+            onRemove={removePendingAttachment}
+          />
+          <div className="max-h-32 min-h-16 overflow-y-auto overscroll-contain px-1">
             <ContentEditor
               key={sessionId || "empty"}
               ref={editorRef}
               onUpdate={setContent}
               onSubmit={submit}
-              onUploadFile={sessionId ? handleUpload : undefined}
               placeholder="输入消息，@AI 同事或 @all 协作"
-              className="channel-composer-editor min-h-16"
+              className="min-h-16"
               showBubbleMenu={false}
               submitOnEnter
-              attachments={pendingAttachments}
             />
-            {sessionId && isDragOver && <FileDropOverlay />}
           </div>
-          <FileUploadButton
-            onSelect={(file) => editorRef.current?.uploadFile(file)}
-            disabled={!sessionId || createMessage.isPending || pendingUploads > 0}
-          />
-          <Button size="icon" onClick={submit} disabled={!sessionId || createMessage.isPending || pendingUploads > 0}>
-            <Send className="size-4" />
-          </Button>
+          <div className="mt-1 flex items-center justify-end gap-1">
+            <FileUploadButton
+              onSelect={(file) => void uploadChannelFiles([file])}
+              disabled={!sessionId || createMessage.isPending || pendingUploads > 0}
+            />
+            <Button
+              size="icon"
+              className="size-9 rounded-full"
+              onClick={submit}
+              disabled={
+                !sessionId ||
+                createMessage.isPending ||
+                pendingUploads > 0 ||
+                (!content.trim() && pendingAttachments.length === 0)
+              }
+            >
+              <Send className="size-4" />
+            </Button>
+          </div>
+          {sessionId && isDragOver && <FileDropOverlay />}
         </div>
       </div>
     </main>
   );
+}
+
+function ChannelAttachmentTray({
+  attachments,
+  pendingUploads,
+  onRemove,
+}: {
+  attachments: Attachment[];
+  pendingUploads: number;
+  onRemove: (attachmentId: string) => void;
+}) {
+  if (attachments.length === 0 && pendingUploads === 0) return null;
+  return (
+    <div className="mb-2 flex flex-wrap gap-2">
+      {attachments.map((attachment) => {
+        const isImage = attachment.content_type.startsWith("image/");
+        return (
+          <div
+            key={attachment.id}
+            className="group relative flex size-20 overflow-hidden rounded-xl border bg-muted"
+          >
+            {isImage ? (
+              <img
+                src={attachment.url}
+                alt={attachment.filename}
+                className="size-full object-cover"
+              />
+            ) : (
+              <div className="flex size-full flex-col items-center justify-center gap-1 px-2 text-center">
+                <FileIcon className="size-5 text-muted-foreground" />
+                <span className="w-full truncate text-[11px] text-muted-foreground">{attachment.filename}</span>
+              </div>
+            )}
+            <button
+              type="button"
+              aria-label={`移除 ${attachment.filename}`}
+              onClick={() => onRemove(attachment.id)}
+              className="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-foreground text-background shadow-sm transition-transform hover:scale-105"
+            >
+              <X className="size-3" />
+            </button>
+          </div>
+        );
+      })}
+      {Array.from({ length: pendingUploads }).map((_, index) => (
+        <div
+          key={`uploading-${index}`}
+          className="flex size-20 animate-pulse items-center justify-center rounded-xl border bg-muted text-[11px] text-muted-foreground"
+        >
+          上传中
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatChannelAttachmentMarkdown(attachment: Attachment) {
+  const filename = escapeMarkdownLabel(attachment.filename || "file");
+  const url = escapeMarkdownUrl(attachment.url);
+  if (!url) return "";
+  if (attachment.content_type.startsWith("image/")) {
+    return `![${filename}](${url})`;
+  }
+  return `!file[${filename}](${url})`;
+}
+
+function escapeMarkdownLabel(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+}
+
+function escapeMarkdownUrl(value: string) {
+  return value.replace(/\s/g, "%20").replace(/\)/g, "%29");
 }
 
 const ACTIVE_CHANNEL_TASK_STATUSES = new Set(["queued", "dispatched", "running"]);
