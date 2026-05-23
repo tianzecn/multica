@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/channelprompt"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/mention"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -22,6 +24,11 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 type TaskService struct {
 	Queries   *db.Queries
@@ -1820,6 +1827,7 @@ func (s *TaskService) mirrorChannelAgentReply(ctx context.Context, task db.Agent
 		slog.Warn("failed to touch channel session after agent reply", "session_id", util.UUIDToString(run.ChannelSessionID), "error", err)
 	}
 	s.broadcastChannelMessageCreated(ctx, task, channelMsg)
+	s.dispatchNextQueuedChannelAgentRun(ctx, task, run)
 }
 
 func (s *TaskService) mirrorChannelAgentFailure(ctx context.Context, task db.AgentTaskQueue, errMsg string) {
@@ -1855,6 +1863,212 @@ func (s *TaskService) mirrorChannelAgentFailure(ctx context.Context, task db.Age
 	}
 	if err := s.Queries.TouchChannelSession(ctx, run.ChannelSessionID); err != nil {
 		slog.Warn("failed to touch channel session after agent failure", "session_id", util.UUIDToString(run.ChannelSessionID), "error", err)
+	}
+	s.broadcastChannelMessageCreated(ctx, task, channelMsg)
+}
+
+func (s *TaskService) dispatchNextQueuedChannelAgentRun(ctx context.Context, currentTask db.AgentTaskQueue, completedRun db.ChannelAgentRun) {
+	pending, err := s.Queries.ListQueuedChannelAgentRunsForMessage(ctx, completedRun.UserMessageID)
+	if err != nil {
+		slog.Warn("failed to list queued channel agent runs", "user_message_id", util.UUIDToString(completedRun.UserMessageID), "error", err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	next := pending[0]
+	channel, err := s.Queries.GetChannelByID(ctx, next.ChannelID)
+	if err != nil {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, "无法读取频道，后续 AI 发言已取消。", err)
+		return
+	}
+	session, err := s.Queries.GetChannelSessionByID(ctx, next.ChannelSessionID)
+	if err != nil {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, "无法读取频道会话，后续 AI 发言已取消。", err)
+		return
+	}
+	originalMessage, err := s.Queries.GetChannelMessage(ctx, next.UserMessageID)
+	if err != nil {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, "无法读取原始消息，后续 AI 发言已取消。", err)
+		return
+	}
+	agent, err := s.Queries.GetAgent(ctx, next.AgentID)
+	if err != nil {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, "无法读取 AI 同事，后续发言已取消。", err)
+		return
+	}
+	agentName := strings.TrimSpace(agent.Name)
+	if agentName == "" {
+		agentName = util.UUIDToString(agent.ID)
+	}
+	if agent.ArchivedAt.Valid {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, agentName+" 已归档，后续发言已取消。", nil)
+		return
+	}
+	if !agent.RuntimeID.Valid {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, agentName+" 未绑定运行时，后续发言已取消。", nil)
+		return
+	}
+	creatorID := originalMessage.AuthorID
+	if !creatorID.Valid {
+		creatorID = currentTask.AgentID
+	}
+	chatSession, err := s.getOrCreateChannelAgentChatSession(ctx, channel, session, creatorID, agent.ID)
+	if err != nil {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, "无法准备 "+agentName+" 的会话，后续发言已取消。", err)
+		return
+	}
+	recentMessages := s.recentChannelPromptMessages(ctx, channel.ID, session.ID, originalMessage)
+	prompt := channelprompt.Build(channel, session, originalMessage.Content, recentMessages)
+	chatMessage, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		ChatSessionID: chatSession.ID,
+		Role:          "user",
+		Content:       prompt,
+	})
+	if err != nil {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, "无法创建 "+agentName+" 的会话消息，后续发言已取消。", err)
+		return
+	}
+	nextTask, err := s.EnqueueChatTask(ctx, chatSession)
+	if err != nil {
+		s.failQueuedChannelAgentRun(ctx, currentTask, next, "无法派发给 "+agentName+"，后续发言已取消。", err)
+		return
+	}
+	if _, err := s.Queries.DispatchQueuedChannelAgentRun(ctx, db.DispatchQueuedChannelAgentRunParams{
+		ID:                next.ID,
+		ChatSessionID:     chatSession.ID,
+		ChatUserMessageID: chatMessage.ID,
+		TaskID:            nextTask.ID,
+	}); err != nil {
+		slog.Warn("failed to attach queued channel agent run to task", "run_id", util.UUIDToString(next.ID), "task_id", util.UUIDToString(nextTask.ID), "error", err)
+		return
+	}
+	s.createChannelSystemMessageForTask(ctx, currentTask, next.ChannelID, next.ChannelSessionID, next.UserMessageID, "轮到："+agentName+"。已收到前一位 AI 的回复，正在继续。")
+}
+
+func (s *TaskService) failQueuedChannelAgentRun(ctx context.Context, currentTask db.AgentTaskQueue, run db.ChannelAgentRun, content string, cause error) {
+	if cause != nil {
+		slog.Warn("failed to dispatch queued channel agent run", "run_id", util.UUIDToString(run.ID), "error", cause)
+	}
+	if err := s.Queries.FailChannelAgentRun(ctx, run.ID); err != nil {
+		slog.Warn("failed to mark queued channel agent run failed", "run_id", util.UUIDToString(run.ID), "error", err)
+	}
+	s.createChannelSystemMessageForTask(ctx, currentTask, run.ChannelID, run.ChannelSessionID, run.UserMessageID, content)
+}
+
+func (s *TaskService) getOrCreateChannelAgentChatSession(
+	ctx context.Context,
+	channel db.Channel,
+	channelSession db.ChannelSession,
+	requesterID pgtype.UUID,
+	agentID pgtype.UUID,
+) (db.ChatSession, error) {
+	thread, err := s.Queries.GetChannelAgentThread(ctx, db.GetChannelAgentThreadParams{
+		ChannelSessionID: channelSession.ID,
+		AgentID:          agentID,
+	})
+	if err == nil {
+		return s.Queries.GetChatSession(ctx, thread.ChatSessionID)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, err
+	}
+
+	title := fmt.Sprintf("#%s / %s", channel.Slug, channelSession.Title)
+	chatSession, err := s.Queries.CreateChatSession(ctx, db.CreateChatSessionParams{
+		WorkspaceID: channel.WorkspaceID,
+		AgentID:     agentID,
+		CreatorID:   requesterID,
+		Title:       title,
+	})
+	if err != nil {
+		return db.ChatSession{}, err
+	}
+	thread, err = s.Queries.CreateChannelAgentThread(ctx, db.CreateChannelAgentThreadParams{
+		ChannelID:        channel.ID,
+		ChannelSessionID: channelSession.ID,
+		AgentID:          agentID,
+		ChatSessionID:    chatSession.ID,
+	})
+	if err == nil {
+		return chatSession, nil
+	}
+	if isUniqueViolation(err) {
+		thread, err = s.Queries.GetChannelAgentThread(ctx, db.GetChannelAgentThreadParams{
+			ChannelSessionID: channelSession.ID,
+			AgentID:          agentID,
+		})
+		if err == nil {
+			return s.Queries.GetChatSession(ctx, thread.ChatSessionID)
+		}
+	}
+	return db.ChatSession{}, err
+}
+
+func (s *TaskService) recentChannelPromptMessages(ctx context.Context, channelID, sessionID pgtype.UUID, original db.ChannelMessage) []channelprompt.Message {
+	rows, err := s.Queries.ListChannelMessagesBySession(ctx, db.ListChannelMessagesBySessionParams{
+		ChannelID: channelID,
+		SessionID: sessionID,
+		Limit:     30,
+	})
+	if err != nil {
+		slog.Warn("failed to load recent channel messages for prompt", "channel_id", util.UUIDToString(channelID), "session_id", util.UUIDToString(sessionID), "error", err)
+		return nil
+	}
+	messages := make([]channelprompt.Message, 0, len(rows))
+	for i := len(rows) - 1; i >= 0; i-- {
+		message := rows[i]
+		if util.UUIDToString(message.ID) == util.UUIDToString(original.ID) {
+			continue
+		}
+		if message.CreatedAt.Valid && original.CreatedAt.Valid && message.CreatedAt.Time.Before(original.CreatedAt.Time) {
+			continue
+		}
+		if message.AuthorType == "system" || message.Type == "system" {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		messages = append(messages, channelprompt.Message{
+			Author:  s.channelMessageAuthorLabel(ctx, message),
+			Content: content,
+		})
+	}
+	return messages
+}
+
+func (s *TaskService) channelMessageAuthorLabel(ctx context.Context, message db.ChannelMessage) string {
+	switch message.AuthorType {
+	case "agent":
+		if message.AuthorID.Valid {
+			if agent, err := s.Queries.GetAgent(ctx, message.AuthorID); err == nil && strings.TrimSpace(agent.Name) != "" {
+				return agent.Name
+			}
+		}
+		return "AI teammate"
+	case "member":
+		return "User"
+	default:
+		return "System"
+	}
+}
+
+func (s *TaskService) createChannelSystemMessageForTask(ctx context.Context, task db.AgentTaskQueue, channelID, sessionID, parentID pgtype.UUID, content string) {
+	channelMsg, err := s.Queries.CreateChannelMessage(ctx, db.CreateChannelMessageParams{
+		ChannelID:  channelID,
+		SessionID:  sessionID,
+		AuthorType: "system",
+		AuthorID:   pgtype.UUID{},
+		Content:    content,
+		Type:       "system",
+		ParentID:   parentID,
+		IssueID:    pgtype.UUID{},
+	})
+	if err != nil {
+		slog.Warn("failed to create channel system message for queued run", "channel_id", util.UUIDToString(channelID), "session_id", util.UUIDToString(sessionID), "error", err)
+		return
 	}
 	s.broadcastChannelMessageCreated(ctx, task, channelMsg)
 }

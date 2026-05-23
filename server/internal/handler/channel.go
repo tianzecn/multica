@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/channelprompt"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -1264,7 +1265,10 @@ func (h *Handler) dispatchChannelMessageToAgents(
 		return
 	}
 
+	sequential := shouldDispatchChannelAgentsSequentially(message.Content, len(targetIDs))
+	firstDispatched := false
 	dispatched := make([]string, 0, len(targetIDs))
+	queued := make([]string, 0)
 	skipped := make([]string, 0)
 	for _, agentID := range targetIDs {
 		agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
@@ -1285,6 +1289,20 @@ func (h *Handler) dispatchChannelMessageToAgents(
 		}
 		if !agent.RuntimeID.Valid {
 			skipped = append(skipped, name+"（未绑定运行时）")
+			continue
+		}
+		if sequential && firstDispatched {
+			if _, err := h.Queries.CreateChannelAgentRun(ctx, db.CreateChannelAgentRunParams{
+				ChannelID:        channel.ID,
+				ChannelSessionID: session.ID,
+				UserMessageID:    message.ID,
+				AgentID:          agent.ID,
+			}); err != nil {
+				slog.Warn("failed to queue sequential channel agent run", "channel_id", uuidToString(channel.ID), "session_id", uuidToString(session.ID), "agent_id", uuidToString(agent.ID), "error", err)
+				skipped = append(skipped, name)
+				continue
+			}
+			queued = append(queued, name)
 			continue
 		}
 		chatSession, err := h.getOrCreateChannelAgentChatSession(ctx, channel, session, requesterID, agent.ID)
@@ -1323,6 +1341,7 @@ func (h *Handler) dispatchChannelMessageToAgents(
 			continue
 		}
 		dispatched = append(dispatched, name)
+		firstDispatched = true
 	}
 
 	if len(dispatched) == 0 {
@@ -1330,10 +1349,35 @@ func (h *Handler) dispatchChannelMessageToAgents(
 		return
 	}
 	notice := "已派发给：" + strings.Join(dispatched, "、") + "。AI 回复会写回当前会话。"
+	if len(queued) > 0 {
+		notice += " 已排队：" + strings.Join(queued, "、") + "，会在前一位 AI 发言后继续。"
+	}
 	if len(skipped) > 0 {
 		notice += " 未派发：" + strings.Join(skipped, "、") + "。"
 	}
 	h.createChannelSystemMessage(ctx, channel, session.ID, message.ID, workspaceID, notice)
+}
+
+func shouldDispatchChannelAgentsSequentially(content string, targetCount int) bool {
+	if targetCount < 2 {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(content))
+	if normalized == "" {
+		return false
+	}
+	sequentialHints := []string{
+		"你先", "先说", "先发言", "先回答", "先讲", "先来",
+		"然后", "之后", "再", "接着", "随后", "轮流", "依次",
+		"反驳", "回应", "回复前面", "根据", "基于", "等待", "等他", "等她", "等它",
+		"after", "then", "respond to", "reply to", "argue",
+	}
+	for _, hint := range sequentialHints {
+		if strings.Contains(normalized, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) getOrCreateChannelAgentChatSession(
@@ -1386,41 +1430,7 @@ func (h *Handler) getOrCreateChannelAgentChatSession(
 }
 
 func (h *Handler) buildChannelChatPrompt(channel db.Channel, session db.ChannelSession, content string) string {
-	var builder strings.Builder
-	builder.WriteString("You are participating as an AI teammate in a Multica channel.\n")
-	builder.WriteString("Reply directly to the channel conversation. Your final answer will be mirrored back into the channel.\n")
-	builder.WriteString("Do not assume this is an issue unless the user explicitly asks to create or link one.\n\n")
-	builder.WriteString("Channel: #")
-	builder.WriteString(channel.Slug)
-	builder.WriteString(" (")
-	builder.WriteString(channel.Name)
-	builder.WriteString(")\n")
-	builder.WriteString("Channel session: ")
-	builder.WriteString(session.Title)
-	builder.WriteString("\n")
-	if strings.TrimSpace(channel.Description) != "" {
-		builder.WriteString("Channel description: ")
-		builder.WriteString(strings.TrimSpace(channel.Description))
-		builder.WriteString("\n")
-	}
-	if strings.TrimSpace(channel.Instructions) != "" {
-		builder.WriteString("Channel instructions:\n")
-		builder.WriteString(strings.TrimSpace(channel.Instructions))
-		builder.WriteString("\n")
-	}
-	if strings.TrimSpace(channel.Summary) != "" {
-		builder.WriteString("Channel summary:\n")
-		builder.WriteString(strings.TrimSpace(channel.Summary))
-		builder.WriteString("\n")
-	}
-	if strings.TrimSpace(session.Summary) != "" {
-		builder.WriteString("Session summary:\n")
-		builder.WriteString(strings.TrimSpace(session.Summary))
-		builder.WriteString("\n")
-	}
-	builder.WriteString("\nUser message:\n")
-	builder.WriteString(content)
-	return builder.String()
+	return channelprompt.Build(channel, session, content, nil)
 }
 
 func (h *Handler) createChannelSystemMessage(

@@ -39,6 +39,10 @@ ORDER BY c.position ASC, c.created_at ASC;
 SELECT * FROM channel
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL;
 
+-- name: GetChannelByID :one
+SELECT * FROM channel
+WHERE id = $1 AND archived_at IS NULL;
+
 -- name: GetChannelBySlugInWorkspace :one
 SELECT * FROM channel
 WHERE slug = $1 AND workspace_id = $2 AND archived_at IS NULL;
@@ -111,6 +115,10 @@ SELECT cs.* FROM channel_session cs
 JOIN channel c ON c.id = cs.channel_id
 WHERE cs.id = $1 AND cs.channel_id = $2 AND c.workspace_id = $3 AND cs.archived_at IS NULL;
 
+-- name: GetChannelSessionByID :one
+SELECT * FROM channel_session
+WHERE id = $1 AND archived_at IS NULL;
+
 -- name: TouchChannelSession :exec
 UPDATE channel_session
 SET updated_at = now()
@@ -130,6 +138,10 @@ WHERE channel_id = $1 AND session_id = $2
   AND (sqlc.narg('before')::timestamptz IS NULL OR created_at < sqlc.narg('before'))
 ORDER BY created_at DESC
 LIMIT $3;
+
+-- name: GetChannelMessage :one
+SELECT * FROM channel_message
+WHERE id = $1;
 
 -- name: GetChannelAgentThread :one
 SELECT * FROM channel_agent_thread
@@ -153,6 +165,23 @@ RETURNING *;
 -- name: GetChannelAgentRunByTask :one
 SELECT * FROM channel_agent_run
 WHERE task_id = $1;
+
+-- name: ListQueuedChannelAgentRunsForMessage :many
+SELECT * FROM channel_agent_run
+WHERE user_message_id = $1
+  AND status = 'queued'
+  AND task_id IS NULL
+ORDER BY created_at ASC;
+
+-- name: DispatchQueuedChannelAgentRun :one
+UPDATE channel_agent_run
+SET chat_session_id = $2,
+    chat_user_message_id = $3,
+    task_id = $4
+WHERE id = $1
+  AND status = 'queued'
+  AND task_id IS NULL
+RETURNING *;
 
 -- name: ListChannelAgentRunsBySession :many
 SELECT

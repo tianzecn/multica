@@ -416,6 +416,48 @@ func (q *Queries) CreateChannelSession(ctx context.Context, arg CreateChannelSes
 	return i, err
 }
 
+const dispatchQueuedChannelAgentRun = `-- name: DispatchQueuedChannelAgentRun :one
+UPDATE channel_agent_run
+SET chat_session_id = $2,
+    chat_user_message_id = $3,
+    task_id = $4
+WHERE id = $1
+  AND status = 'queued'
+  AND task_id IS NULL
+RETURNING id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at
+`
+
+type DispatchQueuedChannelAgentRunParams struct {
+	ID                pgtype.UUID `json:"id"`
+	ChatSessionID     pgtype.UUID `json:"chat_session_id"`
+	ChatUserMessageID pgtype.UUID `json:"chat_user_message_id"`
+	TaskID            pgtype.UUID `json:"task_id"`
+}
+
+func (q *Queries) DispatchQueuedChannelAgentRun(ctx context.Context, arg DispatchQueuedChannelAgentRunParams) (ChannelAgentRun, error) {
+	row := q.db.QueryRow(ctx, dispatchQueuedChannelAgentRun,
+		arg.ID,
+		arg.ChatSessionID,
+		arg.ChatUserMessageID,
+		arg.TaskID,
+	)
+	var i ChannelAgentRun
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.UserMessageID,
+		&i.AgentID,
+		&i.ChatSessionID,
+		&i.ChatUserMessageID,
+		&i.TaskID,
+		&i.Status,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const failChannelAgentRun = `-- name: FailChannelAgentRun :exec
 UPDATE channel_agent_run
 SET status = 'failed', completed_at = now()
@@ -504,6 +546,36 @@ func (q *Queries) GetChannelAgentThread(ctx context.Context, arg GetChannelAgent
 		&i.ChannelSessionID,
 		&i.AgentID,
 		&i.ChatSessionID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelByID = `-- name: GetChannelByID :one
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at FROM channel
+WHERE id = $1 AND archived_at IS NULL
+`
+
+func (q *Queries) GetChannelByID(ctx context.Context, id pgtype.UUID) (Channel, error) {
+	row := q.db.QueryRow(ctx, getChannelByID, id)
+	var i Channel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.GroupID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Visibility,
+		&i.Instructions,
+		&i.Summary,
+		&i.DefaultProjectID,
+		&i.DefaultAssigneeType,
+		&i.DefaultAssigneeID,
+		&i.Position,
+		&i.CreatedBy,
+		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -631,6 +703,30 @@ func (q *Queries) GetChannelMember(ctx context.Context, arg GetChannelMemberPara
 	return i, err
 }
 
+const getChannelMessage = `-- name: GetChannelMessage :one
+SELECT id, channel_id, session_id, author_type, author_id, content, type, parent_id, issue_id, created_at, updated_at FROM channel_message
+WHERE id = $1
+`
+
+func (q *Queries) GetChannelMessage(ctx context.Context, id pgtype.UUID) (ChannelMessage, error) {
+	row := q.db.QueryRow(ctx, getChannelMessage, id)
+	var i ChannelMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.SessionID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.ParentID,
+		&i.IssueID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getChannelSession = `-- name: GetChannelSession :one
 SELECT cs.id, cs.channel_id, cs.title, cs.summary, cs.status, cs.created_by_type, cs.created_by_id, cs.archived_at, cs.created_at, cs.updated_at FROM channel_session cs
 JOIN channel c ON c.id = cs.channel_id
@@ -645,6 +741,29 @@ type GetChannelSessionParams struct {
 
 func (q *Queries) GetChannelSession(ctx context.Context, arg GetChannelSessionParams) (ChannelSession, error) {
 	row := q.db.QueryRow(ctx, getChannelSession, arg.ID, arg.ChannelID, arg.WorkspaceID)
+	var i ChannelSession
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.Title,
+		&i.Summary,
+		&i.Status,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelSessionByID = `-- name: GetChannelSessionByID :one
+SELECT id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at FROM channel_session
+WHERE id = $1 AND archived_at IS NULL
+`
+
+func (q *Queries) GetChannelSessionByID(ctx context.Context, id pgtype.UUID) (ChannelSession, error) {
+	row := q.db.QueryRow(ctx, getChannelSessionByID, id)
 	var i ChannelSession
 	err := row.Scan(
 		&i.ID,
@@ -1081,6 +1200,46 @@ func (q *Queries) ListIssueChannels(ctx context.Context, issueID pgtype.UUID) ([
 			&i.Slug,
 			&i.Name,
 			&i.Visibility,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listQueuedChannelAgentRunsForMessage = `-- name: ListQueuedChannelAgentRunsForMessage :many
+SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at FROM channel_agent_run
+WHERE user_message_id = $1
+  AND status = 'queued'
+  AND task_id IS NULL
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListQueuedChannelAgentRunsForMessage(ctx context.Context, userMessageID pgtype.UUID) ([]ChannelAgentRun, error) {
+	rows, err := q.db.Query(ctx, listQueuedChannelAgentRunsForMessage, userMessageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelAgentRun{}
+	for rows.Next() {
+		var i ChannelAgentRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChannelID,
+			&i.ChannelSessionID,
+			&i.UserMessageID,
+			&i.AgentID,
+			&i.ChatSessionID,
+			&i.ChatUserMessageID,
+			&i.TaskID,
+			&i.Status,
+			&i.CreatedAt,
+			&i.CompletedAt,
 		); err != nil {
 			return nil, err
 		}
