@@ -23,6 +23,7 @@ export {
   useCreateChannelSession,
   useJoinChannel,
   useLinkIssueToChannel,
+  useRemoveChannelMember,
   useRetryChannelDispatchStep,
   useResolveApprovalRequest,
   useSkipChannelDispatchStep,

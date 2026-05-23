@@ -246,6 +246,11 @@ export interface AddChannelMemberRequest {
   role?: ChannelMemberRole;
 }
 
+export interface RemoveChannelMemberRequest {
+  member_type: ChannelMemberType;
+  member_id: string;
+}
+
 export interface LinkIssueToChannelRequest {
   issue_id: string;
   session_id?: string | null;

@@ -34,6 +34,7 @@ import type {
   CreateChannelMessageRequest,
   CreateChannelRequest,
   CreateChannelSessionRequest,
+  RemoveChannelMemberRequest,
   SkipChannelDispatchStepRequest,
   UpdateChannelRequest,
   UpdateAgentRequest,
@@ -1588,6 +1589,13 @@ export class ApiClient {
     });
     return parseWithFallback(raw, ChannelMemberSchema, EMPTY_CHANNEL_MEMBER, {
       endpoint: "POST /api/channels/:id/members",
+    });
+  }
+
+  async removeChannelMember(channelId: string, data: RemoveChannelMemberRequest): Promise<void> {
+    await this.fetch<void>(`/api/channels/${channelId}/members`, {
+      method: "DELETE",
+      body: JSON.stringify(data),
     });
   }
 

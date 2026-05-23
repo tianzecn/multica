@@ -158,6 +158,7 @@ export type {
   CreateChannelRequest,
   CreateChannelSessionRequest,
   LinkIssueToChannelRequest,
+  RemoveChannelMemberRequest,
   SkipChannelDispatchStepRequest,
   UpdateChannelRequest,
 } from "./channel";

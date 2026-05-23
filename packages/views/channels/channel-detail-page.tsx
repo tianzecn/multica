@@ -19,6 +19,7 @@ import {
   useCreateChannelMessage,
   useCreateChannelSession,
   useLinkIssueToChannel,
+  useRemoveChannelMember,
   useRetryChannelDispatchStep,
   useResolveApprovalRequest,
   useSkipChannelDispatchStep,
@@ -1000,6 +1001,7 @@ function ContextPane({
   });
   const linkIssue = useLinkIssueToChannel(channelId);
   const addMember = useAddChannelMember(channelId);
+  const removeMember = useRemoveChannelMember(channelId);
   const updateChannel = useUpdateChannel(channelId);
   const pendingApprovals = approvals.filter((approval) => approval.status === "pending");
   const activePlans = dispatchPlans.filter((plan) => ["queued", "running", "paused"].includes(plan.status));
@@ -1040,6 +1042,19 @@ function ContextPane({
       },
     );
   };
+  const submitRemoveMember = (member: ChannelMember) => {
+    if (member.role === "owner") {
+      toast.error("频道 owner 不能移除");
+      return;
+    }
+    removeMember.mutate(
+      { member_type: member.member_type, member_id: member.member_id },
+      {
+        onSuccess: () => toast.success("成员已移出频道"),
+        onError: (error) => toast.error(error instanceof Error ? error.message : "移除成员失败"),
+      },
+    );
+  };
   const toggleMentionIssueSearch = (checked: boolean) => {
     updateChannel.mutate(
       { mention_issue_search_enabled: checked },
@@ -1069,19 +1084,43 @@ function ContextPane({
                   <ActorAvatar actorType="agent" actorId={member.member_id} size={22} showStatusDot enableHoverCard />
                   <span className="min-w-0 flex-1 truncate text-sm">{agent?.name ?? member.member_id}</span>
                   <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">AI</Badge>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="size-7 shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => submitRemoveMember(member)}
+                    disabled={removeMember.isPending || member.role === "owner"}
+                    title={member.role === "owner" ? "频道 owner 不能移除" : "移出频道"}
+                    aria-label={`移出 ${agent?.name ?? "AI 同事"}`}
+                  >
+                    <X className="size-3.5" />
+                  </Button>
                 </div>
               );
             })
           )}
           {humanMembers.length > 0 && (
             <div className="mt-1 grid gap-1">
-              {humanMembers.slice(0, 4).map((member) => {
+              {humanMembers.map((member) => {
                 const human = memberByUserId.get(member.member_id);
                 return (
                   <div key={member.id} className="flex min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground">
                     <ActorAvatar actorType="member" actorId={member.member_id} size={18} />
                     <span className="truncate">{human?.name ?? "用户"}</span>
                     <span className="ml-auto">{member.role}</span>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+                      onClick={() => submitRemoveMember(member)}
+                      disabled={removeMember.isPending || member.role === "owner"}
+                      title={member.role === "owner" ? "频道 owner 不能移除" : "移出频道"}
+                      aria-label={`移出 ${human?.name ?? "成员"}`}
+                    >
+                      <X className="size-3" />
+                    </Button>
                   </div>
                 );
               })}

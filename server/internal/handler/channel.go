@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/channelprompt"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -1104,6 +1106,71 @@ func (h *Handler) AddChannelMember(w http.ResponseWriter, r *http.Request) {
 		"channel_id": uuidToString(channel.ID),
 	})
 	writeJSON(w, http.StatusCreated, channelMemberToResponse(channelMember))
+}
+
+func (h *Handler) RemoveChannelMember(w http.ResponseWriter, r *http.Request) {
+	channel, member, workspaceID, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageChannel(r, channel, member) {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return
+	}
+
+	var req struct {
+		MemberType string `json:"member_type"`
+		MemberID   string `json:"member_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !isValidChannelMemberType(req.MemberType) {
+		writeError(w, http.StatusBadRequest, "member_type must be 'member', 'agent', or 'squad'")
+		return
+	}
+	memberID, ok := parseUUIDOrBadRequest(w, req.MemberID, "member_id")
+	if !ok {
+		return
+	}
+
+	targetMember, err := h.Queries.GetChannelMember(r.Context(), db.GetChannelMemberParams{
+		ChannelID:  channel.ID,
+		MemberType: req.MemberType,
+		MemberID:   memberID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "channel member not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load channel member")
+		return
+	}
+	if targetMember.Role == "owner" {
+		writeError(w, http.StatusBadRequest, "channel owner cannot be removed")
+		return
+	}
+
+	rows, err := h.Queries.RemoveChannelMember(r.Context(), db.RemoveChannelMemberParams{
+		ChannelID:  channel.ID,
+		MemberType: req.MemberType,
+		MemberID:   memberID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove channel member")
+		return
+	}
+	if rows == 0 {
+		writeError(w, http.StatusNotFound, "channel member not found")
+		return
+	}
+
+	h.publish(protocol.EventChannelUpdated, workspaceID, "member", requestUserID(r), map[string]any{
+		"channel_id": uuidToString(channel.ID),
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) ListChannelSessions(w http.ResponseWriter, r *http.Request) {

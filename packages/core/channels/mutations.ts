@@ -12,6 +12,7 @@ import type {
   CreateChannelRequest,
   CreateChannelSessionRequest,
   LinkIssueToChannelRequest,
+  RemoveChannelMemberRequest,
   SkipChannelDispatchStepRequest,
   UpdateChannelRequest,
 } from "../types";
@@ -99,6 +100,18 @@ export function useAddChannelMember(channelId: string) {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: (data: AddChannelMemberRequest) => api.addChannelMember(channelId, data),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.detail(wsId, channelId) });
+      qc.invalidateQueries({ queryKey: channelKeys.members(wsId, channelId) });
+    },
+  });
+}
+
+export function useRemoveChannelMember(channelId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (data: RemoveChannelMemberRequest) => api.removeChannelMember(channelId, data),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: channelKeys.detail(wsId, channelId) });
       qc.invalidateQueries({ queryKey: channelKeys.members(wsId, channelId) });
