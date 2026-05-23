@@ -16,11 +16,20 @@
 import type {
   Agent,
   AgentTask,
+  ApprovalRequest,
   Attachment,
+  Channel,
+  ChannelIssue,
+  ChannelMessage,
+  ChannelSession,
   ChatMessage,
   ChatPendingTask,
   ChatSession,
   Comment,
+  CreateApprovalRequestRequest,
+  CreateChannelMessageRequest,
+  CreateChannelRequest,
+  CreateChannelSessionRequest,
   CreateIssueRequest,
   CreateLabelRequest,
   CreateProjectRequest,
@@ -29,6 +38,7 @@ import type {
   Issue,
   IssueLabelsResponse,
   Label,
+  LinkIssueToChannelRequest,
   IssueReaction,
   ListIssuesParams,
   ListIssuesResponse,
@@ -58,6 +68,24 @@ import type {
   Workspace,
 } from "@multica/core/types";
 import {
+  ApprovalRequestListSchema,
+  ApprovalRequestSchema,
+  ChannelIssueListSchema,
+  ChannelListSchema,
+  ChannelMessageListSchema,
+  ChannelMessageSchema,
+  ChannelSchema,
+  ChannelSessionListSchema,
+  ChannelSessionSchema,
+  EMPTY_APPROVAL_REQUEST,
+  EMPTY_APPROVAL_REQUESTS,
+  EMPTY_CHANNEL,
+  EMPTY_CHANNEL_ISSUES,
+  EMPTY_CHANNEL_MESSAGE,
+  EMPTY_CHANNEL_MESSAGES,
+  EMPTY_CHANNEL_SESSION,
+  EMPTY_CHANNEL_SESSIONS,
+  EMPTY_CHANNELS,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_TIMELINE_ENTRIES,
   IssueSchema,
@@ -974,6 +1002,153 @@ class ApiClient {
     await this.fetch<void>(
       `/api/projects/${projectId}/resources/${resourceId}`,
       { method: "DELETE" },
+    );
+  }
+
+  // --- Channels ---
+  async listChannels(opts?: { signal?: AbortSignal }): Promise<Channel[]> {
+    return this.fetchValidated(
+      "/api/channels",
+      ChannelListSchema,
+      EMPTY_CHANNELS,
+      { ...opts, endpoint: "GET /api/channels" },
+    );
+  }
+
+  async getChannel(
+    channelId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Channel> {
+    return this.fetchValidated(
+      `/api/channels/${channelId}`,
+      ChannelSchema,
+      EMPTY_CHANNEL,
+      { ...opts, endpoint: "GET /api/channels/:id" },
+    );
+  }
+
+  async createChannel(data: CreateChannelRequest): Promise<Channel> {
+    return this.fetchValidatedWith(
+      "/api/channels",
+      ChannelSchema,
+      EMPTY_CHANNEL,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/channels" },
+    );
+  }
+
+  async listChannelSessions(
+    channelId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ChannelSession[]> {
+    return this.fetchValidated(
+      `/api/channels/${channelId}/sessions`,
+      ChannelSessionListSchema,
+      EMPTY_CHANNEL_SESSIONS,
+      { ...opts, endpoint: "GET /api/channels/:id/sessions" },
+    );
+  }
+
+  async createChannelSession(
+    channelId: string,
+    data: CreateChannelSessionRequest,
+  ): Promise<ChannelSession> {
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/sessions`,
+      ChannelSessionSchema,
+      EMPTY_CHANNEL_SESSION,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/channels/:id/sessions" },
+    );
+  }
+
+  async listChannelMessages(
+    channelId: string,
+    sessionId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ChannelMessage[]> {
+    return this.fetchValidated(
+      `/api/channels/${channelId}/sessions/${sessionId}/messages`,
+      ChannelMessageListSchema,
+      EMPTY_CHANNEL_MESSAGES,
+      { ...opts, endpoint: "GET /api/channels/:id/sessions/:sessionId/messages" },
+    );
+  }
+
+  async createChannelMessage(
+    channelId: string,
+    sessionId: string,
+    data: CreateChannelMessageRequest,
+  ): Promise<ChannelMessage> {
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/sessions/${sessionId}/messages`,
+      ChannelMessageSchema,
+      EMPTY_CHANNEL_MESSAGE,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/channels/:id/sessions/:sessionId/messages" },
+    );
+  }
+
+  async listChannelIssues(
+    channelId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ChannelIssue[]> {
+    return this.fetchValidated(
+      `/api/channels/${channelId}/issues`,
+      ChannelIssueListSchema,
+      EMPTY_CHANNEL_ISSUES,
+      { ...opts, endpoint: "GET /api/channels/:id/issues" },
+    );
+  }
+
+  async linkIssueToChannel(
+    channelId: string,
+    data: LinkIssueToChannelRequest,
+  ): Promise<void> {
+    await this.fetch<void>(`/api/channels/${channelId}/issues`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listChannelApprovals(
+    channelId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ApprovalRequest[]> {
+    return this.fetchValidated(
+      `/api/channels/${channelId}/approvals`,
+      ApprovalRequestListSchema,
+      EMPTY_APPROVAL_REQUESTS,
+      { ...opts, endpoint: "GET /api/channels/:id/approvals" },
+    );
+  }
+
+  async createChannelApproval(
+    channelId: string,
+    data: CreateApprovalRequestRequest,
+  ): Promise<ApprovalRequest> {
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/approvals`,
+      ApprovalRequestSchema,
+      EMPTY_APPROVAL_REQUEST,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/channels/:id/approvals" },
+    );
+  }
+
+  async resolveChannelApproval(
+    channelId: string,
+    approvalId: string,
+    status: "approved" | "rejected",
+    data?: { resolution_note?: string },
+  ): Promise<ApprovalRequest> {
+    const action = status === "approved" ? "approve" : "reject";
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/approvals/${approvalId}/${action}`,
+      ApprovalRequestSchema,
+      EMPTY_APPROVAL_REQUEST,
+      { method: "POST", body: JSON.stringify(data ?? {}) },
+      { endpoint: "POST /api/channels/:id/approvals/:approvalId/:action" },
     );
   }
 

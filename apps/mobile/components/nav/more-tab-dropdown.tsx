@@ -80,8 +80,10 @@ const NAV_ITEMS: NavItem[] = [
 
 export function MoreTabDropdownAnchor({
   triggerRef,
+  tabCount,
 }: {
   triggerRef: React.RefObject<TriggerRef | null>;
+  tabCount: number;
 }) {
   const insets = useSafeAreaInsets();
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -104,7 +106,7 @@ export function MoreTabDropdownAnchor({
         position: "absolute",
         right: 0,
         bottom: insets.bottom,
-        width: "25%",
+        width: `${100 / tabCount}%`,
         height: TAB_BAR_HEIGHT,
       }}
     >

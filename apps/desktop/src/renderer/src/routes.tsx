@@ -22,6 +22,7 @@ import { MyIssuesPage } from "@multica/views/my-issues";
 import { SkillsPage } from "@multica/views/skills";
 import { DesktopRuntimesPage } from "./components/desktop-runtimes-page";
 import { AgentsPage } from "@multica/views/agents";
+import { ChannelDetailPage, ChannelsPage } from "@multica/views/channels";
 import { SquadsPage, SquadDetailPage as SquadDetailPageView } from "@multica/views/squads/components";
 import { InboxPage } from "@multica/views/inbox";
 import { SettingsPage } from "@multica/views/settings";
@@ -139,6 +140,16 @@ export const appRoutes: RouteObject[] = [
             path: "projects/:id",
             element: <ProjectDetailPage />,
             handle: { title: "Project" },
+          },
+          {
+            path: "channels",
+            element: <ChannelsPage />,
+            handle: { title: "Channels" },
+          },
+          {
+            path: "channels/:id",
+            element: <ChannelDetailPage />,
+            handle: { title: "Channel" },
           },
           {
             path: "autopilots",

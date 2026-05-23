@@ -1,0 +1,56 @@
+{
+  "page": {
+    "title": "频道",
+    "new_button": "新建频道",
+    "search_placeholder": "搜索频道...",
+    "empty": "创建一个频道，开始共享的 AI 作战室。",
+    "empty_search": "没有匹配的频道。"
+  },
+  "create": {
+    "title": "新建频道",
+    "description": "创建长期空间给智能体和队友协作。会话会把每个话题隔离开。",
+    "name_label": "名称",
+    "slug_label": "标识",
+    "slug_placeholder": "design-review",
+    "group_label": "分组",
+    "group_none": "不分组",
+    "description_label": "描述",
+    "instructions_label": "频道指令",
+    "cancel": "取消",
+    "submit": "创建",
+    "visibility": {
+      "private": {
+        "label": "私密",
+        "description": "只有受邀成员可以看到此频道。"
+      },
+      "public": {
+        "label": "公开",
+        "description": "工作区成员都可以发现并加入。"
+      }
+    }
+  },
+  "detail": {
+    "sessions": "会话",
+    "new_session_placeholder": "新话题...",
+    "no_sessions": "先创建一个会话，再开始发消息。",
+    "no_session_title": "未选择会话",
+    "context_rule": "AI 只读取当前会话、摘要、频道指令和关联 issue。",
+    "empty_messages": "还没有消息。",
+    "no_session_selected": "创建或选择一个会话。",
+    "message_placeholder": "在这个会话里发言...",
+    "linked_issues": "关联 Issue",
+    "issue_placeholder": "MUL-123 或 issue UUID",
+    "link": "关联",
+    "no_issues": "还没有关联 issue。这个频道也可以只保留话题讨论。",
+    "approvals": "审批",
+    "no_approvals": "还没有审批请求。"
+  },
+  "toast": {
+    "created": "频道已创建",
+    "create_failed": "创建频道失败",
+    "session_failed": "创建会话失败",
+    "message_failed": "发送消息失败",
+    "issue_linked": "Issue 已关联",
+    "issue_link_failed": "关联 issue 失败"
+  }
+}

@@ -4,6 +4,7 @@
     "my_issues": "我的 Issue",
     "issues": "Issue",
     "projects": "项目",
+    "channels": "频道",
     "autopilots": "自动化",
     "agents": "智能体",
     "squads": "小队",
@@ -34,6 +35,9 @@
     "new_issue": "新建 issue",
     "new_issue_shortcut": "C",
     "pinned_label": "固定",
+    "channels_label": "频道",
+    "channels_all": "全部频道",
+    "create_channel": "新建频道",
     "workspace_group": "工作区",
     "configure_group": "配置",
     "unread_overflow": "99+"

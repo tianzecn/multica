@@ -3,7 +3,15 @@ import type {
   Agent,
   AgentTemplate,
   AgentTemplateSummary,
+  ApprovalRequest,
   Attachment,
+  Channel,
+  ChannelAgentRun,
+  ChannelGroup,
+  ChannelIssue,
+  ChannelMember,
+  ChannelMessage,
+  ChannelSession,
   CreateAgentFromTemplateResponse,
   GroupedIssuesResponse,
   ListIssuesResponse,
@@ -241,6 +249,244 @@ export const EMPTY_CLOUD_RUNTIME_NODE: CloudRuntimeNode = {
   created_at: "",
   updated_at: "",
 };
+
+export const ChannelGroupSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  name: z.string(),
+  position: z.number().default(0),
+  created_by: z.string().nullable().optional(),
+  archived_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const ChannelSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  group_id: z.string().nullable().optional(),
+  slug: z.string(),
+  name: z.string(),
+  description: z.string().default(""),
+  visibility: z.string(),
+  instructions: z.string().default(""),
+  summary: z.string().default(""),
+  default_project_id: z.string().nullable().optional(),
+  default_assignee_type: z.string().nullable().optional(),
+  default_assignee_id: z.string().nullable().optional(),
+  position: z.number().default(0),
+  created_by: z.string(),
+  archived_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const ChannelMemberSchema = z.object({
+  id: z.string(),
+  channel_id: z.string(),
+  member_type: z.string(),
+  member_id: z.string(),
+  role: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const ChannelSessionSchema = z.object({
+  id: z.string(),
+  channel_id: z.string(),
+  title: z.string(),
+  summary: z.string().default(""),
+  status: z.string(),
+  created_by_type: z.string(),
+  created_by_id: z.string().nullable().optional(),
+  archived_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const ChannelMessageSchema = z.object({
+  id: z.string(),
+  channel_id: z.string(),
+  session_id: z.string(),
+  author_type: z.string(),
+  author_id: z.string().nullable().optional(),
+  content: z.string(),
+  type: z.string(),
+  parent_id: z.string().nullable().optional(),
+  issue_id: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const ChannelAgentRunSchema = z.object({
+  id: z.string(),
+  channel_id: z.string(),
+  session_id: z.string(),
+  user_message_id: z.string(),
+  agent_id: z.string(),
+  chat_session_id: z.string(),
+  chat_user_message_id: z.string(),
+  task_id: z.string(),
+  status: z.string(),
+  task_status: z.string(),
+  created_at: z.string(),
+  completed_at: z.string().nullable().optional(),
+  task_created_at: z.string().nullable().optional(),
+  task_started_at: z.string().nullable().optional(),
+  task_completed_at: z.string().nullable().optional(),
+}).loose();
+
+export const ChannelIssueSchema = z.object({
+  issue_id: z.string(),
+  channel_id: z.string(),
+  session_id: z.string().nullable().optional(),
+  linked_by_type: z.string(),
+  linked_by_id: z.string().nullable().optional(),
+  identifier: z.string(),
+  number: z.number(),
+  title: z.string(),
+  status: z.string(),
+  priority: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const ApprovalRequestSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  channel_id: z.string().nullable().optional(),
+  session_id: z.string().nullable().optional(),
+  issue_id: z.string().nullable().optional(),
+  requested_by_type: z.string(),
+  requested_by_id: z.string().nullable().optional(),
+  action_type: z.string(),
+  action_payload: z.record(z.string(), z.unknown()).default({}),
+  status: z.string(),
+  resolution_note: z.string().nullable().optional(),
+  resolved_by: z.string().nullable().optional(),
+  resolved_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const ChannelGroupListSchema = z.array(ChannelGroupSchema);
+export const ChannelListSchema = z.array(ChannelSchema);
+export const ChannelMemberListSchema = z.array(ChannelMemberSchema);
+export const ChannelSessionListSchema = z.array(ChannelSessionSchema);
+export const ChannelMessageListSchema = z.array(ChannelMessageSchema);
+export const ChannelAgentRunListSchema = z.array(ChannelAgentRunSchema);
+export const ChannelIssueListSchema = z.array(ChannelIssueSchema);
+export const ApprovalRequestListSchema = z.array(ApprovalRequestSchema);
+
+export const EMPTY_CHANNEL_GROUP: ChannelGroup = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  position: 0,
+  created_by: null,
+  archived_at: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const EMPTY_CHANNEL: Channel = {
+  id: "",
+  workspace_id: "",
+  group_id: null,
+  slug: "",
+  name: "",
+  description: "",
+  visibility: "private",
+  instructions: "",
+  summary: "",
+  default_project_id: null,
+  default_assignee_type: null,
+  default_assignee_id: null,
+  position: 0,
+  created_by: "",
+  archived_at: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const EMPTY_CHANNEL_MEMBER: ChannelMember = {
+  id: "",
+  channel_id: "",
+  member_type: "member",
+  member_id: "",
+  role: "member",
+  created_at: "",
+};
+
+export const EMPTY_CHANNEL_SESSION: ChannelSession = {
+  id: "",
+  channel_id: "",
+  title: "",
+  summary: "",
+  status: "active",
+  created_by_type: "member",
+  created_by_id: null,
+  archived_at: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const EMPTY_CHANNEL_MESSAGE: ChannelMessage = {
+  id: "",
+  channel_id: "",
+  session_id: "",
+  author_type: "member",
+  author_id: null,
+  content: "",
+  type: "message",
+  parent_id: null,
+  issue_id: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const EMPTY_CHANNEL_AGENT_RUN: ChannelAgentRun = {
+  id: "",
+  channel_id: "",
+  session_id: "",
+  user_message_id: "",
+  agent_id: "",
+  chat_session_id: "",
+  chat_user_message_id: "",
+  task_id: "",
+  status: "queued",
+  task_status: "queued",
+  created_at: "",
+  completed_at: null,
+  task_created_at: null,
+  task_started_at: null,
+  task_completed_at: null,
+};
+
+export const EMPTY_APPROVAL_REQUEST: ApprovalRequest = {
+  id: "",
+  workspace_id: "",
+  channel_id: null,
+  session_id: null,
+  issue_id: null,
+  requested_by_type: "member",
+  requested_by_id: null,
+  action_type: "",
+  action_payload: {},
+  status: "pending",
+  resolution_note: null,
+  resolved_by: null,
+  resolved_at: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const EMPTY_CHANNEL_GROUPS: ChannelGroup[] = [];
+export const EMPTY_CHANNELS: Channel[] = [];
+export const EMPTY_CHANNEL_MEMBERS: ChannelMember[] = [];
+export const EMPTY_CHANNEL_SESSIONS: ChannelSession[] = [];
+export const EMPTY_CHANNEL_MESSAGES: ChannelMessage[] = [];
+export const EMPTY_CHANNEL_AGENT_RUNS: ChannelAgentRun[] = [];
+export const EMPTY_CHANNEL_ISSUES: ChannelIssue[] = [];
+export const EMPTY_APPROVAL_REQUESTS: ApprovalRequest[] = [];
 
 // ---------------------------------------------------------------------------
 // Workspace dashboard schemas

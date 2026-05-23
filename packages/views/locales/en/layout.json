@@ -4,6 +4,7 @@
     "my_issues": "My Issues",
     "issues": "Issues",
     "projects": "Projects",
+    "channels": "Channels",
     "autopilots": "Autopilot",
     "agents": "Agents",
     "squads": "Squads",
@@ -34,6 +35,9 @@
     "new_issue": "New Issue",
     "new_issue_shortcut": "C",
     "pinned_label": "Pinned",
+    "channels_label": "Channels",
+    "channels_all": "All channels",
+    "create_channel": "Create channel",
     "workspace_group": "Workspace",
     "configure_group": "Configure",
     "unread_overflow": "99+"

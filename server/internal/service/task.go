@@ -1123,6 +1123,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			}
 		}
 		s.broadcastChatDone(ctx, task, assistantMsg)
+		s.mirrorChannelAgentReply(ctx, task, assistantMsg)
 	}
 
 	// Reconcile agent status
@@ -1247,6 +1248,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				"chat_session_id", util.UUIDToString(task.ChatSessionID),
 				"error", err)
 		}
+		s.mirrorChannelAgentFailure(ctx, task, errMsg)
 	}
 
 	// Quick-create tasks: push a failure inbox notification to the
@@ -1783,6 +1785,123 @@ func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, 
 		ActorType:   "system",
 		ActorID:     "",
 		Payload:     payload,
+	})
+}
+
+func (s *TaskService) mirrorChannelAgentReply(ctx context.Context, task db.AgentTaskQueue, msg *db.ChatMessage) {
+	if msg == nil {
+		return
+	}
+	run, err := s.Queries.GetChannelAgentRunByTask(ctx, task.ID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("failed to load channel agent run for reply mirror", "task_id", util.UUIDToString(task.ID), "error", err)
+		}
+		return
+	}
+	channelMsg, err := s.Queries.CreateChannelMessage(ctx, db.CreateChannelMessageParams{
+		ChannelID:  run.ChannelID,
+		SessionID:  run.ChannelSessionID,
+		AuthorType: "agent",
+		AuthorID:   task.AgentID,
+		Content:    msg.Content,
+		Type:       "message",
+		ParentID:   run.UserMessageID,
+		IssueID:    pgtype.UUID{},
+	})
+	if err != nil {
+		slog.Warn("failed to mirror chat reply into channel", "task_id", util.UUIDToString(task.ID), "channel_id", util.UUIDToString(run.ChannelID), "error", err)
+		return
+	}
+	if err := s.Queries.CompleteChannelAgentRun(ctx, run.ID); err != nil {
+		slog.Warn("failed to mark channel agent run completed", "task_id", util.UUIDToString(task.ID), "run_id", util.UUIDToString(run.ID), "error", err)
+	}
+	if err := s.Queries.TouchChannelSession(ctx, run.ChannelSessionID); err != nil {
+		slog.Warn("failed to touch channel session after agent reply", "session_id", util.UUIDToString(run.ChannelSessionID), "error", err)
+	}
+	s.broadcastChannelMessageCreated(ctx, task, channelMsg)
+}
+
+func (s *TaskService) mirrorChannelAgentFailure(ctx context.Context, task db.AgentTaskQueue, errMsg string) {
+	run, err := s.Queries.GetChannelAgentRunByTask(ctx, task.ID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("failed to load channel agent run for failure mirror", "task_id", util.UUIDToString(task.ID), "error", err)
+		}
+		return
+	}
+	content := strings.TrimSpace(errMsg)
+	if content == "" {
+		content = "AI 回复失败。"
+	} else {
+		content = "AI 回复失败：" + content
+	}
+	channelMsg, err := s.Queries.CreateChannelMessage(ctx, db.CreateChannelMessageParams{
+		ChannelID:  run.ChannelID,
+		SessionID:  run.ChannelSessionID,
+		AuthorType: "system",
+		AuthorID:   pgtype.UUID{},
+		Content:    redact.Text(content),
+		Type:       "system",
+		ParentID:   run.UserMessageID,
+		IssueID:    pgtype.UUID{},
+	})
+	if err != nil {
+		slog.Warn("failed to mirror chat failure into channel", "task_id", util.UUIDToString(task.ID), "channel_id", util.UUIDToString(run.ChannelID), "error", err)
+		return
+	}
+	if err := s.Queries.FailChannelAgentRun(ctx, run.ID); err != nil {
+		slog.Warn("failed to mark channel agent run failed", "task_id", util.UUIDToString(task.ID), "run_id", util.UUIDToString(run.ID), "error", err)
+	}
+	if err := s.Queries.TouchChannelSession(ctx, run.ChannelSessionID); err != nil {
+		slog.Warn("failed to touch channel session after agent failure", "session_id", util.UUIDToString(run.ChannelSessionID), "error", err)
+	}
+	s.broadcastChannelMessageCreated(ctx, task, channelMsg)
+}
+
+func (s *TaskService) broadcastChannelMessageCreated(ctx context.Context, task db.AgentTaskQueue, message db.ChannelMessage) {
+	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
+	if workspaceID == "" {
+		return
+	}
+	var authorID any
+	if message.AuthorID.Valid {
+		authorID = util.UUIDToString(message.AuthorID)
+	}
+	var parentID any
+	if message.ParentID.Valid {
+		parentID = util.UUIDToString(message.ParentID)
+	}
+	var issueID any
+	if message.IssueID.Valid {
+		issueID = util.UUIDToString(message.IssueID)
+	}
+	actorID := ""
+	if message.AuthorID.Valid {
+		actorID = util.UUIDToString(message.AuthorID)
+	}
+	s.Bus.Publish(events.Event{
+		Type:        protocol.EventChannelMessageCreated,
+		WorkspaceID: workspaceID,
+		ActorType:   message.AuthorType,
+		ActorID:     actorID,
+		Payload: map[string]any{
+			"channel_id": util.UUIDToString(message.ChannelID),
+			"session_id": util.UUIDToString(message.SessionID),
+			"message": map[string]any{
+				"id":          util.UUIDToString(message.ID),
+				"channel_id":  util.UUIDToString(message.ChannelID),
+				"session_id":  util.UUIDToString(message.SessionID),
+				"author_type": message.AuthorType,
+				"author_id":   authorID,
+				"content":     message.Content,
+				"type":        message.Type,
+				"parent_id":   parentID,
+				"issue_id":    issueID,
+				"created_at":  message.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+				"updated_at":  message.UpdatedAt.Time.UTC().Format(time.RFC3339Nano),
+			},
+		},
 	})
 }
 

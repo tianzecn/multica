@@ -17,6 +17,7 @@ import enProjects from "./en/projects.json";
 import enAutopilots from "./en/autopilots.json";
 import enSkills from "./en/skills.json";
 import enChat from "./en/chat.json";
+import enChannels from "./en/channels.json";
 import enModals from "./en/modals.json";
 import enRuntimes from "./en/runtimes.json";
 import enLayout from "./en/layout.json";
@@ -41,6 +42,7 @@ import zhHansProjects from "./zh-Hans/projects.json";
 import zhHansAutopilots from "./zh-Hans/autopilots.json";
 import zhHansSkills from "./zh-Hans/skills.json";
 import zhHansChat from "./zh-Hans/chat.json";
+import zhHansChannels from "./zh-Hans/channels.json";
 import zhHansModals from "./zh-Hans/modals.json";
 import zhHansRuntimes from "./zh-Hans/runtimes.json";
 import zhHansLayout from "./zh-Hans/layout.json";
@@ -71,6 +73,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     autopilots: enAutopilots,
     skills: enSkills,
     chat: enChat,
+    channels: enChannels,
     modals: enModals,
     runtimes: enRuntimes,
     layout: enLayout,
@@ -97,6 +100,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     autopilots: zhHansAutopilots,
     skills: zhHansSkills,
     chat: zhHansChat,
+    channels: zhHansChannels,
     modals: zhHansModals,
     runtimes: zhHansRuntimes,
     layout: zhHansLayout,

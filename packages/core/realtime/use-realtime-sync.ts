@@ -34,6 +34,7 @@ import { notificationPreferenceOptions } from "../notification-preferences/queri
 import { workspaceKeys, workspaceListOptions } from "../workspace/queries";
 import type { Workspace } from "../types/workspace";
 import { chatKeys } from "../chat/queries";
+import { channelKeys } from "../channels/queries";
 import { useChatStore } from "../chat";
 import { resolvePostAuthDestination, useHasOnboarded } from "../paths";
 import type {
@@ -224,6 +225,18 @@ export function useRealtimeSync(
       member: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: workspaceKeys.members(wsId) });
+      },
+      channel: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
+      },
+      channel_message: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
+      },
+      channel_session: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
       },
       // workspace:updated is handled by the specific handler below
       // (compares prefixes to decide whether to also invalidate issues).
@@ -697,6 +710,10 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (id) qc.invalidateQueries({ queryKey: chatKeys.sessions(id) });
     };
+    const invalidateChannelWork = () => {
+      const id = getCurrentWsId();
+      if (id) qc.invalidateQueries({ queryKey: channelKeys.all(id) });
+    };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {
       const payload = p as { chat_session_id: string };
@@ -753,6 +770,7 @@ export function useRealtimeSync(
         }),
       );
       invalidatePendingAggregate();
+      invalidateChannelWork();
     });
 
     // task:dispatch fires when the daemon claims the queued task. The daemon
@@ -771,6 +789,7 @@ export function useRealtimeSync(
           return { ...old, status: "running" };
         },
       );
+      invalidateChannelWork();
     });
 
     // task:cancelled reaches us when:
@@ -787,6 +806,7 @@ export function useRealtimeSync(
       });
       qc.setQueryData(chatKeys.pendingTask(payload.chat_session_id), {});
       invalidatePendingAggregate();
+      invalidateChannelWork();
     });
 
     const unsubTaskCompleted = ws.on("task:completed", (p) => {
@@ -803,6 +823,7 @@ export function useRealtimeSync(
       // FAB indicator — `chat:done` is per-session and doesn't carry that
       // information.
       invalidatePendingAggregate();
+      invalidateChannelWork();
     });
 
     const unsubTaskFailed = ws.on("task:failed", (p) => {
@@ -822,6 +843,7 @@ export function useRealtimeSync(
       qc.invalidateQueries({ queryKey: chatKeys.messages(payload.chat_session_id) });
       qc.invalidateQueries({ queryKey: chatKeys.pendingTask(payload.chat_session_id) });
       invalidatePendingAggregate();
+      invalidateChannelWork();
     });
 
     const unsubChatSessionRead = ws.on("chat:session_read", (p) => {

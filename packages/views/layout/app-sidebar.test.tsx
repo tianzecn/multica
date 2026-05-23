@@ -82,12 +82,14 @@ vi.mock("@multica/core/auth", () => ({
 }));
 vi.mock("@multica/core/paths", () => ({
   paths: { workspace: (slug: string) => ({ issues: () => `/${slug}/issues` }) },
-  useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme", slug: "acme" }),
+  useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme", slug: "acme", settings: {} }),
   useWorkspacePaths: () => ({
     inbox: () => "/acme/inbox",
     myIssues: () => "/acme/my-issues",
     issues: () => "/acme/issues",
     projects: () => "/acme/projects",
+    channels: () => "/acme/channels",
+    channelDetail: (id: string) => `/acme/channels/${id}`,
     autopilots: () => "/acme/autopilots",
     agents: () => "/acme/agents",
     squads: () => "/acme/squads",
@@ -98,6 +100,10 @@ vi.mock("@multica/core/paths", () => ({
     issueDetail: (id: string) => `/acme/issues/${id}`,
     projectDetail: (id: string) => `/acme/projects/${id}`,
   }),
+}));
+vi.mock("@multica/core/channels", () => ({
+  channelListOptions: () => ({ queryKey: ["channels"] }),
+  deriveChannelsSettings: () => ({ channelsEnabled: true }),
 }));
 vi.mock("@multica/core/api", async (importOriginal) => ({ ...(await importOriginal<typeof import("@multica/core/api")>()), api: {} }));
 vi.mock("@multica/core/inbox/queries", () => ({ deduplicateInboxItems: (items: unknown[]) => items, inboxKeys: { list: () => ["inbox"] } }));

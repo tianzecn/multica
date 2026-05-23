@@ -30,9 +30,9 @@ const (
 	// subscribes by `task:` prefix and invalidates the workspace task
 	// snapshot, so the granularity here is "what does the user want to see
 	// change" — not "every internal status flip".
-	EventTaskQueued    = "task:queued"    // ∅ → queued (enqueue / retry create)
-	EventTaskDispatch  = "task:dispatch"  // queued → dispatched (daemon claim)
-	EventTaskRunning   = "task:running"   // dispatched → running (daemon started)
+	EventTaskQueued    = "task:queued"   // ∅ → queued (enqueue / retry create)
+	EventTaskDispatch  = "task:dispatch" // queued → dispatched (daemon claim)
+	EventTaskRunning   = "task:running"  // dispatched → running (daemon started)
 	EventTaskProgress  = "task:progress"
 	EventTaskCompleted = "task:completed" // running → completed
 	EventTaskFailed    = "task:failed"    // running → failed
@@ -109,6 +109,14 @@ const (
 	EventSquadCreated = "squad:created"
 	EventSquadUpdated = "squad:updated"
 	EventSquadDeleted = "squad:deleted"
+
+	// Channel events
+	EventChannelCreated         = "channel:created"
+	EventChannelUpdated         = "channel:updated"
+	EventChannelSessionCreated  = "channel_session:created"
+	EventChannelMessageCreated  = "channel_message:created"
+	EventChannelIssueLinked     = "channel_issue:linked"
+	EventChannelApprovalUpdated = "channel_approval:updated"
 
 	// Daemon events
 	EventDaemonHeartbeat     = "daemon:heartbeat"

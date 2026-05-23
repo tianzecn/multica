@@ -34,6 +34,8 @@ import {
   X,
   Zap,
   Users,
+  Hash,
+  Lock,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
@@ -76,7 +78,8 @@ import { pinListOptions } from "@multica/core/pins/queries";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
-import type { PinnedItem } from "@multica/core/types";
+import { channelListOptions, deriveChannelsSettings } from "@multica/core/channels";
+import type { Channel, PinnedItem } from "@multica/core/types";
 import { useLogout } from "../auth";
 import { ProjectIcon } from "../projects/components/project-icon";
 import { useT } from "../i18n";
@@ -95,6 +98,7 @@ function isNavActive(pathname: string, href: string): boolean {
 // `useEffect`/`useMemo` that depends on the value, and can trigger infinite
 // re-render loops when the effect itself calls `setState`.
 const EMPTY_PINS: PinnedItem[] = [];
+const EMPTY_CHANNELS: Channel[] = [];
 const EMPTY_WORKSPACES: Awaited<ReturnType<typeof api.listWorkspaces>> = [];
 const EMPTY_INVITATIONS: Awaited<ReturnType<typeof api.listMyInvitations>> = [];
 const EMPTY_INBOX: Awaited<ReturnType<typeof api.listInbox>> = [];
@@ -346,6 +350,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const userId = useAuthStore((s) => s.user?.id);
   const logout = useLogout();
   const workspace = useCurrentWorkspace();
+  const { channelsEnabled } = deriveChannelsSettings(workspace);
   const p = useWorkspacePaths();
   const { data: workspaces = EMPTY_WORKSPACES } = useQuery(workspaceListOptions());
   const { data: myInvitations = EMPTY_INVITATIONS } = useQuery(myInvitationListOptions());
@@ -364,6 +369,10 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const { data: pinnedItems = EMPTY_PINS } = useQuery({
     ...pinListOptions(wsId ?? "", userId ?? ""),
     enabled: !!wsId && !!userId,
+  });
+  const { data: channels = EMPTY_CHANNELS } = useQuery({
+    ...channelListOptions(wsId ?? ""),
+    enabled: !!wsId && channelsEnabled,
   });
   const deletePin = useDeletePin();
   const reorderPins = useReorderPins();
@@ -633,6 +642,66 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
+
+          {channelsEnabled && (
+            <Collapsible defaultOpen>
+              <SidebarGroup className="group/channels">
+                <SidebarGroupLabel
+                  render={<CollapsibleTrigger />}
+                  className="group/trigger cursor-pointer hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+                >
+                  <span>{t(($) => $.sidebar.channels_label)}</span>
+                  <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<AppLink href={p.channels()} />}
+                      className="ml-auto flex size-5 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground group-hover/channels:opacity-100"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <Plus className="size-3" />
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={4}>{t(($) => $.sidebar.create_channel)}</TooltipContent>
+                  </Tooltip>
+                </SidebarGroupLabel>
+                <CollapsibleContent>
+                  <SidebarGroupContent>
+                    <SidebarMenu className="gap-0.5">
+                      <SidebarMenuItem>
+                        <SidebarMenuButton
+                          size="sm"
+                          isActive={isNavActive(pathname, p.channels()) && pathname === p.channels()}
+                          render={<AppLink href={p.channels()} />}
+                          className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                        >
+                          <Hash className="size-3.5" />
+                          <span>{t(($) => $.sidebar.channels_all)}</span>
+                          {channels.length > 0 && (
+                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">{channels.length}</span>
+                          )}
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                      {channels.slice(0, 8).map((channel) => {
+                        const href = p.channelDetail(channel.slug);
+                        return (
+                          <SidebarMenuItem key={channel.id}>
+                            <SidebarMenuButton
+                              size="sm"
+                              isActive={isNavActive(pathname, href)}
+                              render={<AppLink href={href} />}
+                              className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                            >
+                              {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
+                              <span className="truncate">{channel.name}</span>
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        );
+                      })}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </CollapsibleContent>
+              </SidebarGroup>
+            </Collapsible>
+          )}
 
           {localPinned.length > 0 && (
             <Collapsible defaultOpen>

@@ -24,8 +24,10 @@ import { useRef } from "react";
 import { Tabs } from "expo-router";
 import { Image } from "expo-image";
 import { View } from "react-native";
+import { useQuery } from "@tanstack/react-query";
 import type { TriggerRef } from "@rn-primitives/dropdown-menu";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import {
@@ -50,6 +52,10 @@ export default function TabsLayout() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const inboxUnread = useInboxUnreadCount(wsId);
   const chatUnread = useChatUnreadSessionCount(wsId);
+  const { data: workspaces } = useQuery(workspaceListOptions());
+  const currentWorkspace = workspaces?.find((w) => w.id === wsId);
+  const channelsEnabled =
+    currentWorkspace?.settings?.channels_enabled === true;
 
   // Truncation aligned with web: inbox 99+, chat 9+ (matches sidebar +
   // ChatFab respectively). `undefined` makes React Navigation hide the
@@ -119,6 +125,20 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
+          name="channels"
+          options={{
+            title: "Channels",
+            href: channelsEnabled ? undefined : null,
+            tabBarIcon: ({ color, size, focused }) => (
+              <Image
+                source={focused ? "sf:number.circle.fill" : "sf:number.circle"}
+                tintColor={color}
+                style={{ width: size, height: size }}
+              />
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="more"
           options={{
             title: "More",
@@ -143,7 +163,10 @@ export default function TabsLayout() {
         />
       </Tabs>
 
-      <MoreTabDropdownAnchor triggerRef={moreTriggerRef} />
+      <MoreTabDropdownAnchor
+        triggerRef={moreTriggerRef}
+        tabCount={channelsEnabled ? 5 : 4}
+      />
     </View>
   );
 }

@@ -469,6 +469,33 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 			})
 
+			// Channels
+			r.Route("/api/channels", func(r chi.Router) {
+				r.Get("/", h.ListChannels)
+				r.Post("/", h.CreateChannel)
+				r.Get("/groups", h.ListChannelGroups)
+				r.Post("/groups", h.CreateChannelGroup)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetChannel)
+					r.Patch("/", h.UpdateChannel)
+					r.Delete("/", h.ArchiveChannel)
+					r.Post("/join", h.JoinChannel)
+					r.Get("/members", h.ListChannelMembers)
+					r.Post("/members", h.AddChannelMember)
+					r.Get("/sessions", h.ListChannelSessions)
+					r.Post("/sessions", h.CreateChannelSession)
+					r.Get("/issues", h.ListChannelIssues)
+					r.Post("/issues", h.LinkIssueToChannel)
+					r.Get("/approvals", h.ListChannelApprovals)
+					r.Post("/approvals", h.CreateChannelApproval)
+					r.Post("/approvals/{approvalId}/approve", h.ApproveChannelApproval)
+					r.Post("/approvals/{approvalId}/reject", h.RejectChannelApproval)
+					r.Get("/sessions/{sessionId}/agent-runs", h.ListChannelAgentRuns)
+					r.Get("/sessions/{sessionId}/messages", h.ListChannelMessages)
+					r.Post("/sessions/{sessionId}/messages", h.CreateChannelMessage)
+				})
+			})
+
 			// Squad leader evaluation (writes to activity_log)
 			r.Post("/api/issues/{id}/squad-evaluated", h.RecordSquadLeaderEvaluation)
 

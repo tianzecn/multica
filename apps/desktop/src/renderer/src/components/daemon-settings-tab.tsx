@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, type ReactNode } from "react";
+import { Copy as CopyIcon } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { cn } from "@multica/ui/lib/utils";
+import { toast } from "sonner";
 import type { DaemonPrefs, DaemonStatus } from "../../../shared/daemon-types";
 import {
   DAEMON_STATE_COLORS,
@@ -56,6 +58,21 @@ function DiagnosticsRow({
   );
 }
 
+function buildDiagnosticsText(status: DaemonStatus): string {
+  return [
+    `State: ${DAEMON_STATE_LABELS[status.state]}`,
+    `Uptime: ${status.uptime ? formatUptime(status.uptime) : "—"}`,
+    `PID: ${status.pid ?? "—"}`,
+    `Daemon ID: ${status.daemonId ?? "—"}`,
+    `Profile: ${status.profile || "default"}`,
+    `Server URL: ${status.serverUrl ?? "—"}`,
+    `Device name: ${status.deviceName ?? "—"}`,
+    `Workspaces: ${
+      typeof status.workspaceCount === "number" ? status.workspaceCount : "—"
+    }`,
+  ].join("\n");
+}
+
 export function DaemonSettingsTab() {
   const [prefs, setPrefs] = useState<DaemonPrefs>({ autoStart: true, autoStop: false });
   const [cliInstalled, setCliInstalled] = useState<boolean | null>(null);
@@ -78,6 +95,17 @@ export function DaemonSettingsTab() {
     },
     [],
   );
+
+  const handleCopyDiagnostics = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(buildDiagnosticsText(status));
+      toast.success("Daemon diagnostics copied");
+    } catch (err) {
+      toast.error("Failed to copy diagnostics", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [status]);
 
   return (
     <div>
@@ -139,7 +167,18 @@ export function DaemonSettingsTab() {
           on logs. These fields matter for support tickets and bug reports,
           not for everyday use. */}
       <div className="mt-8">
-        <h3 className="text-sm font-semibold">Diagnostics</h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Diagnostics</h3>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleCopyDiagnostics}
+          >
+            <CopyIcon className="size-3.5" />
+            Copy diagnostics
+          </Button>
+        </div>
         <p className="text-xs text-muted-foreground mt-1">
           Identification and connection details. Useful when filing a bug
           report or investigating why a runtime isn&apos;t showing up.

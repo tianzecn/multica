@@ -15,8 +15,23 @@ import type {
   CreateAgentRequest,
   AgentTemplate,
   AgentTemplateSummary,
+  AddChannelMemberRequest,
+  ApprovalRequest,
+  Channel,
+  ChannelAgentRun,
+  ChannelGroup,
+  ChannelIssue,
+  ChannelMember,
+  ChannelMessage,
+  ChannelSession,
+  CreateApprovalRequestRequest,
   CreateAgentFromTemplateRequest,
   CreateAgentFromTemplateResponse,
+  CreateChannelGroupRequest,
+  CreateChannelMessageRequest,
+  CreateChannelRequest,
+  CreateChannelSessionRequest,
+  UpdateChannelRequest,
   UpdateAgentRequest,
   AgentTask,
   AgentActivityBucket,
@@ -99,6 +114,7 @@ import type {
   Squad,
   SquadMember,
   SquadMemberStatusListResponse,
+  LinkIssueToChannelRequest,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
@@ -113,7 +129,28 @@ import { parseWithFallback } from "./schema";
 import {
   AgentTemplateSchema,
   AgentTemplateSummaryListSchema,
+  EMPTY_APPROVAL_REQUEST,
+  ApprovalRequestListSchema,
+  ApprovalRequestSchema,
   AttachmentResponseSchema,
+  EMPTY_CHANNEL,
+  EMPTY_CHANNEL_AGENT_RUNS,
+  EMPTY_CHANNEL_GROUP,
+  EMPTY_CHANNEL_MEMBER,
+  EMPTY_CHANNEL_MESSAGE,
+  EMPTY_CHANNEL_SESSION,
+  ChannelGroupListSchema,
+  ChannelGroupSchema,
+  ChannelAgentRunListSchema,
+  ChannelIssueListSchema,
+  ChannelListSchema,
+  ChannelMemberListSchema,
+  ChannelMemberSchema,
+  ChannelMessageListSchema,
+  ChannelMessageSchema,
+  ChannelSchema,
+  ChannelSessionListSchema,
+  ChannelSessionSchema,
   ChildIssuesResponseSchema,
   CommentsListSchema,
   CloudRuntimeNodeListSchema,
@@ -125,7 +162,14 @@ import {
   DashboardUsageDailyListSchema,
   EMPTY_AGENT_TEMPLATE_DETAIL,
   EMPTY_AGENT_TEMPLATE_SUMMARY_LIST,
+  EMPTY_APPROVAL_REQUESTS,
   EMPTY_ATTACHMENT,
+  EMPTY_CHANNEL_GROUPS,
+  EMPTY_CHANNEL_ISSUES,
+  EMPTY_CHANNEL_MEMBERS,
+  EMPTY_CHANNEL_MESSAGES,
+  EMPTY_CHANNEL_SESSIONS,
+  EMPTY_CHANNELS,
   EMPTY_CLOUD_RUNTIME_NODE,
   EMPTY_CLOUD_RUNTIME_NODE_LIST,
   EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE,
@@ -1448,6 +1492,185 @@ export class ApiClient {
       text: await res.text(),
       originalContentType: res.headers.get("X-Original-Content-Type") ?? "",
     };
+  }
+
+  // Channels
+  async listChannelGroups(): Promise<ChannelGroup[]> {
+    const raw = await this.fetch<unknown>("/api/channels/groups");
+    return parseWithFallback(raw, ChannelGroupListSchema, EMPTY_CHANNEL_GROUPS, {
+      endpoint: "GET /api/channels/groups",
+    });
+  }
+
+  async createChannelGroup(data: CreateChannelGroupRequest): Promise<ChannelGroup> {
+    const raw = await this.fetch<unknown>("/api/channels/groups", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelGroupSchema, EMPTY_CHANNEL_GROUP, {
+      endpoint: "POST /api/channels/groups",
+    });
+  }
+
+  async listChannels(): Promise<Channel[]> {
+    const raw = await this.fetch<unknown>("/api/channels");
+    return parseWithFallback(raw, ChannelListSchema, EMPTY_CHANNELS, {
+      endpoint: "GET /api/channels",
+    });
+  }
+
+  async getChannel(id: string): Promise<Channel> {
+    const raw = await this.fetch<unknown>(`/api/channels/${id}`);
+    return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
+      endpoint: "GET /api/channels/:id",
+    });
+  }
+
+  async createChannel(data: CreateChannelRequest): Promise<Channel> {
+    const raw = await this.fetch<unknown>("/api/channels", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
+      endpoint: "POST /api/channels",
+    });
+  }
+
+  async updateChannel(channelId: string, data: UpdateChannelRequest): Promise<Channel> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
+      endpoint: "PATCH /api/channels/:id",
+    });
+  }
+
+  async archiveChannel(channelId: string): Promise<Channel> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}`, {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
+      endpoint: "DELETE /api/channels/:id",
+    });
+  }
+
+  async joinChannel(channelId: string): Promise<ChannelMember> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/join`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, ChannelMemberSchema, EMPTY_CHANNEL_MEMBER, {
+      endpoint: "POST /api/channels/:id/join",
+    });
+  }
+
+  async listChannelMembers(channelId: string): Promise<ChannelMember[]> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/members`);
+    return parseWithFallback(raw, ChannelMemberListSchema, EMPTY_CHANNEL_MEMBERS, {
+      endpoint: "GET /api/channels/:id/members",
+    });
+  }
+
+  async addChannelMember(channelId: string, data: AddChannelMemberRequest): Promise<ChannelMember> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/members`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelMemberSchema, EMPTY_CHANNEL_MEMBER, {
+      endpoint: "POST /api/channels/:id/members",
+    });
+  }
+
+  async listChannelSessions(channelId: string): Promise<ChannelSession[]> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions`);
+    return parseWithFallback(raw, ChannelSessionListSchema, EMPTY_CHANNEL_SESSIONS, {
+      endpoint: "GET /api/channels/:id/sessions",
+    });
+  }
+
+  async createChannelSession(channelId: string, data: CreateChannelSessionRequest): Promise<ChannelSession> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelSessionSchema, EMPTY_CHANNEL_SESSION, {
+      endpoint: "POST /api/channels/:id/sessions",
+    });
+  }
+
+  async listChannelMessages(channelId: string, sessionId: string): Promise<ChannelMessage[]> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions/${sessionId}/messages`);
+    return parseWithFallback(raw, ChannelMessageListSchema, EMPTY_CHANNEL_MESSAGES, {
+      endpoint: "GET /api/channels/:id/sessions/:sessionId/messages",
+    });
+  }
+
+  async listChannelAgentRuns(channelId: string, sessionId: string): Promise<ChannelAgentRun[]> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions/${sessionId}/agent-runs`);
+    return parseWithFallback(raw, ChannelAgentRunListSchema, EMPTY_CHANNEL_AGENT_RUNS, {
+      endpoint: "GET /api/channels/:id/sessions/:sessionId/agent-runs",
+    });
+  }
+
+  async createChannelMessage(
+    channelId: string,
+    sessionId: string,
+    data: CreateChannelMessageRequest,
+  ): Promise<ChannelMessage> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions/${sessionId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelMessageSchema, EMPTY_CHANNEL_MESSAGE, {
+      endpoint: "POST /api/channels/:id/sessions/:sessionId/messages",
+    });
+  }
+
+  async listChannelIssues(channelId: string): Promise<ChannelIssue[]> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/issues`);
+    return parseWithFallback(raw, ChannelIssueListSchema, EMPTY_CHANNEL_ISSUES, {
+      endpoint: "GET /api/channels/:id/issues",
+    });
+  }
+
+  async linkIssueToChannel(channelId: string, data: LinkIssueToChannelRequest): Promise<void> {
+    await this.fetch(`/api/channels/${channelId}/issues`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listChannelApprovals(channelId: string): Promise<ApprovalRequest[]> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/approvals`);
+    return parseWithFallback(raw, ApprovalRequestListSchema, EMPTY_APPROVAL_REQUESTS, {
+      endpoint: "GET /api/channels/:id/approvals",
+    });
+  }
+
+  async createChannelApproval(channelId: string, data: CreateApprovalRequestRequest): Promise<ApprovalRequest> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/approvals`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ApprovalRequestSchema, EMPTY_APPROVAL_REQUEST, {
+      endpoint: "POST /api/channels/:id/approvals",
+    });
+  }
+
+  async resolveChannelApproval(
+    channelId: string,
+    approvalId: string,
+    status: "approved" | "rejected",
+    data?: { resolution_note?: string },
+  ): Promise<ApprovalRequest> {
+    const action = status === "approved" ? "approve" : "reject";
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/approvals/${approvalId}/${action}`, {
+      method: "POST",
+      body: JSON.stringify(data ?? {}),
+    });
+    return parseWithFallback(raw, ApprovalRequestSchema, EMPTY_APPROVAL_REQUEST, {
+      endpoint: "POST /api/channels/:id/approvals/:approvalId/:action",
+    });
   }
 
   // Projects

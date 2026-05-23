@@ -147,6 +147,13 @@ export default function WorkspaceLayout() {
           }}
         />
         <Stack.Screen
+          name="channel/[id]"
+          options={{
+            title: "Channel",
+            headerBackTitle: "Back",
+          }}
+        />
+        <Stack.Screen
           name="project/[id]/edit"
           options={{
             title: "Edit Project",
@@ -166,6 +173,14 @@ export default function WorkspaceLayout() {
           name="project/new"
           options={{
             title: "New Project",
+            presentation: "modal",
+            headerLeft: () => <ModalCloseButton />,
+          }}
+        />
+        <Stack.Screen
+          name="channel/new"
+          options={{
+            title: "New Channel",
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
