@@ -912,8 +912,26 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		Role:       "owner",
 	})
 
+	defaultSession, err := h.Queries.CreateChannelSession(r.Context(), db.CreateChannelSessionParams{
+		ChannelID:     channel.ID,
+		Title:         "开始讨论",
+		Summary:       "",
+		Status:        "active",
+		CreatedByType: "member",
+		CreatedByID:   member.UserID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create default channel session")
+		return
+	}
+
 	resp := channelToResponse(channel)
+	defaultSessionResp := channelSessionToResponse(defaultSession)
 	h.publish(protocol.EventChannelCreated, workspaceID, "member", uuidToString(member.UserID), map[string]any{"channel": resp})
+	h.publish(protocol.EventChannelSessionCreated, workspaceID, "member", uuidToString(member.UserID), map[string]any{
+		"channel_id": uuidToString(channel.ID),
+		"session":    defaultSessionResp,
+	})
 	writeJSON(w, http.StatusCreated, resp)
 }
 

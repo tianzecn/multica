@@ -19,7 +19,7 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
-import { AppLink } from "../navigation";
+import { AppLink, useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
 import { ActorAvatar } from "../common/actor-avatar";
@@ -243,6 +243,8 @@ function CreateChannelDialog({
 }) {
   const { t } = useT("channels");
   const createChannel = useCreateChannel();
+  const navigation = useNavigation();
+  const paths = useWorkspacePaths();
   const { data: agents = [] } = useQuery({
     ...agentListOptions(wsId),
     enabled: !!wsId && open,
@@ -301,7 +303,7 @@ function CreateChannelDialog({
         })),
       },
       {
-        onSuccess: () => {
+        onSuccess: (channel) => {
           setName("");
           setSlug("");
           setDescription("");
@@ -313,6 +315,7 @@ function CreateChannelDialog({
           setSelectedAgentIds([]);
           onOpenChange(false);
           toast.success(t(($) => $.toast.created));
+          navigation.push(paths.channelDetail(channel.slug));
         },
         onError: (error) => {
           toast.error(error instanceof Error ? error.message : t(($) => $.toast.create_failed));
