@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import type {
   ApprovalRequest,
+  ChannelDispatchPlan,
   ChannelMessage,
   ChannelSession,
 } from "@multica/core/types";
@@ -25,6 +26,7 @@ import { Text } from "@/components/ui/text";
 import {
   channelApprovalsOptions,
   channelDetailOptions,
+  channelDispatchPlansOptions,
   channelIssuesOptions,
   channelMessagesOptions,
   channelSessionsOptions,
@@ -32,8 +34,11 @@ import {
 import {
   useCreateChannelMessage,
   useCreateChannelSession,
+  useCancelChannelDispatchPlan,
   useLinkIssueToChannel,
+  useRetryChannelDispatchStep,
   useResolveChannelApproval,
+  useSkipChannelDispatchStep,
 } from "@/data/mutations/channels";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { THEME } from "@/lib/theme";
@@ -72,6 +77,9 @@ export default function ChannelDetailScreen() {
   const { data: messages = [], isLoading: messagesLoading } = useQuery(
     channelMessagesOptions(wsId, channelId, activeSessionId),
   );
+  const { data: dispatchPlans = [] } = useQuery(
+    channelDispatchPlansOptions(wsId, channelId, activeSessionId),
+  );
   const { data: issues = [] } = useQuery(
     channelIssuesOptions(wsId, channelId),
   );
@@ -84,6 +92,9 @@ export default function ChannelDetailScreen() {
   const linkIssue = useLinkIssueToChannel(channelId);
   const approve = useResolveChannelApproval(channelId, "approved");
   const reject = useResolveChannelApproval(channelId, "rejected");
+  const cancelPlan = useCancelChannelDispatchPlan(channelId, activeSessionId);
+  const retryStep = useRetryChannelDispatchStep(channelId, activeSessionId);
+  const skipStep = useSkipChannelDispatchStep(channelId, activeSessionId);
   const [draft, setDraft] = useState("");
 
   const createSessionWithTitle = useCallback(
@@ -265,7 +276,33 @@ export default function ChannelDetailScreen() {
           />
         }
         contentContainerClassName="pb-4"
-        renderItem={({ item }) => <MessageBubble message={item} />}
+        renderItem={({ item }) => (
+          <View>
+            <MessageBubble message={item} />
+            {dispatchPlans
+              .filter((plan) => plan.trigger_message_id === item.id)
+              .map((plan) => (
+                <DispatchPlanCard
+                  key={plan.id}
+                  plan={plan}
+                  cancelling={cancelPlan.isPending}
+                  retrying={retryStep.isPending}
+                  skipping={skipStep.isPending}
+                  onCancel={() => cancelPlan.mutate(plan.id)}
+                  onRetry={(stepId) =>
+                    retryStep.mutate({ planId: plan.id, stepId })
+                  }
+                  onSkip={(stepId) =>
+                    skipStep.mutate({
+                      planId: plan.id,
+                      stepId,
+                      reason: "Skipped from mobile.",
+                    })
+                  }
+                />
+              ))}
+          </View>
+        )}
       />
 
       <View className="border-t border-border bg-background px-3 py-2 gap-2">
@@ -435,6 +472,89 @@ function MessageBubble({ message }: { message: ChannelMessage }) {
           {message.content}
         </Text>
       </View>
+    </View>
+  );
+}
+
+function DispatchPlanCard({
+  plan,
+  cancelling,
+  retrying,
+  skipping,
+  onCancel,
+  onRetry,
+  onSkip,
+}: {
+  plan: ChannelDispatchPlan;
+  cancelling: boolean;
+  retrying: boolean;
+  skipping: boolean;
+  onCancel: () => void;
+  onRetry: (stepId: string) => void;
+  onSkip: (stepId: string) => void;
+}) {
+  const active = ["queued", "running", "paused"].includes(plan.status);
+  return (
+    <View className="px-4 py-1.5">
+      <Card className="gap-3 border-dashed">
+        <View className="flex-row items-center gap-2">
+          <Ionicons name="git-branch-outline" size={16} color="#64748b" />
+          <Text className="flex-1 text-sm font-semibold text-foreground">
+            Dispatch plan
+          </Text>
+          <Text className="text-xs text-muted-foreground">{plan.mode}</Text>
+          <Text className="text-xs text-muted-foreground">{plan.status}</Text>
+        </View>
+        <Text className="text-xs text-muted-foreground" numberOfLines={2}>
+          {Math.round(plan.confidence * 100)}% · {plan.reason}
+        </Text>
+        <View className="gap-2">
+          {plan.steps.map((step) => {
+            const status = step.task_status || step.status;
+            const canRetry = ["failed", "skipped", "cancelled"].includes(status);
+            const canSkip = ["pending", "queued"].includes(step.status);
+            return (
+              <View key={step.id} className="rounded-md bg-secondary/40 p-2 gap-2">
+                <View className="flex-row items-center gap-2">
+                  <Text className="flex-1 text-xs font-medium text-foreground" numberOfLines={1}>
+                    {step.role === "summarizer" ? "Summary" : "AI"} · {step.agent_id.slice(0, 8)}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">{status}</Text>
+                </View>
+                {(canRetry || canSkip) && (
+                  <View className="flex-row gap-2">
+                    {canRetry && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={retrying}
+                        onPress={() => onRetry(step.id)}
+                      >
+                        <Text>Retry</Text>
+                      </Button>
+                    )}
+                    {canSkip && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={skipping}
+                        onPress={() => onSkip(step.id)}
+                      >
+                        <Text>Skip</Text>
+                      </Button>
+                    )}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+        {active && (
+          <Button variant="outline" disabled={cancelling} onPress={onCancel}>
+            <Text>Cancel plan</Text>
+          </Button>
+        )}
+      </Card>
     </View>
   );
 }

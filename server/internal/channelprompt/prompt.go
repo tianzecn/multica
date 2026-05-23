@@ -12,6 +12,10 @@ type Message struct {
 }
 
 func Build(channel db.Channel, session db.ChannelSession, content string, recent []Message) string {
+	return BuildWithInstruction(channel, session, content, recent, "")
+}
+
+func BuildWithInstruction(channel db.Channel, session db.ChannelSession, content string, recent []Message, instruction string) string {
 	var builder strings.Builder
 	builder.WriteString("You are participating as an AI teammate in a Multica channel.\n")
 	builder.WriteString("Reply directly to the channel conversation. Your final answer will be mirrored back into the channel.\n")
@@ -62,6 +66,11 @@ func Build(channel db.Channel, session db.ChannelSession, content string, recent
 			builder.WriteString(text)
 			builder.WriteString("\n")
 		}
+	}
+	if strings.TrimSpace(instruction) != "" {
+		builder.WriteString("\nDispatch step instruction:\n")
+		builder.WriteString(strings.TrimSpace(instruction))
+		builder.WriteString("\n")
 	}
 	builder.WriteString("\nUser message:\n")
 	builder.WriteString(content)

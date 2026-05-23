@@ -2,26 +2,32 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Bot, Check, Hash, Link2, Loader2, Lock, Plus, Send, ShieldCheck, Terminal, Users, X } from "lucide-react";
+import { ArrowLeft, Bot, Check, GitBranch, Hash, Link2, Loader2, Lock, Plus, RotateCcw, Send, ShieldCheck, SkipForward, Terminal, UserPlus, Users, X } from "lucide-react";
 import {
   channelAgentRunsOptions,
   channelApprovalsOptions,
   channelDetailOptions,
+  channelDispatchPlansOptions,
   channelIssuesOptions,
   channelMembersOptions,
   channelMessagesOptions,
   channelSessionsOptions,
+  useAddAgentToChannelDispatchPlan,
   useAddChannelMember,
+  useCancelChannelDispatchPlan,
+  useChangeChannelDispatchPlanMode,
   useCreateChannelMessage,
   useCreateChannelSession,
   useLinkIssueToChannel,
+  useRetryChannelDispatchStep,
   useResolveApprovalRequest,
+  useSkipChannelDispatchStep,
 } from "@multica/core/channels";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
-import type { Agent, ApprovalRequest, ChannelAgentRun, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, TaskMessagePayload } from "@multica/core/types";
+import type { Agent, ApprovalRequest, ChannelAgentRun, ChannelDispatchMode, ChannelDispatchPlan, ChannelDispatchStep, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, TaskMessagePayload } from "@multica/core/types";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -39,6 +45,7 @@ const EMPTY_ISSUES: ChannelIssue[] = [];
 const EMPTY_APPROVALS: ApprovalRequest[] = [];
 const EMPTY_CHANNEL_MEMBERS: ChannelMember[] = [];
 const EMPTY_CHANNEL_AGENT_RUNS: ChannelAgentRun[] = [];
+const EMPTY_CHANNEL_DISPATCH_PLANS: ChannelDispatchPlan[] = [];
 const EMPTY_AGENTS: Agent[] = [];
 const EMPTY_WORKSPACE_MEMBERS: MemberWithUser[] = [];
 
@@ -217,6 +224,10 @@ function MessagePane({
     ...channelAgentRunsOptions(wsId, channelId, sessionId),
     enabled: !!wsId && !!channelId && !!sessionId,
   });
+  const { data: dispatchPlans = EMPTY_CHANNEL_DISPATCH_PLANS } = useQuery({
+    ...channelDispatchPlansOptions(wsId, channelId, sessionId),
+    enabled: !!wsId && !!channelId && !!sessionId,
+  });
   const createMessage = useCreateChannelMessage(channelId, sessionId);
   const session = sessions.find((item) => item.id === sessionId);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
@@ -248,6 +259,15 @@ function MessagePane({
     }
     return grouped;
   }, [agentRuns, messages]);
+  const plansByTriggerMessageId = useMemo(() => {
+    const grouped = new Map<string, ChannelDispatchPlan[]>();
+    for (const plan of dispatchPlans) {
+      const current = grouped.get(plan.trigger_message_id) ?? [];
+      current.push(plan);
+      grouped.set(plan.trigger_message_id, current);
+    }
+    return grouped;
+  }, [dispatchPlans]);
   const orphanActiveRuns = useMemo(() => {
     if (activeRunsByUserMessageId.size === 0) return EMPTY_CHANNEL_AGENT_RUNS;
     const visibleMessageIds = new Set(messages.map((message) => message.id));
@@ -297,6 +317,16 @@ function MessagePane({
                       agentById={agentById}
                       memberByUserId={memberByUserId}
                     />
+                    {(plansByTriggerMessageId.get(message.id) ?? []).map((plan) => (
+                      <ChannelDispatchPlanCard
+                        key={plan.id}
+                        plan={plan}
+                        channelId={channelId}
+                        sessionId={sessionId}
+                        agentById={agentById}
+                        channelAgents={channelAgentMembers}
+                      />
+                    ))}
                     {(activeRunsByUserMessageId.get(message.id) ?? []).map((run) => (
                       <ChannelAgentRunCard
                         key={run.id}
@@ -363,6 +393,182 @@ const ACTIVE_CHANNEL_TASK_STATUSES = new Set(["queued", "dispatched", "running"]
 
 function isActiveChannelAgentRun(run: ChannelAgentRun) {
   return ACTIVE_CHANNEL_TASK_STATUSES.has(run.task_status || run.status);
+}
+
+function ChannelDispatchPlanCard({
+  plan,
+  channelId,
+  sessionId,
+  agentById,
+  channelAgents,
+}: {
+  plan: ChannelDispatchPlan;
+  channelId: string;
+  sessionId: string;
+  agentById: Map<string, Agent>;
+  channelAgents: Agent[];
+}) {
+  const [expanded, setExpanded] = useState(() => plan.status !== "completed");
+  const [agentToAdd, setAgentToAdd] = useState("");
+  const cancelPlan = useCancelChannelDispatchPlan(channelId, sessionId);
+  const retryStep = useRetryChannelDispatchStep(channelId, sessionId);
+  const skipStep = useSkipChannelDispatchStep(channelId, sessionId);
+  const addAgent = useAddAgentToChannelDispatchPlan(channelId, sessionId);
+  const changeMode = useChangeChannelDispatchPlanMode(channelId, sessionId);
+  const activeCount = plan.steps.filter((step) => ["pending", "queued", "running"].includes(step.task_status || step.status)).length;
+  const availableAgents = channelAgents.filter((agent) => !plan.steps.some((step) => step.agent_id === agent.id));
+  const disabled = cancelPlan.isPending || retryStep.isPending || skipStep.isPending || addAgent.isPending || changeMode.isPending;
+
+  useEffect(() => {
+    if (plan.status !== "completed") setExpanded(true);
+  }, [plan.status]);
+
+  const addSelectedAgent = () => {
+    if (!agentToAdd) return;
+    addAgent.mutate({ planId: plan.id, agent_id: agentToAdd }, { onSuccess: () => setAgentToAdd("") });
+  };
+
+  return (
+    <div className="max-w-3xl rounded-lg border bg-muted/25 p-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full min-w-0 items-center gap-2 text-left"
+      >
+        <GitBranch className="size-4 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">协作计划</span>
+        <Badge variant="outline" className="h-5 rounded-[4px] px-1.5 text-[10px]">{plan.mode}</Badge>
+        <Badge variant={plan.status === "paused" || plan.status === "failed" ? "destructive" : "secondary"} className="h-5 rounded-[4px] px-1.5 text-[10px]">
+          {plan.status}
+        </Badge>
+      </button>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>{Math.round(plan.confidence * 100)}% · {plan.planner_source}</span>
+        <span>{plan.participant_count} 位 AI</span>
+        <span>{activeCount} 个运行中</span>
+        <span>{formatDispatchElapsed(plan.elapsed_ms)}</span>
+      </div>
+      {expanded && (
+        <div className="mt-3 grid gap-3">
+          {plan.reason && <p className="text-xs leading-5 text-muted-foreground">{plan.reason}</p>}
+          <div className="flex flex-wrap gap-1.5">
+            {(["single", "parallel", "serial", "roundtable"] as ChannelDispatchMode[]).map((mode) => (
+              <Button
+                key={mode}
+                size="sm"
+                variant={plan.mode === mode ? "secondary" : "outline"}
+                className="h-7 rounded-md px-2 text-xs"
+                disabled={disabled || plan.mode === mode}
+                onClick={() => changeMode.mutate({ planId: plan.id, mode })}
+              >
+                {mode}
+              </Button>
+            ))}
+            {plan.status !== "completed" && plan.status !== "cancelled" && (
+              <Button size="sm" variant="outline" className="ml-auto h-7 rounded-md px-2 text-xs" disabled={disabled} onClick={() => cancelPlan.mutate(plan.id)}>
+                <X className="mr-1 size-3" />取消
+              </Button>
+            )}
+          </div>
+          <div className="grid gap-2">
+            {plan.steps.map((step) => (
+              <ChannelDispatchStepRow
+                key={step.id}
+                step={step}
+                agent={agentById.get(step.agent_id)}
+                disabled={disabled}
+                onRetry={() => retryStep.mutate({ planId: plan.id, stepId: step.id })}
+                onSkip={() => skipStep.mutate({ planId: plan.id, stepId: step.id, reason: "Skipped from plan card." })}
+              />
+            ))}
+          </div>
+          {availableAgents.length > 0 && (
+            <div className="flex gap-2">
+              <select
+                value={agentToAdd}
+                onChange={(event) => setAgentToAdd(event.target.value)}
+                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs"
+              >
+                <option value="">追加 AI...</option>
+                {availableAgents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>{agent.name}</option>
+                ))}
+              </select>
+              <Button size="sm" variant="outline" className="h-8" disabled={!agentToAdd || disabled} onClick={addSelectedAgent}>
+                <UserPlus className="mr-1 size-3.5" />追加
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChannelDispatchStepRow({
+  step,
+  agent,
+  disabled,
+  onRetry,
+  onSkip,
+}: {
+  step: ChannelDispatchStep;
+  agent: Agent | undefined;
+  disabled: boolean;
+  onRetry: () => void;
+  onSkip: () => void;
+}) {
+  const status = step.task_status || step.status;
+  const isWaiting = status === "pending";
+  const isActive = ["queued", "dispatched", "running"].includes(status);
+  const canRetry = ["failed", "skipped", "cancelled"].includes(step.status) || ["failed", "cancelled"].includes(status);
+  const canSkip = ["pending", "queued"].includes(step.status);
+  return (
+    <div className="flex min-w-0 items-start gap-2 rounded-md border bg-background p-2">
+      <ActorAvatar actorType="agent" actorId={step.agent_id} size={22} showStatusDot enableHoverCard />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{agent?.name ?? "AI 同事"}</span>
+          <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">{step.role === "summarizer" ? "总结" : "AI"}</Badge>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">{statusLabel(status)}</span>
+        </div>
+        {(step.skip_reason || step.error || step.instruction) && (
+          <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+            {step.error || step.skip_reason || step.instruction}
+          </p>
+        )}
+      </div>
+      {isActive && <Loader2 className="mt-1 size-3.5 animate-spin text-muted-foreground" />}
+      {isWaiting && <span className="mt-1 size-2 rounded-full bg-muted-foreground/40" />}
+      {canRetry && (
+        <Button size="icon" variant="ghost" className="size-7" disabled={disabled} onClick={onRetry}>
+          <RotateCcw className="size-3.5" />
+        </Button>
+      )}
+      {canSkip && (
+        <Button size="icon" variant="ghost" className="size-7" disabled={disabled} onClick={onSkip}>
+          <SkipForward className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function statusLabel(status: string) {
+  if (status === "pending") return "等待依赖";
+  if (status === "queued") return "排队";
+  if (status === "dispatched") return "连接运行时";
+  if (status === "running") return "工作中";
+  if (status === "completed") return "完成";
+  if (status === "skipped") return "跳过";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "取消";
+  return status || "未知";
+}
+
+function formatDispatchElapsed(ms: number) {
+  if (!ms) return "未计时";
+  return formatChannelElapsed(Math.floor(ms / 1000));
 }
 
 function ChannelAgentRunCard({
@@ -544,9 +750,14 @@ function ContextPane({
     ...channelApprovalsOptions(wsId, channelId),
     enabled: !!wsId && !!channelId,
   });
+  const { data: dispatchPlans = EMPTY_CHANNEL_DISPATCH_PLANS } = useQuery({
+    ...channelDispatchPlansOptions(wsId, channelId, sessionId),
+    enabled: !!wsId && !!channelId && !!sessionId,
+  });
   const linkIssue = useLinkIssueToChannel(channelId);
   const addMember = useAddChannelMember(channelId);
   const pendingApprovals = approvals.filter((approval) => approval.status === "pending");
+  const activePlans = dispatchPlans.filter((plan) => ["queued", "running", "paused"].includes(plan.status));
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const memberByUserId = useMemo(
     () => new Map(workspaceMembers.map((member) => [member.user_id, member])),
@@ -638,6 +849,29 @@ function ContextPane({
                 添加
               </Button>
             </div>
+          )}
+        </div>
+      </section>
+      <section className="border-b p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <GitBranch className="size-4 text-muted-foreground" />
+          <h2 className="text-sm font-medium">当前协作</h2>
+          <span className="ml-auto font-mono text-xs text-muted-foreground">{activePlans.length}</span>
+        </div>
+        <div className="grid gap-2">
+          {activePlans.length === 0 ? (
+            <p className="text-xs leading-5 text-muted-foreground">没有正在执行的协作计划。</p>
+          ) : (
+            activePlans.slice(0, 4).map((plan) => (
+              <div key={plan.id} className="rounded-md border bg-background p-2">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="h-5 rounded-[4px] px-1.5 text-[10px]">{plan.mode}</Badge>
+                  <span className="truncate text-xs text-muted-foreground">{plan.status}</span>
+                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">{plan.steps.length}</span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{plan.reason}</p>
+              </div>
+            ))
           )}
         </div>
       </section>

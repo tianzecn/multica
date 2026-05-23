@@ -47,7 +47,7 @@ const archiveChannel = `-- name: ArchiveChannel :one
 UPDATE channel
 SET archived_at = now(), updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity
 `
 
 type ArchiveChannelParams struct {
@@ -74,6 +74,67 @@ func (q *Queries) ArchiveChannel(ctx context.Context, arg ArchiveChannelParams) 
 		&i.Position,
 		&i.CreatedBy,
 		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Proactivity,
+	)
+	return i, err
+}
+
+const cancelPendingChannelDispatchSteps = `-- name: CancelPendingChannelDispatchSteps :execrows
+UPDATE channel_dispatch_step
+SET status = 'cancelled',
+    skip_reason = CASE WHEN skip_reason = '' THEN 'Plan cancelled.' ELSE skip_reason END,
+    completed_at = now(),
+    updated_at = now()
+WHERE plan_id = $1
+  AND status = 'pending'
+`
+
+func (q *Queries) CancelPendingChannelDispatchSteps(ctx context.Context, planID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelPendingChannelDispatchSteps, planID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const changeChannelDispatchPlanMode = `-- name: ChangeChannelDispatchPlanMode :one
+UPDATE channel_dispatch_plan
+SET mode = $3,
+    updated_at = now()
+WHERE id = $1 AND channel_id = $2
+RETURNING id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at
+`
+
+type ChangeChannelDispatchPlanModeParams struct {
+	ID        pgtype.UUID `json:"id"`
+	ChannelID pgtype.UUID `json:"channel_id"`
+	Mode      string      `json:"mode"`
+}
+
+func (q *Queries) ChangeChannelDispatchPlanMode(ctx context.Context, arg ChangeChannelDispatchPlanModeParams) (ChannelDispatchPlan, error) {
+	row := q.db.QueryRow(ctx, changeChannelDispatchPlanMode, arg.ID, arg.ChannelID, arg.Mode)
+	var i ChannelDispatchPlan
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.Mode,
+		&i.Status,
+		&i.Confidence,
+		&i.PlannerSource,
+		&i.Reason,
+		&i.ParticipantCount,
+		&i.RunCount,
+		&i.TotalInputTokens,
+		&i.TotalOutputTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheWriteTokens,
+		&i.ElapsedMs,
+		&i.StartedAt,
+		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -148,14 +209,14 @@ func (q *Queries) CreateApprovalRequest(ctx context.Context, arg CreateApprovalR
 const createChannel = `-- name: CreateChannel :one
 INSERT INTO channel (
     workspace_id, group_id, slug, name, description, visibility,
-    instructions, summary, default_project_id, default_assignee_type,
+    proactivity, instructions, summary, default_project_id, default_assignee_type,
     default_assignee_id, position, created_by
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10,
-    $11, $12, $13
+    $7, $8, $9, $10, $11,
+    $12, $13, $14
 )
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity
 `
 
 type CreateChannelParams struct {
@@ -165,6 +226,7 @@ type CreateChannelParams struct {
 	Name                string      `json:"name"`
 	Description         string      `json:"description"`
 	Visibility          string      `json:"visibility"`
+	Proactivity         string      `json:"proactivity"`
 	Instructions        string      `json:"instructions"`
 	Summary             string      `json:"summary"`
 	DefaultProjectID    pgtype.UUID `json:"default_project_id"`
@@ -182,6 +244,7 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		arg.Name,
 		arg.Description,
 		arg.Visibility,
+		arg.Proactivity,
 		arg.Instructions,
 		arg.Summary,
 		arg.DefaultProjectID,
@@ -209,6 +272,7 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Proactivity,
 	)
 	return i, err
 }
@@ -216,12 +280,12 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 const createChannelAgentRun = `-- name: CreateChannelAgentRun :one
 INSERT INTO channel_agent_run (
     channel_id, channel_session_id, user_message_id, agent_id,
-    chat_session_id, chat_user_message_id, task_id
+    chat_session_id, chat_user_message_id, task_id, dispatch_step_id
 ) VALUES (
     $1, $2, $3, $4,
-    $5, $6, $7
+    $5, $6, $7, $8
 )
-RETURNING id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at
+RETURNING id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id
 `
 
 type CreateChannelAgentRunParams struct {
@@ -232,6 +296,7 @@ type CreateChannelAgentRunParams struct {
 	ChatSessionID     pgtype.UUID `json:"chat_session_id"`
 	ChatUserMessageID pgtype.UUID `json:"chat_user_message_id"`
 	TaskID            pgtype.UUID `json:"task_id"`
+	DispatchStepID    pgtype.UUID `json:"dispatch_step_id"`
 }
 
 func (q *Queries) CreateChannelAgentRun(ctx context.Context, arg CreateChannelAgentRunParams) (ChannelAgentRun, error) {
@@ -243,6 +308,7 @@ func (q *Queries) CreateChannelAgentRun(ctx context.Context, arg CreateChannelAg
 		arg.ChatSessionID,
 		arg.ChatUserMessageID,
 		arg.TaskID,
+		arg.DispatchStepID,
 	)
 	var i ChannelAgentRun
 	err := row.Scan(
@@ -257,6 +323,7 @@ func (q *Queries) CreateChannelAgentRun(ctx context.Context, arg CreateChannelAg
 		&i.Status,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.DispatchStepID,
 	)
 	return i, err
 }
@@ -288,6 +355,178 @@ func (q *Queries) CreateChannelAgentThread(ctx context.Context, arg CreateChanne
 		&i.ChannelSessionID,
 		&i.AgentID,
 		&i.ChatSessionID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createChannelDispatchFeedback = `-- name: CreateChannelDispatchFeedback :one
+INSERT INTO channel_dispatch_feedback (
+    plan_id, step_id, actor_type, actor_id, action, before_mode, after_mode, payload
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8
+)
+RETURNING id, plan_id, step_id, actor_type, actor_id, action, before_mode, after_mode, payload, created_at
+`
+
+type CreateChannelDispatchFeedbackParams struct {
+	PlanID     pgtype.UUID `json:"plan_id"`
+	StepID     pgtype.UUID `json:"step_id"`
+	ActorType  string      `json:"actor_type"`
+	ActorID    pgtype.UUID `json:"actor_id"`
+	Action     string      `json:"action"`
+	BeforeMode pgtype.Text `json:"before_mode"`
+	AfterMode  pgtype.Text `json:"after_mode"`
+	Payload    []byte      `json:"payload"`
+}
+
+func (q *Queries) CreateChannelDispatchFeedback(ctx context.Context, arg CreateChannelDispatchFeedbackParams) (ChannelDispatchFeedback, error) {
+	row := q.db.QueryRow(ctx, createChannelDispatchFeedback,
+		arg.PlanID,
+		arg.StepID,
+		arg.ActorType,
+		arg.ActorID,
+		arg.Action,
+		arg.BeforeMode,
+		arg.AfterMode,
+		arg.Payload,
+	)
+	var i ChannelDispatchFeedback
+	err := row.Scan(
+		&i.ID,
+		&i.PlanID,
+		&i.StepID,
+		&i.ActorType,
+		&i.ActorID,
+		&i.Action,
+		&i.BeforeMode,
+		&i.AfterMode,
+		&i.Payload,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createChannelDispatchPlan = `-- name: CreateChannelDispatchPlan :one
+INSERT INTO channel_dispatch_plan (
+    channel_id, channel_session_id, trigger_message_id, mode, status,
+    confidence, planner_source, reason, participant_count
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9
+)
+RETURNING id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at
+`
+
+type CreateChannelDispatchPlanParams struct {
+	ChannelID        pgtype.UUID `json:"channel_id"`
+	ChannelSessionID pgtype.UUID `json:"channel_session_id"`
+	TriggerMessageID pgtype.UUID `json:"trigger_message_id"`
+	Mode             string      `json:"mode"`
+	Status           string      `json:"status"`
+	Confidence       float64     `json:"confidence"`
+	PlannerSource    string      `json:"planner_source"`
+	Reason           string      `json:"reason"`
+	ParticipantCount int32       `json:"participant_count"`
+}
+
+func (q *Queries) CreateChannelDispatchPlan(ctx context.Context, arg CreateChannelDispatchPlanParams) (ChannelDispatchPlan, error) {
+	row := q.db.QueryRow(ctx, createChannelDispatchPlan,
+		arg.ChannelID,
+		arg.ChannelSessionID,
+		arg.TriggerMessageID,
+		arg.Mode,
+		arg.Status,
+		arg.Confidence,
+		arg.PlannerSource,
+		arg.Reason,
+		arg.ParticipantCount,
+	)
+	var i ChannelDispatchPlan
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.Mode,
+		&i.Status,
+		&i.Confidence,
+		&i.PlannerSource,
+		&i.Reason,
+		&i.ParticipantCount,
+		&i.RunCount,
+		&i.TotalInputTokens,
+		&i.TotalOutputTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheWriteTokens,
+		&i.ElapsedMs,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createChannelDispatchStep = `-- name: CreateChannelDispatchStep :one
+INSERT INTO channel_dispatch_step (
+    plan_id, channel_id, channel_session_id, trigger_message_id,
+    agent_id, position, role, status, instruction, depends_on_step_ids,
+    skip_reason
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8, $9, $10,
+    $11
+)
+RETURNING id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at
+`
+
+type CreateChannelDispatchStepParams struct {
+	PlanID           pgtype.UUID   `json:"plan_id"`
+	ChannelID        pgtype.UUID   `json:"channel_id"`
+	ChannelSessionID pgtype.UUID   `json:"channel_session_id"`
+	TriggerMessageID pgtype.UUID   `json:"trigger_message_id"`
+	AgentID          pgtype.UUID   `json:"agent_id"`
+	Position         int32         `json:"position"`
+	Role             string        `json:"role"`
+	Status           string        `json:"status"`
+	Instruction      string        `json:"instruction"`
+	DependsOnStepIds []pgtype.UUID `json:"depends_on_step_ids"`
+	SkipReason       string        `json:"skip_reason"`
+}
+
+func (q *Queries) CreateChannelDispatchStep(ctx context.Context, arg CreateChannelDispatchStepParams) (ChannelDispatchStep, error) {
+	row := q.db.QueryRow(ctx, createChannelDispatchStep,
+		arg.PlanID,
+		arg.ChannelID,
+		arg.ChannelSessionID,
+		arg.TriggerMessageID,
+		arg.AgentID,
+		arg.Position,
+		arg.Role,
+		arg.Status,
+		arg.Instruction,
+		arg.DependsOnStepIds,
+		arg.SkipReason,
+	)
+	var i ChannelDispatchStep
+	err := row.Scan(
+		&i.ID,
+		&i.PlanID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.AgentID,
+		&i.Position,
+		&i.Role,
+		&i.Status,
+		&i.Instruction,
+		&i.DependsOnStepIds,
+		&i.SkipReason,
+		&i.Error,
+		&i.StartedAt,
+		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -424,7 +663,7 @@ SET chat_session_id = $2,
 WHERE id = $1
   AND status = 'queued'
   AND task_id IS NULL
-RETURNING id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at
+RETURNING id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id
 `
 
 type DispatchQueuedChannelAgentRunParams struct {
@@ -454,6 +693,7 @@ func (q *Queries) DispatchQueuedChannelAgentRun(ctx context.Context, arg Dispatc
 		&i.Status,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.DispatchStepID,
 	)
 	return i, err
 }
@@ -503,8 +743,35 @@ func (q *Queries) GetApprovalRequestInChannel(ctx context.Context, arg GetApprov
 	return i, err
 }
 
+const getChannelAgentRunByDispatchStep = `-- name: GetChannelAgentRunByDispatchStep :one
+SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
+WHERE dispatch_step_id = $1
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetChannelAgentRunByDispatchStep(ctx context.Context, dispatchStepID pgtype.UUID) (ChannelAgentRun, error) {
+	row := q.db.QueryRow(ctx, getChannelAgentRunByDispatchStep, dispatchStepID)
+	var i ChannelAgentRun
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.UserMessageID,
+		&i.AgentID,
+		&i.ChatSessionID,
+		&i.ChatUserMessageID,
+		&i.TaskID,
+		&i.Status,
+		&i.CreatedAt,
+		&i.CompletedAt,
+		&i.DispatchStepID,
+	)
+	return i, err
+}
+
 const getChannelAgentRunByTask = `-- name: GetChannelAgentRunByTask :one
-SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at FROM channel_agent_run
+SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
 WHERE task_id = $1
 `
 
@@ -523,6 +790,7 @@ func (q *Queries) GetChannelAgentRunByTask(ctx context.Context, taskID pgtype.UU
 		&i.Status,
 		&i.CreatedAt,
 		&i.CompletedAt,
+		&i.DispatchStepID,
 	)
 	return i, err
 }
@@ -553,7 +821,7 @@ func (q *Queries) GetChannelAgentThread(ctx context.Context, arg GetChannelAgent
 }
 
 const getChannelByID = `-- name: GetChannelByID :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity FROM channel
 WHERE id = $1 AND archived_at IS NULL
 `
 
@@ -578,12 +846,13 @@ func (q *Queries) GetChannelByID(ctx context.Context, id pgtype.UUID) (Channel, 
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Proactivity,
 	)
 	return i, err
 }
 
 const getChannelBySlugInWorkspace = `-- name: GetChannelBySlugInWorkspace :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity FROM channel
 WHERE slug = $1 AND workspace_id = $2 AND archived_at IS NULL
 `
 
@@ -611,6 +880,146 @@ func (q *Queries) GetChannelBySlugInWorkspace(ctx context.Context, arg GetChanne
 		&i.Position,
 		&i.CreatedBy,
 		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Proactivity,
+	)
+	return i, err
+}
+
+const getChannelDispatchPlanByID = `-- name: GetChannelDispatchPlanByID :one
+SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
+WHERE id = $1
+`
+
+func (q *Queries) GetChannelDispatchPlanByID(ctx context.Context, id pgtype.UUID) (ChannelDispatchPlan, error) {
+	row := q.db.QueryRow(ctx, getChannelDispatchPlanByID, id)
+	var i ChannelDispatchPlan
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.Mode,
+		&i.Status,
+		&i.Confidence,
+		&i.PlannerSource,
+		&i.Reason,
+		&i.ParticipantCount,
+		&i.RunCount,
+		&i.TotalInputTokens,
+		&i.TotalOutputTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheWriteTokens,
+		&i.ElapsedMs,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelDispatchPlanInChannel = `-- name: GetChannelDispatchPlanInChannel :one
+SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
+WHERE id = $1 AND channel_id = $2
+`
+
+type GetChannelDispatchPlanInChannelParams struct {
+	ID        pgtype.UUID `json:"id"`
+	ChannelID pgtype.UUID `json:"channel_id"`
+}
+
+func (q *Queries) GetChannelDispatchPlanInChannel(ctx context.Context, arg GetChannelDispatchPlanInChannelParams) (ChannelDispatchPlan, error) {
+	row := q.db.QueryRow(ctx, getChannelDispatchPlanInChannel, arg.ID, arg.ChannelID)
+	var i ChannelDispatchPlan
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.Mode,
+		&i.Status,
+		&i.Confidence,
+		&i.PlannerSource,
+		&i.Reason,
+		&i.ParticipantCount,
+		&i.RunCount,
+		&i.TotalInputTokens,
+		&i.TotalOutputTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheWriteTokens,
+		&i.ElapsedMs,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelDispatchStepByTask = `-- name: GetChannelDispatchStepByTask :one
+SELECT cds.id, cds.plan_id, cds.channel_id, cds.channel_session_id, cds.trigger_message_id, cds.agent_id, cds.position, cds.role, cds.status, cds.instruction, cds.depends_on_step_ids, cds.skip_reason, cds.error, cds.started_at, cds.completed_at, cds.created_at, cds.updated_at FROM channel_dispatch_step cds
+JOIN channel_agent_run car ON car.dispatch_step_id = cds.id
+WHERE car.task_id = $1
+ORDER BY car.created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetChannelDispatchStepByTask(ctx context.Context, taskID pgtype.UUID) (ChannelDispatchStep, error) {
+	row := q.db.QueryRow(ctx, getChannelDispatchStepByTask, taskID)
+	var i ChannelDispatchStep
+	err := row.Scan(
+		&i.ID,
+		&i.PlanID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.AgentID,
+		&i.Position,
+		&i.Role,
+		&i.Status,
+		&i.Instruction,
+		&i.DependsOnStepIds,
+		&i.SkipReason,
+		&i.Error,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelDispatchStepInChannel = `-- name: GetChannelDispatchStepInChannel :one
+SELECT id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at FROM channel_dispatch_step
+WHERE id = $1 AND channel_id = $2
+`
+
+type GetChannelDispatchStepInChannelParams struct {
+	ID        pgtype.UUID `json:"id"`
+	ChannelID pgtype.UUID `json:"channel_id"`
+}
+
+func (q *Queries) GetChannelDispatchStepInChannel(ctx context.Context, arg GetChannelDispatchStepInChannelParams) (ChannelDispatchStep, error) {
+	row := q.db.QueryRow(ctx, getChannelDispatchStepInChannel, arg.ID, arg.ChannelID)
+	var i ChannelDispatchStep
+	err := row.Scan(
+		&i.ID,
+		&i.PlanID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.AgentID,
+		&i.Position,
+		&i.Role,
+		&i.Status,
+		&i.Instruction,
+		&i.DependsOnStepIds,
+		&i.SkipReason,
+		&i.Error,
+		&i.StartedAt,
+		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -644,7 +1053,7 @@ func (q *Queries) GetChannelGroupInWorkspace(ctx context.Context, arg GetChannel
 }
 
 const getChannelInWorkspace = `-- name: GetChannelInWorkspace :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity FROM channel
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
 `
 
@@ -674,6 +1083,7 @@ func (q *Queries) GetChannelInWorkspace(ctx context.Context, arg GetChannelInWor
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Proactivity,
 	)
 	return i, err
 }
@@ -880,7 +1290,7 @@ func (q *Queries) ListApprovalRequestsForChannel(ctx context.Context, channelID 
 
 const listChannelAgentRunsBySession = `-- name: ListChannelAgentRunsBySession :many
 SELECT
-    car.id, car.channel_id, car.channel_session_id, car.user_message_id, car.agent_id, car.chat_session_id, car.chat_user_message_id, car.task_id, car.status, car.created_at, car.completed_at,
+    car.id, car.channel_id, car.channel_session_id, car.user_message_id, car.agent_id, car.chat_session_id, car.chat_user_message_id, car.task_id, car.status, car.created_at, car.completed_at, car.dispatch_step_id,
     COALESCE(atq.status, car.status)::text AS task_status,
     atq.created_at AS task_created_at,
     atq.started_at AS task_started_at,
@@ -908,6 +1318,7 @@ type ListChannelAgentRunsBySessionRow struct {
 	Status            string             `json:"status"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	DispatchStepID    pgtype.UUID        `json:"dispatch_step_id"`
 	TaskStatus        string             `json:"task_status"`
 	TaskCreatedAt     pgtype.Timestamptz `json:"task_created_at"`
 	TaskStartedAt     pgtype.Timestamptz `json:"task_started_at"`
@@ -935,6 +1346,203 @@ func (q *Queries) ListChannelAgentRunsBySession(ctx context.Context, arg ListCha
 			&i.Status,
 			&i.CreatedAt,
 			&i.CompletedAt,
+			&i.DispatchStepID,
+			&i.TaskStatus,
+			&i.TaskCreatedAt,
+			&i.TaskStartedAt,
+			&i.TaskCompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelDispatchPlansBySession = `-- name: ListChannelDispatchPlansBySession :many
+SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
+WHERE channel_id = $1 AND channel_session_id = $2
+ORDER BY created_at DESC
+`
+
+type ListChannelDispatchPlansBySessionParams struct {
+	ChannelID        pgtype.UUID `json:"channel_id"`
+	ChannelSessionID pgtype.UUID `json:"channel_session_id"`
+}
+
+func (q *Queries) ListChannelDispatchPlansBySession(ctx context.Context, arg ListChannelDispatchPlansBySessionParams) ([]ChannelDispatchPlan, error) {
+	rows, err := q.db.Query(ctx, listChannelDispatchPlansBySession, arg.ChannelID, arg.ChannelSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDispatchPlan{}
+	for rows.Next() {
+		var i ChannelDispatchPlan
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChannelID,
+			&i.ChannelSessionID,
+			&i.TriggerMessageID,
+			&i.Mode,
+			&i.Status,
+			&i.Confidence,
+			&i.PlannerSource,
+			&i.Reason,
+			&i.ParticipantCount,
+			&i.RunCount,
+			&i.TotalInputTokens,
+			&i.TotalOutputTokens,
+			&i.TotalCacheReadTokens,
+			&i.TotalCacheWriteTokens,
+			&i.ElapsedMs,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelDispatchPlansByTriggerMessage = `-- name: ListChannelDispatchPlansByTriggerMessage :many
+SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
+WHERE trigger_message_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListChannelDispatchPlansByTriggerMessage(ctx context.Context, triggerMessageID pgtype.UUID) ([]ChannelDispatchPlan, error) {
+	rows, err := q.db.Query(ctx, listChannelDispatchPlansByTriggerMessage, triggerMessageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDispatchPlan{}
+	for rows.Next() {
+		var i ChannelDispatchPlan
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChannelID,
+			&i.ChannelSessionID,
+			&i.TriggerMessageID,
+			&i.Mode,
+			&i.Status,
+			&i.Confidence,
+			&i.PlannerSource,
+			&i.Reason,
+			&i.ParticipantCount,
+			&i.RunCount,
+			&i.TotalInputTokens,
+			&i.TotalOutputTokens,
+			&i.TotalCacheReadTokens,
+			&i.TotalCacheWriteTokens,
+			&i.ElapsedMs,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelDispatchStepsByPlan = `-- name: ListChannelDispatchStepsByPlan :many
+SELECT
+    cds.id, cds.plan_id, cds.channel_id, cds.channel_session_id, cds.trigger_message_id, cds.agent_id, cds.position, cds.role, cds.status, cds.instruction, cds.depends_on_step_ids, cds.skip_reason, cds.error, cds.started_at, cds.completed_at, cds.created_at, cds.updated_at,
+    car.id AS channel_agent_run_id,
+    car.chat_session_id,
+    car.chat_user_message_id,
+    car.task_id,
+    COALESCE(atq.status, car.status, cds.status)::text AS task_status,
+    atq.created_at AS task_created_at,
+    atq.started_at AS task_started_at,
+    atq.completed_at AS task_completed_at
+FROM channel_dispatch_step cds
+LEFT JOIN LATERAL (
+    SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
+    WHERE dispatch_step_id = cds.id
+    ORDER BY created_at DESC
+    LIMIT 1
+) car ON true
+LEFT JOIN agent_task_queue atq ON atq.id = car.task_id
+WHERE cds.plan_id = $1
+ORDER BY cds.position ASC, cds.created_at ASC
+`
+
+type ListChannelDispatchStepsByPlanRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	PlanID            pgtype.UUID        `json:"plan_id"`
+	ChannelID         pgtype.UUID        `json:"channel_id"`
+	ChannelSessionID  pgtype.UUID        `json:"channel_session_id"`
+	TriggerMessageID  pgtype.UUID        `json:"trigger_message_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	Position          int32              `json:"position"`
+	Role              string             `json:"role"`
+	Status            string             `json:"status"`
+	Instruction       string             `json:"instruction"`
+	DependsOnStepIds  []pgtype.UUID      `json:"depends_on_step_ids"`
+	SkipReason        string             `json:"skip_reason"`
+	Error             string             `json:"error"`
+	StartedAt         pgtype.Timestamptz `json:"started_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	ChannelAgentRunID pgtype.UUID        `json:"channel_agent_run_id"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	ChatUserMessageID pgtype.UUID        `json:"chat_user_message_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	TaskStatus        string             `json:"task_status"`
+	TaskCreatedAt     pgtype.Timestamptz `json:"task_created_at"`
+	TaskStartedAt     pgtype.Timestamptz `json:"task_started_at"`
+	TaskCompletedAt   pgtype.Timestamptz `json:"task_completed_at"`
+}
+
+func (q *Queries) ListChannelDispatchStepsByPlan(ctx context.Context, planID pgtype.UUID) ([]ListChannelDispatchStepsByPlanRow, error) {
+	rows, err := q.db.Query(ctx, listChannelDispatchStepsByPlan, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChannelDispatchStepsByPlanRow{}
+	for rows.Next() {
+		var i ListChannelDispatchStepsByPlanRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PlanID,
+			&i.ChannelID,
+			&i.ChannelSessionID,
+			&i.TriggerMessageID,
+			&i.AgentID,
+			&i.Position,
+			&i.Role,
+			&i.Status,
+			&i.Instruction,
+			&i.DependsOnStepIds,
+			&i.SkipReason,
+			&i.Error,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ChannelAgentRunID,
+			&i.ChatSessionID,
+			&i.ChatUserMessageID,
+			&i.TaskID,
 			&i.TaskStatus,
 			&i.TaskCreatedAt,
 			&i.TaskStartedAt,
@@ -1160,6 +1768,51 @@ func (q *Queries) ListChannelSessions(ctx context.Context, channelID pgtype.UUID
 	return items, nil
 }
 
+const listIncompleteChannelDispatchSteps = `-- name: ListIncompleteChannelDispatchSteps :many
+SELECT id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at FROM channel_dispatch_step
+WHERE plan_id = $1
+  AND status IN ('pending', 'queued', 'running')
+ORDER BY position ASC, created_at ASC
+`
+
+func (q *Queries) ListIncompleteChannelDispatchSteps(ctx context.Context, planID pgtype.UUID) ([]ChannelDispatchStep, error) {
+	rows, err := q.db.Query(ctx, listIncompleteChannelDispatchSteps, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDispatchStep{}
+	for rows.Next() {
+		var i ChannelDispatchStep
+		if err := rows.Scan(
+			&i.ID,
+			&i.PlanID,
+			&i.ChannelID,
+			&i.ChannelSessionID,
+			&i.TriggerMessageID,
+			&i.AgentID,
+			&i.Position,
+			&i.Role,
+			&i.Status,
+			&i.Instruction,
+			&i.DependsOnStepIds,
+			&i.SkipReason,
+			&i.Error,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueChannels = `-- name: ListIssueChannels :many
 SELECT ic.issue_id, ic.channel_id, ic.session_id, ic.linked_by_type, ic.linked_by_id, ic.created_at,
        c.slug, c.name, c.visibility
@@ -1212,7 +1865,7 @@ func (q *Queries) ListIssueChannels(ctx context.Context, issueID pgtype.UUID) ([
 }
 
 const listQueuedChannelAgentRunsForMessage = `-- name: ListQueuedChannelAgentRunsForMessage :many
-SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at FROM channel_agent_run
+SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
 WHERE user_message_id = $1
   AND status = 'queued'
   AND task_id IS NULL
@@ -1240,6 +1893,58 @@ func (q *Queries) ListQueuedChannelAgentRunsForMessage(ctx context.Context, user
 			&i.Status,
 			&i.CreatedAt,
 			&i.CompletedAt,
+			&i.DispatchStepID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReadyChannelDispatchSteps = `-- name: ListReadyChannelDispatchSteps :many
+SELECT cds.id, cds.plan_id, cds.channel_id, cds.channel_session_id, cds.trigger_message_id, cds.agent_id, cds.position, cds.role, cds.status, cds.instruction, cds.depends_on_step_ids, cds.skip_reason, cds.error, cds.started_at, cds.completed_at, cds.created_at, cds.updated_at FROM channel_dispatch_step cds
+WHERE cds.plan_id = $1
+  AND cds.status = 'pending'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM unnest(cds.depends_on_step_ids) dep(step_id)
+      JOIN channel_dispatch_step dependency ON dependency.id = dep.step_id
+      WHERE dependency.status NOT IN ('completed', 'skipped')
+  )
+ORDER BY cds.position ASC, cds.created_at ASC
+`
+
+func (q *Queries) ListReadyChannelDispatchSteps(ctx context.Context, planID pgtype.UUID) ([]ChannelDispatchStep, error) {
+	rows, err := q.db.Query(ctx, listReadyChannelDispatchSteps, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelDispatchStep{}
+	for rows.Next() {
+		var i ChannelDispatchStep
+		if err := rows.Scan(
+			&i.ID,
+			&i.PlanID,
+			&i.ChannelID,
+			&i.ChannelSessionID,
+			&i.TriggerMessageID,
+			&i.AgentID,
+			&i.Position,
+			&i.Role,
+			&i.Status,
+			&i.Instruction,
+			&i.DependsOnStepIds,
+			&i.SkipReason,
+			&i.Error,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1252,7 +1957,7 @@ func (q *Queries) ListQueuedChannelAgentRunsForMessage(ctx context.Context, user
 }
 
 const listVisibleChannels = `-- name: ListVisibleChannels :many
-SELECT DISTINCT c.id, c.workspace_id, c.group_id, c.slug, c.name, c.description, c.visibility, c.instructions, c.summary, c.default_project_id, c.default_assignee_type, c.default_assignee_id, c.position, c.created_by, c.archived_at, c.created_at, c.updated_at FROM channel c
+SELECT DISTINCT c.id, c.workspace_id, c.group_id, c.slug, c.name, c.description, c.visibility, c.instructions, c.summary, c.default_project_id, c.default_assignee_type, c.default_assignee_id, c.position, c.created_by, c.archived_at, c.created_at, c.updated_at, c.proactivity FROM channel c
 LEFT JOIN channel_member cm
        ON cm.channel_id = c.id
       AND cm.member_type = 'member'
@@ -1296,6 +2001,7 @@ func (q *Queries) ListVisibleChannels(ctx context.Context, arg ListVisibleChanne
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Proactivity,
 		); err != nil {
 			return nil, err
 		}
@@ -1305,6 +2011,63 @@ func (q *Queries) ListVisibleChannels(ctx context.Context, arg ListVisibleChanne
 		return nil, err
 	}
 	return items, nil
+}
+
+const refreshChannelDispatchPlanStats = `-- name: RefreshChannelDispatchPlanStats :one
+UPDATE channel_dispatch_plan p
+SET run_count = stats.run_count,
+    total_input_tokens = stats.input_tokens,
+    total_output_tokens = stats.output_tokens,
+    total_cache_read_tokens = stats.cache_read_tokens,
+    total_cache_write_tokens = stats.cache_write_tokens,
+    elapsed_ms = CASE
+        WHEN p.started_at IS NULL THEN p.elapsed_ms
+        WHEN p.completed_at IS NOT NULL THEN GREATEST(0, (EXTRACT(EPOCH FROM (p.completed_at - p.started_at)) * 1000)::bigint)
+        ELSE GREATEST(0, (EXTRACT(EPOCH FROM (now() - p.started_at)) * 1000)::bigint)
+    END,
+    updated_at = now()
+FROM (
+    SELECT
+        COUNT(car.id)::integer AS run_count,
+        COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
+        COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
+        COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens
+    FROM channel_dispatch_step cds
+    LEFT JOIN channel_agent_run car ON car.dispatch_step_id = cds.id
+    LEFT JOIN task_usage tu ON tu.task_id = car.task_id
+    WHERE cds.plan_id = $1
+) stats
+WHERE p.id = $1
+RETURNING p.id, p.channel_id, p.channel_session_id, p.trigger_message_id, p.mode, p.status, p.confidence, p.planner_source, p.reason, p.participant_count, p.run_count, p.total_input_tokens, p.total_output_tokens, p.total_cache_read_tokens, p.total_cache_write_tokens, p.elapsed_ms, p.started_at, p.completed_at, p.created_at, p.updated_at
+`
+
+func (q *Queries) RefreshChannelDispatchPlanStats(ctx context.Context, id pgtype.UUID) (ChannelDispatchPlan, error) {
+	row := q.db.QueryRow(ctx, refreshChannelDispatchPlanStats, id)
+	var i ChannelDispatchPlan
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.Mode,
+		&i.Status,
+		&i.Confidence,
+		&i.PlannerSource,
+		&i.Reason,
+		&i.ParticipantCount,
+		&i.RunCount,
+		&i.TotalInputTokens,
+		&i.TotalOutputTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheWriteTokens,
+		&i.ElapsedMs,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const removeChannelMember = `-- name: RemoveChannelMember :execrows
@@ -1324,6 +2087,43 @@ func (q *Queries) RemoveChannelMember(ctx context.Context, arg RemoveChannelMemb
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const resetChannelDispatchStepForRetry = `-- name: ResetChannelDispatchStepForRetry :one
+UPDATE channel_dispatch_step
+SET status = 'pending',
+    error = '',
+    skip_reason = '',
+    started_at = NULL,
+    completed_at = NULL,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at
+`
+
+func (q *Queries) ResetChannelDispatchStepForRetry(ctx context.Context, id pgtype.UUID) (ChannelDispatchStep, error) {
+	row := q.db.QueryRow(ctx, resetChannelDispatchStepForRetry, id)
+	var i ChannelDispatchStep
+	err := row.Scan(
+		&i.ID,
+		&i.PlanID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.AgentID,
+		&i.Position,
+		&i.Role,
+		&i.Status,
+		&i.Instruction,
+		&i.DependsOnStepIds,
+		&i.SkipReason,
+		&i.Error,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const resolveApprovalRequest = `-- name: ResolveApprovalRequest :one
@@ -1409,15 +2209,16 @@ UPDATE channel SET
     name = COALESCE($4, name),
     description = COALESCE($5, description),
     visibility = COALESCE($6, visibility),
-    instructions = COALESCE($7, instructions),
-    summary = COALESCE($8, summary),
-    default_project_id = COALESCE($9, default_project_id),
-    default_assignee_type = COALESCE($10, default_assignee_type),
-    default_assignee_id = COALESCE($11, default_assignee_id),
-    position = COALESCE($12, position),
+    proactivity = COALESCE($7, proactivity),
+    instructions = COALESCE($8, instructions),
+    summary = COALESCE($9, summary),
+    default_project_id = COALESCE($10, default_project_id),
+    default_assignee_type = COALESCE($11, default_assignee_type),
+    default_assignee_id = COALESCE($12, default_assignee_id),
+    position = COALESCE($13, position),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity
 `
 
 type UpdateChannelParams struct {
@@ -1427,6 +2228,7 @@ type UpdateChannelParams struct {
 	Name                pgtype.Text   `json:"name"`
 	Description         pgtype.Text   `json:"description"`
 	Visibility          pgtype.Text   `json:"visibility"`
+	Proactivity         pgtype.Text   `json:"proactivity"`
 	Instructions        pgtype.Text   `json:"instructions"`
 	Summary             pgtype.Text   `json:"summary"`
 	DefaultProjectID    pgtype.UUID   `json:"default_project_id"`
@@ -1443,6 +2245,7 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		arg.Name,
 		arg.Description,
 		arg.Visibility,
+		arg.Proactivity,
 		arg.Instructions,
 		arg.Summary,
 		arg.DefaultProjectID,
@@ -1467,6 +2270,104 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		&i.Position,
 		&i.CreatedBy,
 		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Proactivity,
+	)
+	return i, err
+}
+
+const updateChannelDispatchPlanStatus = `-- name: UpdateChannelDispatchPlanStatus :one
+UPDATE channel_dispatch_plan
+SET status = $2,
+    started_at = CASE WHEN $2 = 'running' AND started_at IS NULL THEN now() ELSE started_at END,
+    completed_at = CASE WHEN $2 IN ('completed', 'failed', 'cancelled') THEN now() ELSE completed_at END,
+    elapsed_ms = CASE
+        WHEN $2 IN ('completed', 'failed', 'cancelled') AND started_at IS NOT NULL
+        THEN GREATEST(0, (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint)
+        ELSE elapsed_ms
+    END,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at
+`
+
+type UpdateChannelDispatchPlanStatusParams struct {
+	ID     pgtype.UUID `json:"id"`
+	Status string      `json:"status"`
+}
+
+func (q *Queries) UpdateChannelDispatchPlanStatus(ctx context.Context, arg UpdateChannelDispatchPlanStatusParams) (ChannelDispatchPlan, error) {
+	row := q.db.QueryRow(ctx, updateChannelDispatchPlanStatus, arg.ID, arg.Status)
+	var i ChannelDispatchPlan
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.Mode,
+		&i.Status,
+		&i.Confidence,
+		&i.PlannerSource,
+		&i.Reason,
+		&i.ParticipantCount,
+		&i.RunCount,
+		&i.TotalInputTokens,
+		&i.TotalOutputTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheWriteTokens,
+		&i.ElapsedMs,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateChannelDispatchStepStatus = `-- name: UpdateChannelDispatchStepStatus :one
+UPDATE channel_dispatch_step
+SET status = $2,
+    error = COALESCE($3, error),
+    skip_reason = COALESCE($4, skip_reason),
+    started_at = CASE WHEN $2 IN ('queued', 'running') AND started_at IS NULL THEN now() ELSE started_at END,
+    completed_at = CASE WHEN $2 IN ('completed', 'failed', 'skipped', 'cancelled') THEN now() ELSE completed_at END,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at
+`
+
+type UpdateChannelDispatchStepStatusParams struct {
+	ID         pgtype.UUID `json:"id"`
+	Status     string      `json:"status"`
+	Error      pgtype.Text `json:"error"`
+	SkipReason pgtype.Text `json:"skip_reason"`
+}
+
+func (q *Queries) UpdateChannelDispatchStepStatus(ctx context.Context, arg UpdateChannelDispatchStepStatusParams) (ChannelDispatchStep, error) {
+	row := q.db.QueryRow(ctx, updateChannelDispatchStepStatus,
+		arg.ID,
+		arg.Status,
+		arg.Error,
+		arg.SkipReason,
+	)
+	var i ChannelDispatchStep
+	err := row.Scan(
+		&i.ID,
+		&i.PlanID,
+		&i.ChannelID,
+		&i.ChannelSessionID,
+		&i.TriggerMessageID,
+		&i.AgentID,
+		&i.Position,
+		&i.Role,
+		&i.Status,
+		&i.Instruction,
+		&i.DependsOnStepIds,
+		&i.SkipReason,
+		&i.Error,
+		&i.StartedAt,
+		&i.CompletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

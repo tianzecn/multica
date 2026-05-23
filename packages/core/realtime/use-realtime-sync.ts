@@ -238,6 +238,10 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
       },
+      channel_dispatch_plan: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
+      },
       // workspace:updated is handled by the specific handler below
       // (compares prefixes to decide whether to also invalidate issues).
       // This generic fallback still fires for workspace:deleted (paired

@@ -3,6 +3,8 @@ import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
 import type {
   AddChannelMemberRequest,
+  AddChannelDispatchAgentRequest,
+  ChangeChannelDispatchModeRequest,
   Channel,
   CreateApprovalRequestRequest,
   CreateChannelGroupRequest,
@@ -10,6 +12,7 @@ import type {
   CreateChannelRequest,
   CreateChannelSessionRequest,
   LinkIssueToChannelRequest,
+  SkipChannelDispatchStepRequest,
   UpdateChannelRequest,
 } from "../types";
 import { channelKeys } from "./queries";
@@ -120,7 +123,71 @@ export function useCreateChannelMessage(channelId: string, sessionId: string) {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: channelKeys.messages(wsId, channelId, sessionId) });
       qc.invalidateQueries({ queryKey: channelKeys.agentRuns(wsId, channelId, sessionId) });
+      qc.invalidateQueries({ queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId) });
       qc.invalidateQueries({ queryKey: channelKeys.sessions(wsId, channelId) });
+    },
+  });
+}
+
+export function useCancelChannelDispatchPlan(channelId: string, sessionId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (planId: string) => api.cancelChannelDispatchPlan(channelId, planId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId) });
+      qc.invalidateQueries({ queryKey: channelKeys.agentRuns(wsId, channelId, sessionId) });
+    },
+  });
+}
+
+export function useRetryChannelDispatchStep(channelId: string, sessionId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (data: { planId: string; stepId: string }) =>
+      api.retryChannelDispatchStep(channelId, data.planId, data.stepId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId) });
+      qc.invalidateQueries({ queryKey: channelKeys.agentRuns(wsId, channelId, sessionId) });
+    },
+  });
+}
+
+export function useSkipChannelDispatchStep(channelId: string, sessionId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (data: { planId: string; stepId: string } & SkipChannelDispatchStepRequest) =>
+      api.skipChannelDispatchStep(channelId, data.planId, data.stepId, { reason: data.reason }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId) });
+      qc.invalidateQueries({ queryKey: channelKeys.agentRuns(wsId, channelId, sessionId) });
+    },
+  });
+}
+
+export function useAddAgentToChannelDispatchPlan(channelId: string, sessionId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (data: { planId: string } & AddChannelDispatchAgentRequest) =>
+      api.addAgentToChannelDispatchPlan(channelId, data.planId, { agent_id: data.agent_id }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId) });
+      qc.invalidateQueries({ queryKey: channelKeys.agentRuns(wsId, channelId, sessionId) });
+    },
+  });
+}
+
+export function useChangeChannelDispatchPlanMode(channelId: string, sessionId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (data: { planId: string } & ChangeChannelDispatchModeRequest) =>
+      api.changeChannelDispatchPlanMode(channelId, data.planId, { mode: data.mode }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId) });
     },
   });
 }

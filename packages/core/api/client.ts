@@ -16,14 +16,17 @@ import type {
   AgentTemplate,
   AgentTemplateSummary,
   AddChannelMemberRequest,
+  AddChannelDispatchAgentRequest,
   ApprovalRequest,
   Channel,
   ChannelAgentRun,
+  ChannelDispatchPlan,
   ChannelGroup,
   ChannelIssue,
   ChannelMember,
   ChannelMessage,
   ChannelSession,
+  ChangeChannelDispatchModeRequest,
   CreateApprovalRequestRequest,
   CreateAgentFromTemplateRequest,
   CreateAgentFromTemplateResponse,
@@ -31,6 +34,7 @@ import type {
   CreateChannelMessageRequest,
   CreateChannelRequest,
   CreateChannelSessionRequest,
+  SkipChannelDispatchStepRequest,
   UpdateChannelRequest,
   UpdateAgentRequest,
   AgentTask,
@@ -135,6 +139,8 @@ import {
   AttachmentResponseSchema,
   EMPTY_CHANNEL,
   EMPTY_CHANNEL_AGENT_RUNS,
+  EMPTY_CHANNEL_DISPATCH_PLAN,
+  EMPTY_CHANNEL_DISPATCH_PLANS,
   EMPTY_CHANNEL_GROUP,
   EMPTY_CHANNEL_MEMBER,
   EMPTY_CHANNEL_MESSAGE,
@@ -142,6 +148,8 @@ import {
   ChannelGroupListSchema,
   ChannelGroupSchema,
   ChannelAgentRunListSchema,
+  ChannelDispatchPlanListSchema,
+  ChannelDispatchPlanSchema,
   ChannelIssueListSchema,
   ChannelListSchema,
   ChannelMemberListSchema,
@@ -1609,6 +1617,83 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions/${sessionId}/agent-runs`);
     return parseWithFallback(raw, ChannelAgentRunListSchema, EMPTY_CHANNEL_AGENT_RUNS, {
       endpoint: "GET /api/channels/:id/sessions/:sessionId/agent-runs",
+    });
+  }
+
+  async listChannelDispatchPlans(channelId: string, sessionId: string): Promise<ChannelDispatchPlan[]> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions/${sessionId}/plans`);
+    return parseWithFallback(raw, ChannelDispatchPlanListSchema, EMPTY_CHANNEL_DISPATCH_PLANS, {
+      endpoint: "GET /api/channels/:id/sessions/:sessionId/plans",
+    });
+  }
+
+  async getChannelDispatchPlan(channelId: string, planId: string): Promise<ChannelDispatchPlan> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/plans/${planId}`);
+    return parseWithFallback(raw, ChannelDispatchPlanSchema, EMPTY_CHANNEL_DISPATCH_PLAN, {
+      endpoint: "GET /api/channels/:id/plans/:planId",
+    });
+  }
+
+  async cancelChannelDispatchPlan(channelId: string, planId: string): Promise<ChannelDispatchPlan> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/plans/${planId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, ChannelDispatchPlanSchema, EMPTY_CHANNEL_DISPATCH_PLAN, {
+      endpoint: "POST /api/channels/:id/plans/:planId/cancel",
+    });
+  }
+
+  async retryChannelDispatchStep(channelId: string, planId: string, stepId: string): Promise<ChannelDispatchPlan> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/plans/${planId}/steps/${stepId}/retry`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, ChannelDispatchPlanSchema, EMPTY_CHANNEL_DISPATCH_PLAN, {
+      endpoint: "POST /api/channels/:id/plans/:planId/steps/:stepId/retry",
+    });
+  }
+
+  async skipChannelDispatchStep(
+    channelId: string,
+    planId: string,
+    stepId: string,
+    data: SkipChannelDispatchStepRequest = {},
+  ): Promise<ChannelDispatchPlan> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/plans/${planId}/steps/${stepId}/skip`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelDispatchPlanSchema, EMPTY_CHANNEL_DISPATCH_PLAN, {
+      endpoint: "POST /api/channels/:id/plans/:planId/steps/:stepId/skip",
+    });
+  }
+
+  async addAgentToChannelDispatchPlan(
+    channelId: string,
+    planId: string,
+    data: AddChannelDispatchAgentRequest,
+  ): Promise<ChannelDispatchPlan> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/plans/${planId}/add-agent`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelDispatchPlanSchema, EMPTY_CHANNEL_DISPATCH_PLAN, {
+      endpoint: "POST /api/channels/:id/plans/:planId/add-agent",
+    });
+  }
+
+  async changeChannelDispatchPlanMode(
+    channelId: string,
+    planId: string,
+    data: ChangeChannelDispatchModeRequest,
+  ): Promise<ChannelDispatchPlan> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/plans/${planId}/change-mode`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ChannelDispatchPlanSchema, EMPTY_CHANNEL_DISPATCH_PLAN, {
+      endpoint: "POST /api/channels/:id/plans/:planId/change-mode",
     });
   }
 

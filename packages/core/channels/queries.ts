@@ -12,6 +12,10 @@ export const channelKeys = {
     [...channelKeys.detail(wsId, channelId), "sessions", sessionId, "messages"] as const,
   agentRuns: (wsId: string, channelId: string, sessionId: string) =>
     [...channelKeys.detail(wsId, channelId), "sessions", sessionId, "agent-runs"] as const,
+  dispatchPlans: (wsId: string, channelId: string, sessionId: string) =>
+    [...channelKeys.detail(wsId, channelId), "sessions", sessionId, "plans"] as const,
+  dispatchPlan: (wsId: string, channelId: string, planId: string) =>
+    [...channelKeys.detail(wsId, channelId), "plans", planId] as const,
   issues: (wsId: string, channelId: string) => [...channelKeys.detail(wsId, channelId), "issues"] as const,
   approvals: (wsId: string, channelId: string) => [...channelKeys.detail(wsId, channelId), "approvals"] as const,
 };
@@ -72,6 +76,15 @@ export function channelAgentRunsOptions(wsId: string, channelId: string, session
   return queryOptions({
     queryKey: channelKeys.agentRuns(wsId, channelId, sessionId),
     queryFn: () => api.listChannelAgentRuns(channelId, sessionId),
+    enabled: !!channelId && !!sessionId,
+    staleTime: Infinity,
+  });
+}
+
+export function channelDispatchPlansOptions(wsId: string, channelId: string, sessionId: string) {
+  return queryOptions({
+    queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId),
+    queryFn: () => api.listChannelDispatchPlans(channelId, sessionId),
     enabled: !!channelId && !!sessionId,
     staleTime: Infinity,
   });

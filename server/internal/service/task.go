@@ -1827,7 +1827,11 @@ func (s *TaskService) mirrorChannelAgentReply(ctx context.Context, task db.Agent
 		slog.Warn("failed to touch channel session after agent reply", "session_id", util.UUIDToString(run.ChannelSessionID), "error", err)
 	}
 	s.broadcastChannelMessageCreated(ctx, task, channelMsg)
-	s.dispatchNextQueuedChannelAgentRun(ctx, task, run)
+	if run.DispatchStepID.Valid {
+		s.completeChannelDispatchStepAfterRun(ctx, task, run)
+	} else {
+		s.dispatchNextQueuedChannelAgentRun(ctx, task, run)
+	}
 }
 
 func (s *TaskService) mirrorChannelAgentFailure(ctx context.Context, task db.AgentTaskQueue, errMsg string) {
@@ -1865,6 +1869,251 @@ func (s *TaskService) mirrorChannelAgentFailure(ctx context.Context, task db.Age
 		slog.Warn("failed to touch channel session after agent failure", "session_id", util.UUIDToString(run.ChannelSessionID), "error", err)
 	}
 	s.broadcastChannelMessageCreated(ctx, task, channelMsg)
+	if run.DispatchStepID.Valid {
+		s.failChannelDispatchStepAfterRun(ctx, task, run, content)
+	}
+}
+
+func (s *TaskService) completeChannelDispatchStepAfterRun(ctx context.Context, task db.AgentTaskQueue, run db.ChannelAgentRun) {
+	step, err := s.Queries.GetChannelDispatchStepByTask(ctx, task.ID)
+	if err != nil {
+		slog.Warn("failed to load channel dispatch step for completion", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	if _, err := s.Queries.UpdateChannelDispatchStepStatus(ctx, db.UpdateChannelDispatchStepStatusParams{
+		ID:     step.ID,
+		Status: "completed",
+	}); err != nil {
+		slog.Warn("failed to mark channel dispatch step completed", "step_id", util.UUIDToString(step.ID), "error", err)
+	}
+	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
+	s.broadcastChannelDispatchPlanUpdated(ctx, workspaceID, step.PlanID, step.ChannelID, step.ChannelSessionID)
+	s.dispatchReadyChannelDispatchSteps(ctx, task, step.PlanID)
+	s.refreshChannelDispatchPlanStatus(ctx, task, step.PlanID)
+}
+
+func (s *TaskService) failChannelDispatchStepAfterRun(ctx context.Context, task db.AgentTaskQueue, run db.ChannelAgentRun, errText string) {
+	step, err := s.Queries.GetChannelDispatchStepByTask(ctx, task.ID)
+	if err != nil {
+		slog.Warn("failed to load channel dispatch step for failure", "task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	if _, err := s.Queries.UpdateChannelDispatchStepStatus(ctx, db.UpdateChannelDispatchStepStatusParams{
+		ID:     step.ID,
+		Status: "failed",
+		Error:  pgtype.Text{String: redact.Text(errText), Valid: strings.TrimSpace(errText) != ""},
+	}); err != nil {
+		slog.Warn("failed to mark channel dispatch step failed", "step_id", util.UUIDToString(step.ID), "error", err)
+	}
+	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
+	s.broadcastChannelDispatchPlanUpdated(ctx, workspaceID, step.PlanID, step.ChannelID, step.ChannelSessionID)
+	s.refreshChannelDispatchPlanStatus(ctx, task, step.PlanID)
+}
+
+func (s *TaskService) dispatchReadyChannelDispatchSteps(ctx context.Context, currentTask db.AgentTaskQueue, planID pgtype.UUID) {
+	plan, err := s.Queries.GetChannelDispatchPlanByID(ctx, planID)
+	if err != nil || plan.Status == "cancelled" {
+		return
+	}
+	ready, err := s.Queries.ListReadyChannelDispatchSteps(ctx, planID)
+	if err != nil {
+		slog.Warn("failed to list ready channel dispatch steps", "plan_id", util.UUIDToString(planID), "error", err)
+		return
+	}
+	if len(ready) == 0 {
+		return
+	}
+	channel, err := s.Queries.GetChannelByID(ctx, plan.ChannelID)
+	if err != nil {
+		slog.Warn("failed to load channel for dispatch step", "plan_id", util.UUIDToString(planID), "error", err)
+		return
+	}
+	session, err := s.Queries.GetChannelSessionByID(ctx, plan.ChannelSessionID)
+	if err != nil {
+		slog.Warn("failed to load channel session for dispatch step", "plan_id", util.UUIDToString(planID), "error", err)
+		return
+	}
+	originalMessage, err := s.Queries.GetChannelMessage(ctx, plan.TriggerMessageID)
+	if err != nil {
+		slog.Warn("failed to load trigger message for dispatch step", "plan_id", util.UUIDToString(planID), "error", err)
+		return
+	}
+	requesterID := originalMessage.AuthorID
+	if !requesterID.Valid {
+		requesterID = currentTask.AgentID
+	}
+	workspaceID := s.ResolveTaskWorkspaceID(ctx, currentTask)
+	dispatched := 0
+	for _, step := range ready {
+		if s.dispatchChannelDispatchStep(ctx, currentTask, channel, session, originalMessage, requesterID, step) {
+			dispatched++
+		}
+	}
+	if dispatched > 0 {
+		_, _ = s.Queries.UpdateChannelDispatchPlanStatus(ctx, db.UpdateChannelDispatchPlanStatusParams{
+			ID:     planID,
+			Status: "running",
+		})
+		s.broadcastChannelDispatchPlanUpdated(ctx, workspaceID, planID, plan.ChannelID, plan.ChannelSessionID)
+	}
+	nextReady, err := s.Queries.ListReadyChannelDispatchSteps(ctx, planID)
+	if err == nil && len(nextReady) > 0 {
+		s.dispatchReadyChannelDispatchSteps(ctx, currentTask, planID)
+	}
+}
+
+func (s *TaskService) dispatchChannelDispatchStep(
+	ctx context.Context,
+	currentTask db.AgentTaskQueue,
+	channel db.Channel,
+	session db.ChannelSession,
+	originalMessage db.ChannelMessage,
+	requesterID pgtype.UUID,
+	step db.ChannelDispatchStep,
+) bool {
+	agent, err := s.Queries.GetAgent(ctx, step.AgentID)
+	if err != nil {
+		s.failPendingChannelDispatchStep(ctx, currentTask, step, "无法读取 AI 同事。", err)
+		return false
+	}
+	agentName := strings.TrimSpace(agent.Name)
+	if agentName == "" {
+		agentName = util.UUIDToString(agent.ID)
+	}
+	if agent.ArchivedAt.Valid {
+		s.skipPendingChannelDispatchStep(ctx, currentTask, step, agentName+" 已归档。")
+		return false
+	}
+	if !agent.RuntimeID.Valid {
+		s.skipPendingChannelDispatchStep(ctx, currentTask, step, agentName+" 未绑定运行时。")
+		return false
+	}
+	chatSession, err := s.getOrCreateChannelAgentChatSession(ctx, channel, session, requesterID, agent.ID)
+	if err != nil {
+		s.failPendingChannelDispatchStep(ctx, currentTask, step, "无法准备 "+agentName+" 的会话。", err)
+		return false
+	}
+	recentMessages := s.recentChannelPromptMessages(ctx, channel.ID, session.ID, originalMessage)
+	prompt := channelprompt.BuildWithInstruction(channel, session, originalMessage.Content, recentMessages, step.Instruction)
+	chatMessage, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		ChatSessionID: chatSession.ID,
+		Role:          "user",
+		Content:       prompt,
+	})
+	if err != nil {
+		s.failPendingChannelDispatchStep(ctx, currentTask, step, "无法创建 "+agentName+" 的会话消息。", err)
+		return false
+	}
+	nextTask, err := s.EnqueueChatTask(ctx, chatSession)
+	if err != nil {
+		s.failPendingChannelDispatchStep(ctx, currentTask, step, "无法派发给 "+agentName+"。", err)
+		return false
+	}
+	if _, err := s.Queries.CreateChannelAgentRun(ctx, db.CreateChannelAgentRunParams{
+		ChannelID:         channel.ID,
+		ChannelSessionID:  session.ID,
+		UserMessageID:     originalMessage.ID,
+		AgentID:           agent.ID,
+		ChatSessionID:     chatSession.ID,
+		ChatUserMessageID: chatMessage.ID,
+		TaskID:            nextTask.ID,
+		DispatchStepID:    step.ID,
+	}); err != nil {
+		s.failPendingChannelDispatchStep(ctx, currentTask, step, "无法记录 "+agentName+" 的派发状态。", err)
+		return false
+	}
+	if _, err := s.Queries.UpdateChannelDispatchStepStatus(ctx, db.UpdateChannelDispatchStepStatusParams{
+		ID:     step.ID,
+		Status: "queued",
+	}); err != nil {
+		slog.Warn("failed to mark channel dispatch step queued", "step_id", util.UUIDToString(step.ID), "error", err)
+	}
+	s.broadcastChannelDispatchPlanUpdated(ctx, s.ResolveTaskWorkspaceID(ctx, currentTask), step.PlanID, step.ChannelID, step.ChannelSessionID)
+	return true
+}
+
+func (s *TaskService) failPendingChannelDispatchStep(ctx context.Context, currentTask db.AgentTaskQueue, step db.ChannelDispatchStep, content string, cause error) {
+	if cause != nil {
+		slog.Warn("failed to dispatch channel dispatch step", "step_id", util.UUIDToString(step.ID), "error", cause)
+	}
+	if _, err := s.Queries.UpdateChannelDispatchStepStatus(ctx, db.UpdateChannelDispatchStepStatusParams{
+		ID:     step.ID,
+		Status: "failed",
+		Error:  pgtype.Text{String: content, Valid: true},
+	}); err != nil {
+		slog.Warn("failed to mark channel dispatch step failed", "step_id", util.UUIDToString(step.ID), "error", err)
+	}
+	s.createChannelSystemMessageForTask(ctx, currentTask, step.ChannelID, step.ChannelSessionID, step.TriggerMessageID, content)
+}
+
+func (s *TaskService) skipPendingChannelDispatchStep(ctx context.Context, currentTask db.AgentTaskQueue, step db.ChannelDispatchStep, reason string) {
+	if _, err := s.Queries.UpdateChannelDispatchStepStatus(ctx, db.UpdateChannelDispatchStepStatusParams{
+		ID:         step.ID,
+		Status:     "skipped",
+		SkipReason: pgtype.Text{String: reason, Valid: true},
+	}); err != nil {
+		slog.Warn("failed to mark channel dispatch step skipped", "step_id", util.UUIDToString(step.ID), "error", err)
+	}
+	s.createChannelSystemMessageForTask(ctx, currentTask, step.ChannelID, step.ChannelSessionID, step.TriggerMessageID, reason)
+}
+
+func (s *TaskService) refreshChannelDispatchPlanStatus(ctx context.Context, task db.AgentTaskQueue, planID pgtype.UUID) {
+	plan, err := s.Queries.GetChannelDispatchPlanByID(ctx, planID)
+	if err != nil || plan.Status == "cancelled" {
+		return
+	}
+	steps, err := s.Queries.ListChannelDispatchStepsByPlan(ctx, planID)
+	if err != nil {
+		return
+	}
+	incomplete := 0
+	completed := 0
+	failed := 0
+	for _, step := range steps {
+		status := step.TaskStatus
+		if status == "" {
+			status = step.Status
+		}
+		switch status {
+		case "pending", "queued", "dispatched", "running":
+			incomplete++
+		case "completed", "skipped":
+			completed++
+		case "failed":
+			failed++
+		}
+	}
+	status := "running"
+	if incomplete == 0 {
+		status = "completed"
+		if failed > 0 && completed == 0 {
+			status = "failed"
+		} else if failed > 0 {
+			status = "paused"
+		}
+	} else if failed > 0 {
+		status = "paused"
+	}
+	_, _ = s.Queries.UpdateChannelDispatchPlanStatus(ctx, db.UpdateChannelDispatchPlanStatusParams{ID: planID, Status: status})
+	_, _ = s.Queries.RefreshChannelDispatchPlanStats(ctx, planID)
+	s.broadcastChannelDispatchPlanUpdated(ctx, s.ResolveTaskWorkspaceID(ctx, task), planID, plan.ChannelID, plan.ChannelSessionID)
+}
+
+func (s *TaskService) broadcastChannelDispatchPlanUpdated(ctx context.Context, workspaceID string, planID, channelID, sessionID pgtype.UUID) {
+	if workspaceID == "" {
+		return
+	}
+	s.Bus.Publish(events.Event{
+		Type:        protocol.EventChannelDispatchPlanUpdated,
+		WorkspaceID: workspaceID,
+		ActorType:   "system",
+		ActorID:     "",
+		Payload: map[string]any{
+			"channel_id": util.UUIDToString(channelID),
+			"session_id": util.UUIDToString(sessionID),
+			"plan_id":    util.UUIDToString(planID),
+		},
+	})
 }
 
 func (s *TaskService) dispatchNextQueuedChannelAgentRun(ctx context.Context, currentTask db.AgentTaskQueue, completedRun db.ChannelAgentRun) {

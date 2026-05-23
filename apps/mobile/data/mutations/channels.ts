@@ -61,7 +61,72 @@ export function useCreateChannelMessage(
         queryKey: channelKeys.messages(wsId, channelId, sessionId),
       });
       qc.invalidateQueries({
+        queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId),
+      });
+      qc.invalidateQueries({
         queryKey: channelKeys.sessions(wsId, channelId),
+      });
+    },
+  });
+}
+
+export function useCancelChannelDispatchPlan(
+  channelId: string | null,
+  sessionId: string | null,
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (planId: string) =>
+      api.cancelChannelDispatchPlan(channelId!, planId),
+    onSettled: () => {
+      if (!channelId || !sessionId) return;
+      qc.invalidateQueries({
+        queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId),
+      });
+    },
+  });
+}
+
+export function useRetryChannelDispatchStep(
+  channelId: string | null,
+  sessionId: string | null,
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (data: { planId: string; stepId: string }) =>
+      api.retryChannelDispatchStep(channelId!, data.planId, data.stepId),
+    onSettled: () => {
+      if (!channelId || !sessionId) return;
+      qc.invalidateQueries({
+        queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId),
+      });
+    },
+  });
+}
+
+export function useSkipChannelDispatchStep(
+  channelId: string | null,
+  sessionId: string | null,
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (data: { planId: string; stepId: string; reason?: string }) =>
+      api.skipChannelDispatchStep(
+        channelId!,
+        data.planId,
+        data.stepId,
+        data.reason,
+      ),
+    onSettled: () => {
+      if (!channelId || !sessionId) return;
+      qc.invalidateQueries({
+        queryKey: channelKeys.dispatchPlans(wsId, channelId, sessionId),
       });
     },
   });

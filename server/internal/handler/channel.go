@@ -39,6 +39,7 @@ type ChannelResponse struct {
 	Name                string  `json:"name"`
 	Description         string  `json:"description"`
 	Visibility          string  `json:"visibility"`
+	Proactivity         string  `json:"proactivity"`
 	Instructions        string  `json:"instructions"`
 	Summary             string  `json:"summary"`
 	DefaultProjectID    *string `json:"default_project_id"`
@@ -92,6 +93,7 @@ type ChannelAgentRunResponse struct {
 	ChannelID         string  `json:"channel_id"`
 	SessionID         string  `json:"session_id"`
 	UserMessageID     string  `json:"user_message_id"`
+	DispatchStepID    string  `json:"dispatch_step_id"`
 	AgentID           string  `json:"agent_id"`
 	ChatSessionID     string  `json:"chat_session_id"`
 	ChatUserMessageID string  `json:"chat_user_message_id"`
@@ -103,6 +105,58 @@ type ChannelAgentRunResponse struct {
 	TaskCreatedAt     *string `json:"task_created_at"`
 	TaskStartedAt     *string `json:"task_started_at"`
 	TaskCompletedAt   *string `json:"task_completed_at"`
+}
+
+type ChannelDispatchPlanResponse struct {
+	ID                    string                        `json:"id"`
+	ChannelID             string                        `json:"channel_id"`
+	SessionID             string                        `json:"session_id"`
+	TriggerMessageID      string                        `json:"trigger_message_id"`
+	Mode                  string                        `json:"mode"`
+	Status                string                        `json:"status"`
+	Confidence            float64                       `json:"confidence"`
+	PlannerSource         string                        `json:"planner_source"`
+	Reason                string                        `json:"reason"`
+	ParticipantCount      int32                         `json:"participant_count"`
+	RunCount              int32                         `json:"run_count"`
+	TotalInputTokens      int64                         `json:"total_input_tokens"`
+	TotalOutputTokens     int64                         `json:"total_output_tokens"`
+	TotalCacheReadTokens  int64                         `json:"total_cache_read_tokens"`
+	TotalCacheWriteTokens int64                         `json:"total_cache_write_tokens"`
+	ElapsedMs             int64                         `json:"elapsed_ms"`
+	StartedAt             *string                       `json:"started_at"`
+	CompletedAt           *string                       `json:"completed_at"`
+	CreatedAt             string                        `json:"created_at"`
+	UpdatedAt             string                        `json:"updated_at"`
+	Steps                 []ChannelDispatchStepResponse `json:"steps,omitempty"`
+}
+
+type ChannelDispatchStepResponse struct {
+	ID                string   `json:"id"`
+	PlanID            string   `json:"plan_id"`
+	ChannelID         string   `json:"channel_id"`
+	SessionID         string   `json:"session_id"`
+	TriggerMessageID  string   `json:"trigger_message_id"`
+	AgentID           string   `json:"agent_id"`
+	Position          int32    `json:"position"`
+	Role              string   `json:"role"`
+	Status            string   `json:"status"`
+	Instruction       string   `json:"instruction"`
+	DependsOnStepIDs  []string `json:"depends_on_step_ids"`
+	SkipReason        string   `json:"skip_reason"`
+	Error             string   `json:"error"`
+	ChannelAgentRunID string   `json:"channel_agent_run_id"`
+	ChatSessionID     string   `json:"chat_session_id"`
+	ChatUserMessageID string   `json:"chat_user_message_id"`
+	TaskID            string   `json:"task_id"`
+	TaskStatus        string   `json:"task_status"`
+	StartedAt         *string  `json:"started_at"`
+	CompletedAt       *string  `json:"completed_at"`
+	CreatedAt         string   `json:"created_at"`
+	UpdatedAt         string   `json:"updated_at"`
+	TaskCreatedAt     *string  `json:"task_created_at"`
+	TaskStartedAt     *string  `json:"task_started_at"`
+	TaskCompletedAt   *string  `json:"task_completed_at"`
 }
 
 type ChannelIssueResponse struct {
@@ -171,6 +225,7 @@ func channelToResponse(channel db.Channel) ChannelResponse {
 		Name:                channel.Name,
 		Description:         channel.Description,
 		Visibility:          channel.Visibility,
+		Proactivity:         channel.Proactivity,
 		Instructions:        channel.Instructions,
 		Summary:             channel.Summary,
 		DefaultProjectID:    uuidToPtr(channel.DefaultProjectID),
@@ -232,6 +287,7 @@ func channelAgentRunToResponse(run db.ListChannelAgentRunsBySessionRow) ChannelA
 		ChannelID:         uuidToString(run.ChannelID),
 		SessionID:         uuidToString(run.ChannelSessionID),
 		UserMessageID:     uuidToString(run.UserMessageID),
+		DispatchStepID:    uuidToString(run.DispatchStepID),
 		AgentID:           uuidToString(run.AgentID),
 		ChatSessionID:     uuidToString(run.ChatSessionID),
 		ChatUserMessageID: uuidToString(run.ChatUserMessageID),
@@ -244,6 +300,75 @@ func channelAgentRunToResponse(run db.ListChannelAgentRunsBySessionRow) ChannelA
 		TaskStartedAt:     timestampToPtr(run.TaskStartedAt),
 		TaskCompletedAt:   timestampToPtr(run.TaskCompletedAt),
 	}
+}
+
+func channelDispatchPlanToResponse(plan db.ChannelDispatchPlan, steps []ChannelDispatchStepResponse) ChannelDispatchPlanResponse {
+	return ChannelDispatchPlanResponse{
+		ID:                    uuidToString(plan.ID),
+		ChannelID:             uuidToString(plan.ChannelID),
+		SessionID:             uuidToString(plan.ChannelSessionID),
+		TriggerMessageID:      uuidToString(plan.TriggerMessageID),
+		Mode:                  plan.Mode,
+		Status:                plan.Status,
+		Confidence:            plan.Confidence,
+		PlannerSource:         plan.PlannerSource,
+		Reason:                plan.Reason,
+		ParticipantCount:      plan.ParticipantCount,
+		RunCount:              plan.RunCount,
+		TotalInputTokens:      plan.TotalInputTokens,
+		TotalOutputTokens:     plan.TotalOutputTokens,
+		TotalCacheReadTokens:  plan.TotalCacheReadTokens,
+		TotalCacheWriteTokens: plan.TotalCacheWriteTokens,
+		ElapsedMs:             plan.ElapsedMs,
+		StartedAt:             timestampToPtr(plan.StartedAt),
+		CompletedAt:           timestampToPtr(plan.CompletedAt),
+		CreatedAt:             timestampToString(plan.CreatedAt),
+		UpdatedAt:             timestampToString(plan.UpdatedAt),
+		Steps:                 steps,
+	}
+}
+
+func channelDispatchStepToResponse(step db.ListChannelDispatchStepsByPlanRow) ChannelDispatchStepResponse {
+	return ChannelDispatchStepResponse{
+		ID:                uuidToString(step.ID),
+		PlanID:            uuidToString(step.PlanID),
+		ChannelID:         uuidToString(step.ChannelID),
+		SessionID:         uuidToString(step.ChannelSessionID),
+		TriggerMessageID:  uuidToString(step.TriggerMessageID),
+		AgentID:           uuidToString(step.AgentID),
+		Position:          step.Position,
+		Role:              step.Role,
+		Status:            step.Status,
+		Instruction:       step.Instruction,
+		DependsOnStepIDs:  uuidSliceToStrings(step.DependsOnStepIds),
+		SkipReason:        step.SkipReason,
+		Error:             step.Error,
+		ChannelAgentRunID: uuidToString(step.ChannelAgentRunID),
+		ChatSessionID:     uuidToString(step.ChatSessionID),
+		ChatUserMessageID: uuidToString(step.ChatUserMessageID),
+		TaskID:            uuidToString(step.TaskID),
+		TaskStatus:        step.TaskStatus,
+		StartedAt:         timestampToPtr(step.StartedAt),
+		CompletedAt:       timestampToPtr(step.CompletedAt),
+		CreatedAt:         timestampToString(step.CreatedAt),
+		UpdatedAt:         timestampToString(step.UpdatedAt),
+		TaskCreatedAt:     timestampToPtr(step.TaskCreatedAt),
+		TaskStartedAt:     timestampToPtr(step.TaskStartedAt),
+		TaskCompletedAt:   timestampToPtr(step.TaskCompletedAt),
+	}
+}
+
+func uuidSliceToStrings(values []pgtype.UUID) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if text := uuidToString(value); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func approvalRequestToResponse(approval db.ApprovalRequest) ApprovalRequestResponse {
@@ -309,6 +434,10 @@ func normalizeChannelSlug(name, slug string) string {
 
 func isValidChannelVisibility(visibility string) bool {
 	return visibility == "public" || visibility == "private"
+}
+
+func isValidChannelProactivity(proactivity string) bool {
+	return proactivity == "quiet" || proactivity == "standard" || proactivity == "active"
 }
 
 func isValidChannelMemberType(memberType string) bool {
@@ -599,6 +728,7 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		Name                string                 `json:"name"`
 		Description         string                 `json:"description"`
 		Visibility          string                 `json:"visibility"`
+		Proactivity         string                 `json:"proactivity"`
 		Instructions        string                 `json:"instructions"`
 		Summary             string                 `json:"summary"`
 		DefaultProjectID    string                 `json:"default_project_id"`
@@ -622,6 +752,14 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isValidChannelVisibility(req.Visibility) {
 		writeError(w, http.StatusBadRequest, "visibility must be 'public' or 'private'")
+		return
+	}
+	req.Proactivity = strings.TrimSpace(req.Proactivity)
+	if req.Proactivity == "" {
+		req.Proactivity = "active"
+	}
+	if !isValidChannelProactivity(req.Proactivity) {
+		writeError(w, http.StatusBadRequest, "proactivity must be 'quiet', 'standard', or 'active'")
 		return
 	}
 	slug := normalizeChannelSlug(req.Name, req.Slug)
@@ -685,6 +823,7 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		Name:                req.Name,
 		Description:         req.Description,
 		Visibility:          req.Visibility,
+		Proactivity:         req.Proactivity,
 		Instructions:        req.Instructions,
 		Summary:             req.Summary,
 		DefaultProjectID:    defaultProjectID,
@@ -749,6 +888,7 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		Name                *string  `json:"name"`
 		Description         *string  `json:"description"`
 		Visibility          *string  `json:"visibility"`
+		Proactivity         *string  `json:"proactivity"`
 		Instructions        *string  `json:"instructions"`
 		Summary             *string  `json:"summary"`
 		DefaultProjectID    *string  `json:"default_project_id"`
@@ -770,6 +910,10 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Visibility != nil && !isValidChannelVisibility(*req.Visibility) {
 		writeError(w, http.StatusBadRequest, "visibility must be 'public' or 'private'")
+		return
+	}
+	if req.Proactivity != nil && !isValidChannelProactivity(*req.Proactivity) {
+		writeError(w, http.StatusBadRequest, "proactivity must be 'quiet', 'standard', or 'active'")
 		return
 	}
 	if req.DefaultAssigneeType != nil && !isValidChannelMemberType(*req.DefaultAssigneeType) {
@@ -806,6 +950,7 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		Name:                optionalTextPtr(req.Name),
 		Description:         optionalTextPtr(req.Description),
 		Visibility:          optionalTextPtr(req.Visibility),
+		Proactivity:         optionalTextPtr(req.Proactivity),
 		Instructions:        optionalTextPtr(req.Instructions),
 		Summary:             optionalTextPtr(req.Summary),
 		DefaultProjectID:    defaultProjectID,
@@ -1198,186 +1343,7 @@ func (h *Handler) dispatchChannelMessageToAgents(
 	workspaceID string,
 	requesterID pgtype.UUID,
 ) {
-	if h.TaskService == nil {
-		return
-	}
-	members, err := h.Queries.ListChannelMembers(ctx, channel.ID)
-	if err != nil {
-		slog.Warn("failed to list channel members for agent dispatch", "channel_id", uuidToString(channel.ID), "error", err)
-		return
-	}
-
-	agentIDs := make([]pgtype.UUID, 0, len(members))
-	agentInChannel := make(map[string]pgtype.UUID, len(members))
-	for _, member := range members {
-		if member.MemberType != "agent" {
-			continue
-		}
-		id := uuidToString(member.MemberID)
-		if id == "" {
-			continue
-		}
-		if _, exists := agentInChannel[id]; exists {
-			continue
-		}
-		agentInChannel[id] = member.MemberID
-		agentIDs = append(agentIDs, member.MemberID)
-	}
-	if len(agentIDs) == 0 {
-		h.createChannelSystemMessage(ctx, channel, session.ID, message.ID, workspaceID, "这个频道还没有 AI 同事。请先在频道成员里加入智能体。")
-		return
-	}
-
-	targetIDs := make([]pgtype.UUID, 0, len(agentIDs))
-	targetSeen := make(map[string]struct{}, len(agentIDs))
-	addTarget := func(id pgtype.UUID) {
-		key := uuidToString(id)
-		if key == "" {
-			return
-		}
-		if _, exists := targetSeen[key]; exists {
-			return
-		}
-		targetSeen[key] = struct{}{}
-		targetIDs = append(targetIDs, id)
-	}
-
-	mentions := util.ParseMentions(message.Content)
-	if util.HasMentionAll(mentions) {
-		for _, id := range agentIDs {
-			addTarget(id)
-		}
-	} else {
-		for _, mention := range mentions {
-			if mention.Type != "agent" {
-				continue
-			}
-			if id, ok := agentInChannel[mention.ID]; ok {
-				addTarget(id)
-			}
-		}
-	}
-	if len(targetIDs) == 0 && len(agentIDs) == 1 {
-		addTarget(agentIDs[0])
-	}
-	if len(targetIDs) == 0 {
-		h.createChannelSystemMessage(ctx, channel, session.ID, message.ID, workspaceID, "这个频道有多个 AI 同事。请 @具体智能体，或 @all 让全部 AI 同事参与。")
-		return
-	}
-
-	sequential := shouldDispatchChannelAgentsSequentially(message.Content, len(targetIDs))
-	firstDispatched := false
-	dispatched := make([]string, 0, len(targetIDs))
-	queued := make([]string, 0)
-	skipped := make([]string, 0)
-	for _, agentID := range targetIDs {
-		agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
-			ID:          agentID,
-			WorkspaceID: channel.WorkspaceID,
-		})
-		if err != nil {
-			skipped = append(skipped, uuidToString(agentID))
-			continue
-		}
-		name := strings.TrimSpace(agent.Name)
-		if name == "" {
-			name = uuidToString(agent.ID)
-		}
-		if agent.ArchivedAt.Valid {
-			skipped = append(skipped, name+"（已归档）")
-			continue
-		}
-		if !agent.RuntimeID.Valid {
-			skipped = append(skipped, name+"（未绑定运行时）")
-			continue
-		}
-		if sequential && firstDispatched {
-			if _, err := h.Queries.CreateChannelAgentRun(ctx, db.CreateChannelAgentRunParams{
-				ChannelID:        channel.ID,
-				ChannelSessionID: session.ID,
-				UserMessageID:    message.ID,
-				AgentID:          agent.ID,
-			}); err != nil {
-				slog.Warn("failed to queue sequential channel agent run", "channel_id", uuidToString(channel.ID), "session_id", uuidToString(session.ID), "agent_id", uuidToString(agent.ID), "error", err)
-				skipped = append(skipped, name)
-				continue
-			}
-			queued = append(queued, name)
-			continue
-		}
-		chatSession, err := h.getOrCreateChannelAgentChatSession(ctx, channel, session, requesterID, agent.ID)
-		if err != nil {
-			slog.Warn("failed to prepare channel agent chat session", "channel_id", uuidToString(channel.ID), "session_id", uuidToString(session.ID), "agent_id", uuidToString(agent.ID), "error", err)
-			skipped = append(skipped, name)
-			continue
-		}
-		chatMessage, err := h.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
-			ChatSessionID: chatSession.ID,
-			Role:          "user",
-			Content:       h.buildChannelChatPrompt(channel, session, message.Content),
-		})
-		if err != nil {
-			slog.Warn("failed to create channel-backed chat message", "channel_id", uuidToString(channel.ID), "session_id", uuidToString(session.ID), "agent_id", uuidToString(agent.ID), "error", err)
-			skipped = append(skipped, name)
-			continue
-		}
-		task, err := h.TaskService.EnqueueChatTask(ctx, chatSession)
-		if err != nil {
-			slog.Warn("failed to enqueue channel-backed chat task", "channel_id", uuidToString(channel.ID), "session_id", uuidToString(session.ID), "agent_id", uuidToString(agent.ID), "error", err)
-			skipped = append(skipped, name)
-			continue
-		}
-		if _, err := h.Queries.CreateChannelAgentRun(ctx, db.CreateChannelAgentRunParams{
-			ChannelID:         channel.ID,
-			ChannelSessionID:  session.ID,
-			UserMessageID:     message.ID,
-			AgentID:           agent.ID,
-			ChatSessionID:     chatSession.ID,
-			ChatUserMessageID: chatMessage.ID,
-			TaskID:            task.ID,
-		}); err != nil {
-			slog.Warn("failed to link channel agent run", "channel_id", uuidToString(channel.ID), "session_id", uuidToString(session.ID), "agent_id", uuidToString(agent.ID), "task_id", uuidToString(task.ID), "error", err)
-			skipped = append(skipped, name)
-			continue
-		}
-		dispatched = append(dispatched, name)
-		firstDispatched = true
-	}
-
-	if len(dispatched) == 0 {
-		h.createChannelSystemMessage(ctx, channel, session.ID, message.ID, workspaceID, "没有成功派发给 AI。同事可能未绑定运行时或暂不可用。")
-		return
-	}
-	notice := "已派发给：" + strings.Join(dispatched, "、") + "。AI 回复会写回当前会话。"
-	if len(queued) > 0 {
-		notice += " 已排队：" + strings.Join(queued, "、") + "，会在前一位 AI 发言后继续。"
-	}
-	if len(skipped) > 0 {
-		notice += " 未派发：" + strings.Join(skipped, "、") + "。"
-	}
-	h.createChannelSystemMessage(ctx, channel, session.ID, message.ID, workspaceID, notice)
-}
-
-func shouldDispatchChannelAgentsSequentially(content string, targetCount int) bool {
-	if targetCount < 2 {
-		return false
-	}
-	normalized := strings.ToLower(strings.TrimSpace(content))
-	if normalized == "" {
-		return false
-	}
-	sequentialHints := []string{
-		"你先", "先说", "先发言", "先回答", "先讲", "先来",
-		"然后", "之后", "再", "接着", "随后", "轮流", "依次",
-		"反驳", "回应", "回复前面", "根据", "基于", "等待", "等他", "等她", "等它",
-		"after", "then", "respond to", "reply to", "argue",
-	}
-	for _, hint := range sequentialHints {
-		if strings.Contains(normalized, hint) {
-			return true
-		}
-	}
-	return false
+	h.createAndDispatchChannelPlan(ctx, channel, session, message, workspaceID, requesterID)
 }
 
 func (h *Handler) getOrCreateChannelAgentChatSession(

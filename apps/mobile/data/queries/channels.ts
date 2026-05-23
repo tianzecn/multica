@@ -15,6 +15,13 @@ export const channelKeys = {
       sessionId,
       "messages",
     ] as const,
+  dispatchPlans: (wsId: string | null, channelId: string, sessionId: string) =>
+    [
+      ...channelKeys.detail(wsId, channelId),
+      "sessions",
+      sessionId,
+      "plans",
+    ] as const,
   issues: (wsId: string | null, channelId: string) =>
     [...channelKeys.detail(wsId, channelId), "issues"] as const,
   approvals: (wsId: string | null, channelId: string) =>
@@ -60,6 +67,19 @@ export const channelMessagesOptions = (
     queryKey: channelKeys.messages(wsId, channelId ?? "", sessionId ?? ""),
     queryFn: ({ signal }) =>
       api.listChannelMessages(channelId!, sessionId!, { signal }),
+    enabled: !!wsId && !!channelId && !!sessionId,
+    staleTime: Infinity,
+  });
+
+export const channelDispatchPlansOptions = (
+  wsId: string | null,
+  channelId: string | null,
+  sessionId: string | null,
+) =>
+  queryOptions({
+    queryKey: channelKeys.dispatchPlans(wsId, channelId ?? "", sessionId ?? ""),
+    queryFn: ({ signal }) =>
+      api.listChannelDispatchPlans(channelId!, sessionId!, { signal }),
     enabled: !!wsId && !!channelId && !!sessionId,
     staleTime: Infinity,
   });

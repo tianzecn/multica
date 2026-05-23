@@ -102,6 +102,60 @@ var channelApprovalCmd = &cobra.Command{
 	Short: "Work with channel approval requests",
 }
 
+var channelPlanCmd = &cobra.Command{
+	Use:   "plan",
+	Short: "Work with channel dispatch plans",
+}
+
+var channelPlanListCmd = &cobra.Command{
+	Use:   "list <channel-id-or-slug> <session-id>",
+	Short: "List channel dispatch plans",
+	Args:  exactArgs(2),
+	RunE:  runChannelPlanList,
+}
+
+var channelPlanGetCmd = &cobra.Command{
+	Use:   "get <channel-id-or-slug> <plan-id>",
+	Short: "Get a channel dispatch plan",
+	Args:  exactArgs(2),
+	RunE:  runChannelPlanGet,
+}
+
+var channelPlanCancelCmd = &cobra.Command{
+	Use:   "cancel <channel-id-or-slug> <plan-id>",
+	Short: "Cancel a channel dispatch plan",
+	Args:  exactArgs(2),
+	RunE:  runChannelPlanCancel,
+}
+
+var channelPlanRetryCmd = &cobra.Command{
+	Use:   "retry <channel-id-or-slug> <plan-id> <step-id>",
+	Short: "Retry a channel dispatch step",
+	Args:  exactArgs(3),
+	RunE:  runChannelPlanRetry,
+}
+
+var channelPlanSkipCmd = &cobra.Command{
+	Use:   "skip <channel-id-or-slug> <plan-id> <step-id>",
+	Short: "Skip a channel dispatch step",
+	Args:  exactArgs(3),
+	RunE:  runChannelPlanSkip,
+}
+
+var channelPlanAddAgentCmd = &cobra.Command{
+	Use:   "add-agent <channel-id-or-slug> <plan-id> <agent-id>",
+	Short: "Add an AI teammate to a channel dispatch plan",
+	Args:  exactArgs(3),
+	RunE:  runChannelPlanAddAgent,
+}
+
+var channelPlanChangeModeCmd = &cobra.Command{
+	Use:   "change-mode <channel-id-or-slug> <plan-id> <mode>",
+	Short: "Change a channel dispatch plan mode",
+	Args:  exactArgs(3),
+	RunE:  runChannelPlanChangeMode,
+}
+
 var channelApprovalListCmd = &cobra.Command{
 	Use:   "list <channel-id-or-slug>",
 	Short: "List channel approval requests",
@@ -133,6 +187,7 @@ func init() {
 	channelCmd.AddCommand(channelMessageCmd)
 	channelCmd.AddCommand(channelLinkIssueCmd)
 	channelCmd.AddCommand(channelApprovalCmd)
+	channelCmd.AddCommand(channelPlanCmd)
 
 	channelSessionCmd.AddCommand(channelSessionListCmd)
 	channelSessionCmd.AddCommand(channelSessionCreateCmd)
@@ -141,6 +196,13 @@ func init() {
 	channelApprovalCmd.AddCommand(channelApprovalListCmd)
 	channelApprovalCmd.AddCommand(channelApprovalApproveCmd)
 	channelApprovalCmd.AddCommand(channelApprovalRejectCmd)
+	channelPlanCmd.AddCommand(channelPlanListCmd)
+	channelPlanCmd.AddCommand(channelPlanGetCmd)
+	channelPlanCmd.AddCommand(channelPlanCancelCmd)
+	channelPlanCmd.AddCommand(channelPlanRetryCmd)
+	channelPlanCmd.AddCommand(channelPlanSkipCmd)
+	channelPlanCmd.AddCommand(channelPlanAddAgentCmd)
+	channelPlanCmd.AddCommand(channelPlanChangeModeCmd)
 
 	channelListCmd.Flags().String("output", "table", "Output format: table or json")
 	channelListCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -181,6 +243,14 @@ func init() {
 	channelApprovalApproveCmd.Flags().String("output", "json", "Output format: table or json")
 	channelApprovalRejectCmd.Flags().String("note", "", "Resolution note")
 	channelApprovalRejectCmd.Flags().String("output", "json", "Output format: table or json")
+	channelPlanListCmd.Flags().String("output", "table", "Output format: table or json")
+	channelPlanGetCmd.Flags().String("output", "json", "Output format: table or json")
+	channelPlanCancelCmd.Flags().String("output", "json", "Output format: table or json")
+	channelPlanRetryCmd.Flags().String("output", "json", "Output format: table or json")
+	channelPlanSkipCmd.Flags().String("reason", "", "Skip reason")
+	channelPlanSkipCmd.Flags().String("output", "json", "Output format: table or json")
+	channelPlanAddAgentCmd.Flags().String("output", "json", "Output format: table or json")
+	channelPlanChangeModeCmd.Flags().String("output", "json", "Output format: table or json")
 }
 
 func runChannelList(cmd *cobra.Command, _ []string) error {
@@ -500,4 +570,141 @@ func resolveChannelApproval(cmd *cobra.Command, args []string, action string) er
 		return nil
 	}
 	return cli.PrintJSON(os.Stdout, result)
+}
+
+func runChannelPlanList(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var plans []map[string]any
+	if err := client.GetJSON(ctx, "/api/channels/"+args[0]+"/sessions/"+args[1]+"/plans", &plans); err != nil {
+		return fmt.Errorf("list channel dispatch plans: %w", err)
+	}
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, plans)
+	}
+	rows := make([][]string, 0, len(plans))
+	for _, plan := range plans {
+		rows = append(rows, []string{
+			strVal(plan, "id"),
+			strVal(plan, "mode"),
+			strVal(plan, "status"),
+			fmt.Sprintf("%.0f%%", floatVal(plan, "confidence")*100),
+			fmt.Sprintf("%v", len(sliceVal(plan, "steps"))),
+		})
+	}
+	cli.PrintTable(os.Stdout, []string{"ID", "MODE", "STATUS", "CONF", "STEPS"}, rows)
+	return nil
+}
+
+func runChannelPlanGet(cmd *cobra.Command, args []string) error {
+	return channelPlanAction(cmd, args[0], args[1], "", nil)
+}
+
+func runChannelPlanCancel(cmd *cobra.Command, args []string) error {
+	return channelPlanAction(cmd, args[0], args[1], "cancel", map[string]any{})
+}
+
+func runChannelPlanRetry(cmd *cobra.Command, args []string) error {
+	return channelPlanStepAction(cmd, args[0], args[1], args[2], "retry", map[string]any{})
+}
+
+func runChannelPlanSkip(cmd *cobra.Command, args []string) error {
+	body := map[string]any{}
+	if reason, _ := cmd.Flags().GetString("reason"); reason != "" {
+		body["reason"] = reason
+	}
+	return channelPlanStepAction(cmd, args[0], args[1], args[2], "skip", body)
+}
+
+func runChannelPlanAddAgent(cmd *cobra.Command, args []string) error {
+	return channelPlanAction(cmd, args[0], args[1], "add-agent", map[string]any{"agent_id": args[2]})
+}
+
+func runChannelPlanChangeMode(cmd *cobra.Command, args []string) error {
+	mode := args[2]
+	if mode != "single" && mode != "parallel" && mode != "serial" && mode != "roundtable" {
+		return fmt.Errorf("mode must be single, parallel, serial, or roundtable")
+	}
+	return channelPlanAction(cmd, args[0], args[1], "change-mode", map[string]any{"mode": mode})
+}
+
+func channelPlanAction(cmd *cobra.Command, channelID, planID, action string, body map[string]any) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	path := "/api/channels/" + channelID + "/plans/" + planID
+	var result map[string]any
+	if action == "" {
+		if err := client.GetJSON(ctx, path, &result); err != nil {
+			return fmt.Errorf("get channel dispatch plan: %w", err)
+		}
+	} else if err := client.PostJSON(ctx, path+"/"+action, body, &result); err != nil {
+		return fmt.Errorf("%s channel dispatch plan: %w", action, err)
+	}
+	output, _ := cmd.Flags().GetString("output")
+	if output == "table" {
+		cli.PrintTable(os.Stdout, []string{"ID", "MODE", "STATUS", "STEPS"}, [][]string{{
+			strVal(result, "id"),
+			strVal(result, "mode"),
+			strVal(result, "status"),
+			fmt.Sprintf("%v", len(sliceVal(result, "steps"))),
+		}})
+		return nil
+	}
+	return cli.PrintJSON(os.Stdout, result)
+}
+
+func channelPlanStepAction(cmd *cobra.Command, channelID, planID, stepID, action string, body map[string]any) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var result map[string]any
+	path := "/api/channels/" + channelID + "/plans/" + planID + "/steps/" + stepID + "/" + action
+	if err := client.PostJSON(ctx, path, body, &result); err != nil {
+		return fmt.Errorf("%s channel dispatch step: %w", action, err)
+	}
+	output, _ := cmd.Flags().GetString("output")
+	if output == "table" {
+		fmt.Printf("Plan updated: %s (%s)\n", strVal(result, "id"), strVal(result, "status"))
+		return nil
+	}
+	return cli.PrintJSON(os.Stdout, result)
+}
+
+func floatVal(m map[string]any, key string) float64 {
+	switch value := m[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int32:
+		return float64(value)
+	case int64:
+		return float64(value)
+	default:
+		return 0
+	}
+}
+
+func sliceVal(m map[string]any, key string) []any {
+	if value, ok := m[key].([]any); ok {
+		return value
+	}
+	return nil
 }

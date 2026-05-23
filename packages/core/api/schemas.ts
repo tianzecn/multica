@@ -7,6 +7,8 @@ import type {
   Attachment,
   Channel,
   ChannelAgentRun,
+  ChannelDispatchPlan,
+  ChannelDispatchStep,
   ChannelGroup,
   ChannelIssue,
   ChannelMember,
@@ -269,6 +271,7 @@ export const ChannelSchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   visibility: z.string(),
+  proactivity: z.string().default("active"),
   instructions: z.string().default(""),
   summary: z.string().default(""),
   default_project_id: z.string().nullable().optional(),
@@ -322,6 +325,7 @@ export const ChannelAgentRunSchema = z.object({
   channel_id: z.string(),
   session_id: z.string(),
   user_message_id: z.string(),
+  dispatch_step_id: z.string().default(""),
   agent_id: z.string(),
   chat_session_id: z.string(),
   chat_user_message_id: z.string(),
@@ -333,6 +337,58 @@ export const ChannelAgentRunSchema = z.object({
   task_created_at: z.string().nullable().optional(),
   task_started_at: z.string().nullable().optional(),
   task_completed_at: z.string().nullable().optional(),
+}).loose();
+
+export const ChannelDispatchStepSchema = z.object({
+  id: z.string(),
+  plan_id: z.string(),
+  channel_id: z.string(),
+  session_id: z.string(),
+  trigger_message_id: z.string(),
+  agent_id: z.string(),
+  position: z.number().default(0),
+  role: z.string().default("participant"),
+  status: z.string().default("pending"),
+  instruction: z.string().default(""),
+  depends_on_step_ids: z.array(z.string()).default([]),
+  skip_reason: z.string().default(""),
+  error: z.string().default(""),
+  channel_agent_run_id: z.string().default(""),
+  chat_session_id: z.string().default(""),
+  chat_user_message_id: z.string().default(""),
+  task_id: z.string().default(""),
+  task_status: z.string().default("pending"),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  task_created_at: z.string().nullable().optional(),
+  task_started_at: z.string().nullable().optional(),
+  task_completed_at: z.string().nullable().optional(),
+}).loose();
+
+export const ChannelDispatchPlanSchema = z.object({
+  id: z.string(),
+  channel_id: z.string(),
+  session_id: z.string(),
+  trigger_message_id: z.string(),
+  mode: z.string().default("parallel"),
+  status: z.string().default("queued"),
+  confidence: z.number().default(0),
+  planner_source: z.string().default("rules"),
+  reason: z.string().default(""),
+  participant_count: z.number().default(0),
+  run_count: z.number().default(0),
+  total_input_tokens: z.number().default(0),
+  total_output_tokens: z.number().default(0),
+  total_cache_read_tokens: z.number().default(0),
+  total_cache_write_tokens: z.number().default(0),
+  elapsed_ms: z.number().default(0),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  steps: z.array(ChannelDispatchStepSchema).default([]),
 }).loose();
 
 export const ChannelIssueSchema = z.object({
@@ -373,6 +429,7 @@ export const ChannelMemberListSchema = z.array(ChannelMemberSchema);
 export const ChannelSessionListSchema = z.array(ChannelSessionSchema);
 export const ChannelMessageListSchema = z.array(ChannelMessageSchema);
 export const ChannelAgentRunListSchema = z.array(ChannelAgentRunSchema);
+export const ChannelDispatchPlanListSchema = z.array(ChannelDispatchPlanSchema);
 export const ChannelIssueListSchema = z.array(ChannelIssueSchema);
 export const ApprovalRequestListSchema = z.array(ApprovalRequestSchema);
 
@@ -395,6 +452,7 @@ export const EMPTY_CHANNEL: Channel = {
   name: "",
   description: "",
   visibility: "private",
+  proactivity: "active",
   instructions: "",
   summary: "",
   default_project_id: null,
@@ -448,6 +506,7 @@ export const EMPTY_CHANNEL_AGENT_RUN: ChannelAgentRun = {
   channel_id: "",
   session_id: "",
   user_message_id: "",
+  dispatch_step_id: "",
   agent_id: "",
   chat_session_id: "",
   chat_user_message_id: "",
@@ -459,6 +518,58 @@ export const EMPTY_CHANNEL_AGENT_RUN: ChannelAgentRun = {
   task_created_at: null,
   task_started_at: null,
   task_completed_at: null,
+};
+
+export const EMPTY_CHANNEL_DISPATCH_STEP: ChannelDispatchStep = {
+  id: "",
+  plan_id: "",
+  channel_id: "",
+  session_id: "",
+  trigger_message_id: "",
+  agent_id: "",
+  position: 0,
+  role: "participant",
+  status: "pending",
+  instruction: "",
+  depends_on_step_ids: [],
+  skip_reason: "",
+  error: "",
+  channel_agent_run_id: "",
+  chat_session_id: "",
+  chat_user_message_id: "",
+  task_id: "",
+  task_status: "pending",
+  started_at: null,
+  completed_at: null,
+  created_at: "",
+  updated_at: "",
+  task_created_at: null,
+  task_started_at: null,
+  task_completed_at: null,
+};
+
+export const EMPTY_CHANNEL_DISPATCH_PLAN: ChannelDispatchPlan = {
+  id: "",
+  channel_id: "",
+  session_id: "",
+  trigger_message_id: "",
+  mode: "parallel",
+  status: "queued",
+  confidence: 0,
+  planner_source: "rules",
+  reason: "",
+  participant_count: 0,
+  run_count: 0,
+  total_input_tokens: 0,
+  total_output_tokens: 0,
+  total_cache_read_tokens: 0,
+  total_cache_write_tokens: 0,
+  elapsed_ms: 0,
+  started_at: null,
+  completed_at: null,
+  created_at: "",
+  updated_at: "",
+  steps: [],
 };
 
 export const EMPTY_APPROVAL_REQUEST: ApprovalRequest = {
@@ -485,6 +596,7 @@ export const EMPTY_CHANNEL_MEMBERS: ChannelMember[] = [];
 export const EMPTY_CHANNEL_SESSIONS: ChannelSession[] = [];
 export const EMPTY_CHANNEL_MESSAGES: ChannelMessage[] = [];
 export const EMPTY_CHANNEL_AGENT_RUNS: ChannelAgentRun[] = [];
+export const EMPTY_CHANNEL_DISPATCH_PLANS: ChannelDispatchPlan[] = [];
 export const EMPTY_CHANNEL_ISSUES: ChannelIssue[] = [];
 export const EMPTY_APPROVAL_REQUESTS: ApprovalRequest[] = [];
 

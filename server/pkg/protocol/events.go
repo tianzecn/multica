@@ -111,12 +111,13 @@ const (
 	EventSquadDeleted = "squad:deleted"
 
 	// Channel events
-	EventChannelCreated         = "channel:created"
-	EventChannelUpdated         = "channel:updated"
-	EventChannelSessionCreated  = "channel_session:created"
-	EventChannelMessageCreated  = "channel_message:created"
-	EventChannelIssueLinked     = "channel_issue:linked"
-	EventChannelApprovalUpdated = "channel_approval:updated"
+	EventChannelCreated             = "channel:created"
+	EventChannelUpdated             = "channel:updated"
+	EventChannelSessionCreated      = "channel_session:created"
+	EventChannelMessageCreated      = "channel_message:created"
+	EventChannelIssueLinked         = "channel_issue:linked"
+	EventChannelApprovalUpdated     = "channel_approval:updated"
+	EventChannelDispatchPlanUpdated = "channel_dispatch_plan:updated"
 
 	// Daemon events
 	EventDaemonHeartbeat     = "daemon:heartbeat"

@@ -3,6 +3,7 @@ export {
   channelGroupsOptions,
   channelIssuesOptions,
   channelAgentRunsOptions,
+  channelDispatchPlansOptions,
   channelListOptions,
   channelMembersOptions,
   channelMessagesOptions,
@@ -12,6 +13,9 @@ export {
 } from "./queries";
 export {
   useAddChannelMember,
+  useAddAgentToChannelDispatchPlan,
+  useCancelChannelDispatchPlan,
+  useChangeChannelDispatchPlanMode,
   useCreateApprovalRequest,
   useCreateChannel,
   useCreateChannelGroup,
@@ -19,6 +23,8 @@ export {
   useCreateChannelSession,
   useJoinChannel,
   useLinkIssueToChannel,
+  useRetryChannelDispatchStep,
   useResolveApprovalRequest,
+  useSkipChannelDispatchStep,
 } from "./mutations";
 export { deriveChannelsSettings } from "./settings";

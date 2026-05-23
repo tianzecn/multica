@@ -202,6 +202,7 @@ type Channel struct {
 	ArchivedAt          pgtype.Timestamptz `json:"archived_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	Proactivity         string             `json:"proactivity"`
 }
 
 type ChannelAgentRun struct {
@@ -216,6 +217,7 @@ type ChannelAgentRun struct {
 	Status            string             `json:"status"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	DispatchStepID    pgtype.UUID        `json:"dispatch_step_id"`
 }
 
 type ChannelAgentThread struct {
@@ -224,6 +226,62 @@ type ChannelAgentThread struct {
 	ChannelSessionID pgtype.UUID        `json:"channel_session_id"`
 	AgentID          pgtype.UUID        `json:"agent_id"`
 	ChatSessionID    pgtype.UUID        `json:"chat_session_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ChannelDispatchFeedback struct {
+	ID         pgtype.UUID        `json:"id"`
+	PlanID     pgtype.UUID        `json:"plan_id"`
+	StepID     pgtype.UUID        `json:"step_id"`
+	ActorType  string             `json:"actor_type"`
+	ActorID    pgtype.UUID        `json:"actor_id"`
+	Action     string             `json:"action"`
+	BeforeMode pgtype.Text        `json:"before_mode"`
+	AfterMode  pgtype.Text        `json:"after_mode"`
+	Payload    []byte             `json:"payload"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type ChannelDispatchPlan struct {
+	ID                    pgtype.UUID        `json:"id"`
+	ChannelID             pgtype.UUID        `json:"channel_id"`
+	ChannelSessionID      pgtype.UUID        `json:"channel_session_id"`
+	TriggerMessageID      pgtype.UUID        `json:"trigger_message_id"`
+	Mode                  string             `json:"mode"`
+	Status                string             `json:"status"`
+	Confidence            float64            `json:"confidence"`
+	PlannerSource         string             `json:"planner_source"`
+	Reason                string             `json:"reason"`
+	ParticipantCount      int32              `json:"participant_count"`
+	RunCount              int32              `json:"run_count"`
+	TotalInputTokens      int64              `json:"total_input_tokens"`
+	TotalOutputTokens     int64              `json:"total_output_tokens"`
+	TotalCacheReadTokens  int64              `json:"total_cache_read_tokens"`
+	TotalCacheWriteTokens int64              `json:"total_cache_write_tokens"`
+	ElapsedMs             int64              `json:"elapsed_ms"`
+	StartedAt             pgtype.Timestamptz `json:"started_at"`
+	CompletedAt           pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ChannelDispatchStep struct {
+	ID               pgtype.UUID        `json:"id"`
+	PlanID           pgtype.UUID        `json:"plan_id"`
+	ChannelID        pgtype.UUID        `json:"channel_id"`
+	ChannelSessionID pgtype.UUID        `json:"channel_session_id"`
+	TriggerMessageID pgtype.UUID        `json:"trigger_message_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Position         int32              `json:"position"`
+	Role             string             `json:"role"`
+	Status           string             `json:"status"`
+	Instruction      string             `json:"instruction"`
+	DependsOnStepIds []pgtype.UUID      `json:"depends_on_step_ids"`
+	SkipReason       string             `json:"skip_reason"`
+	Error            string             `json:"error"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	CompletedAt      pgtype.Timestamptz `json:"completed_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }

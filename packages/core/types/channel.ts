@@ -1,10 +1,14 @@
 export type ChannelVisibility = "public" | "private";
+export type ChannelProactivity = "quiet" | "standard" | "active";
 export type ChannelMemberType = "member" | "agent" | "squad";
 export type ChannelMemberRole = "owner" | "admin" | "member";
 export type ChannelSessionStatus = "active" | "resolved" | "archived";
 export type ChannelMessageType = "message" | "system" | "suggestion" | "approval";
 export type ApprovalRequestStatus = "pending" | "approved" | "rejected" | "cancelled" | "executed" | "failed";
 export type ChannelAgentTaskStatus = "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled";
+export type ChannelDispatchMode = "single" | "parallel" | "serial" | "roundtable";
+export type ChannelDispatchPlanStatus = "queued" | "running" | "completed" | "paused" | "failed" | "cancelled";
+export type ChannelDispatchStepStatus = "pending" | "queued" | "running" | "completed" | "failed" | "skipped" | "cancelled";
 
 export interface ChannelGroup {
   id: string;
@@ -25,6 +29,7 @@ export interface Channel {
   name: string;
   description: string;
   visibility: ChannelVisibility;
+  proactivity: ChannelProactivity;
   instructions: string;
   summary: string;
   default_project_id: string | null;
@@ -78,6 +83,7 @@ export interface ChannelAgentRun {
   channel_id: string;
   session_id: string;
   user_message_id: string;
+  dispatch_step_id: string;
   agent_id: string;
   chat_session_id: string;
   chat_user_message_id: string;
@@ -89,6 +95,58 @@ export interface ChannelAgentRun {
   task_created_at: string | null;
   task_started_at: string | null;
   task_completed_at: string | null;
+}
+
+export interface ChannelDispatchStep {
+  id: string;
+  plan_id: string;
+  channel_id: string;
+  session_id: string;
+  trigger_message_id: string;
+  agent_id: string;
+  position: number;
+  role: "participant" | "summarizer";
+  status: ChannelDispatchStepStatus;
+  instruction: string;
+  depends_on_step_ids: string[];
+  skip_reason: string;
+  error: string;
+  channel_agent_run_id: string;
+  chat_session_id: string;
+  chat_user_message_id: string;
+  task_id: string;
+  task_status: ChannelAgentTaskStatus | ChannelDispatchStepStatus;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  task_created_at: string | null;
+  task_started_at: string | null;
+  task_completed_at: string | null;
+}
+
+export interface ChannelDispatchPlan {
+  id: string;
+  channel_id: string;
+  session_id: string;
+  trigger_message_id: string;
+  mode: ChannelDispatchMode;
+  status: ChannelDispatchPlanStatus;
+  confidence: number;
+  planner_source: "rules" | "model" | "fallback" | string;
+  reason: string;
+  participant_count: number;
+  run_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_write_tokens: number;
+  elapsed_ms: number;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  steps: ChannelDispatchStep[];
 }
 
 export interface ChannelIssue {
@@ -134,6 +192,7 @@ export interface CreateChannelRequest {
   name: string;
   description?: string;
   visibility?: ChannelVisibility;
+  proactivity?: ChannelProactivity;
   instructions?: string;
   summary?: string;
   default_project_id?: string | null;
@@ -152,6 +211,7 @@ export interface UpdateChannelRequest {
   name?: string;
   description?: string;
   visibility?: ChannelVisibility;
+  proactivity?: ChannelProactivity;
   instructions?: string;
   summary?: string;
   default_project_id?: string | null;
@@ -189,4 +249,16 @@ export interface CreateApprovalRequestRequest {
   issue_id?: string | null;
   action_type: string;
   action_payload?: Record<string, unknown>;
+}
+
+export interface SkipChannelDispatchStepRequest {
+  reason?: string;
+}
+
+export interface AddChannelDispatchAgentRequest {
+  agent_id: string;
+}
+
+export interface ChangeChannelDispatchModeRequest {
+  mode: ChannelDispatchMode;
 }

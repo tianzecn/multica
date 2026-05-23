@@ -19,6 +19,7 @@ import type {
   ApprovalRequest,
   Attachment,
   Channel,
+  ChannelDispatchPlan,
   ChannelIssue,
   ChannelMessage,
   ChannelSession,
@@ -71,6 +72,8 @@ import {
   ApprovalRequestListSchema,
   ApprovalRequestSchema,
   ChannelIssueListSchema,
+  ChannelDispatchPlanListSchema,
+  ChannelDispatchPlanSchema,
   ChannelListSchema,
   ChannelMessageListSchema,
   ChannelMessageSchema,
@@ -80,6 +83,8 @@ import {
   EMPTY_APPROVAL_REQUEST,
   EMPTY_APPROVAL_REQUESTS,
   EMPTY_CHANNEL,
+  EMPTY_CHANNEL_DISPATCH_PLAN,
+  EMPTY_CHANNEL_DISPATCH_PLANS,
   EMPTY_CHANNEL_ISSUES,
   EMPTY_CHANNEL_MESSAGE,
   EMPTY_CHANNEL_MESSAGES,
@@ -1072,6 +1077,61 @@ class ApiClient {
       ChannelMessageListSchema,
       EMPTY_CHANNEL_MESSAGES,
       { ...opts, endpoint: "GET /api/channels/:id/sessions/:sessionId/messages" },
+    );
+  }
+
+  async listChannelDispatchPlans(
+    channelId: string,
+    sessionId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ChannelDispatchPlan[]> {
+    return this.fetchValidated(
+      `/api/channels/${channelId}/sessions/${sessionId}/plans`,
+      ChannelDispatchPlanListSchema,
+      EMPTY_CHANNEL_DISPATCH_PLANS,
+      { ...opts, endpoint: "GET /api/channels/:id/sessions/:sessionId/plans" },
+    );
+  }
+
+  async cancelChannelDispatchPlan(
+    channelId: string,
+    planId: string,
+  ): Promise<ChannelDispatchPlan> {
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/plans/${planId}/cancel`,
+      ChannelDispatchPlanSchema,
+      EMPTY_CHANNEL_DISPATCH_PLAN,
+      { method: "POST", body: JSON.stringify({}) },
+      { endpoint: "POST /api/channels/:id/plans/:planId/cancel" },
+    );
+  }
+
+  async retryChannelDispatchStep(
+    channelId: string,
+    planId: string,
+    stepId: string,
+  ): Promise<ChannelDispatchPlan> {
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/plans/${planId}/steps/${stepId}/retry`,
+      ChannelDispatchPlanSchema,
+      EMPTY_CHANNEL_DISPATCH_PLAN,
+      { method: "POST", body: JSON.stringify({}) },
+      { endpoint: "POST /api/channels/:id/plans/:planId/steps/:stepId/retry" },
+    );
+  }
+
+  async skipChannelDispatchStep(
+    channelId: string,
+    planId: string,
+    stepId: string,
+    reason?: string,
+  ): Promise<ChannelDispatchPlan> {
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/plans/${planId}/steps/${stepId}/skip`,
+      ChannelDispatchPlanSchema,
+      EMPTY_CHANNEL_DISPATCH_PLAN,
+      { method: "POST", body: JSON.stringify({ reason }) },
+      { endpoint: "POST /api/channels/:id/plans/:planId/steps/:stepId/skip" },
     );
   }
 
