@@ -116,6 +116,7 @@ interface ContentEditorRef {
   getMarkdown: () => string;
   clearContent: () => void;
   focus: () => void;
+  insertMention: (item: MentionItem) => void;
   /** Drop focus from the editor — used by chat after send so the caret
    *  stops competing with the StatusPill / streaming reply for the user's
    *  attention. */
@@ -298,6 +299,24 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       },
       focus: () => {
         editor?.commands.focus();
+      },
+      insertMention: (item) => {
+        if (!editor) return;
+        editor
+          .chain()
+          .focus()
+          .insertContent([
+            {
+              type: "mention",
+              attrs: {
+                id: item.id,
+                label: item.label,
+                type: item.type,
+              },
+            },
+            { type: "text", text: " " },
+          ])
+          .run();
       },
       blur: () => {
         editor?.commands.blur();

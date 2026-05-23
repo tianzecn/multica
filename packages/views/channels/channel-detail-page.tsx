@@ -298,6 +298,18 @@ function MessagePane({
         .filter(Boolean) as Agent[],
     [agentById, channelMembers],
   );
+  const insertAgentMention = useCallback(
+    (agent: Agent) => {
+      if (!sessionId) return;
+      editorRef.current?.insertMention({
+        id: agent.id,
+        label: agent.name,
+        type: "agent",
+      });
+      setContent(editorRef.current?.getMarkdown() ?? "");
+    },
+    [sessionId],
+  );
   const activeRunsByUserMessageId = useMemo(() => {
     const replied = new Set(
       messages
@@ -471,7 +483,17 @@ function MessagePane({
           <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5">
             <span className="mr-1 text-xs text-muted-foreground">AI 同事</span>
             {channelAgentMembers.slice(0, 8).map((agent) => (
-              <Badge key={agent.id} variant="outline" className="h-6 gap-1 rounded-md px-1.5 font-normal">
+              <Badge
+                key={agent.id}
+                variant="outline"
+                render={<button type="button" />}
+                aria-disabled={!sessionId}
+                aria-label={`插入 @${agent.name}`}
+                tabIndex={!sessionId ? -1 : 0}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => insertAgentMention(agent)}
+                className="h-6 cursor-pointer gap-1 rounded-md px-1.5 font-normal hover:bg-muted hover:text-muted-foreground aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+              >
                 <ActorAvatar actorType="agent" actorId={agent.id} size={14} showStatusDot />
                 <span className="max-w-24 truncate">{agent.name}</span>
               </Badge>

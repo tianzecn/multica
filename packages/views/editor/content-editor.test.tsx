@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { createRef } from "react";
 
 const mockFocus = vi.hoisted(() => vi.fn());
 const mockSetContent = vi.hoisted(() => vi.fn());
 const mockSetTextSelection = vi.hoisted(() => vi.fn());
+const mockChainFocus = vi.hoisted(() => vi.fn());
+const mockChainInsertContent = vi.hoisted(() => vi.fn());
+const mockChainRun = vi.hoisted(() => vi.fn());
 const editorState = vi.hoisted(() => ({
   isFocused: false,
   isDestroyed: false,
@@ -49,6 +53,17 @@ vi.mock("@tiptap/react", () => ({
           setContent: mockSetContent,
           setTextSelection: mockSetTextSelection,
         },
+        chain: () => ({
+          focus: () => {
+            mockChainFocus();
+            return {
+              insertContent: (content: unknown) => {
+                mockChainInsertContent(content);
+                return { run: mockChainRun };
+              },
+            };
+          },
+        }),
         getMarkdown: () => editorState.markdown,
         state: {
           doc: { content: { size: 0 } },
@@ -69,7 +84,7 @@ vi.mock("@tiptap/react", () => ({
   ),
 }));
 
-import { ContentEditor } from "./content-editor";
+import { ContentEditor, type ContentEditorRef } from "./content-editor";
 
 describe("ContentEditor", () => {
   beforeEach(() => {
@@ -98,6 +113,23 @@ describe("ContentEditor", () => {
     fireEvent.mouseDown(screen.getByTestId("prosemirror"));
 
     expect(mockFocus).not.toHaveBeenCalled();
+  });
+
+  it("inserts a mention node at the editor selection", () => {
+    const ref = createRef<ContentEditorRef>();
+    render(<ContentEditor ref={ref} placeholder="Write..." />);
+
+    ref.current?.insertMention({ id: "agent-1", label: "哈雷", type: "agent" });
+
+    expect(mockChainFocus).toHaveBeenCalledTimes(1);
+    expect(mockChainInsertContent).toHaveBeenCalledWith([
+      {
+        type: "mention",
+        attrs: { id: "agent-1", label: "哈雷", type: "agent" },
+      },
+      { type: "text", text: " " },
+    ]);
+    expect(mockChainRun).toHaveBeenCalledTimes(1);
   });
 
   it("syncs editor content when defaultValue changes externally and editor is unfocused", () => {
