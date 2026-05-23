@@ -82,6 +82,36 @@ func (q *Queries) ArchiveChannel(ctx context.Context, arg ArchiveChannelParams) 
 	return i, err
 }
 
+const archiveChannelSession = `-- name: ArchiveChannelSession :one
+UPDATE channel_session
+SET status = 'archived', archived_at = now(), updated_at = now()
+WHERE id = $1 AND channel_id = $2
+RETURNING id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at
+`
+
+type ArchiveChannelSessionParams struct {
+	ID        pgtype.UUID `json:"id"`
+	ChannelID pgtype.UUID `json:"channel_id"`
+}
+
+func (q *Queries) ArchiveChannelSession(ctx context.Context, arg ArchiveChannelSessionParams) (ChannelSession, error) {
+	row := q.db.QueryRow(ctx, archiveChannelSession, arg.ID, arg.ChannelID)
+	var i ChannelSession
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.Title,
+		&i.Summary,
+		&i.Status,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const cancelPendingChannelDispatchSteps = `-- name: CancelPendingChannelDispatchSteps :execrows
 UPDATE channel_dispatch_step
 SET status = 'cancelled',
@@ -893,6 +923,43 @@ func (q *Queries) GetChannelBySlugInWorkspace(ctx context.Context, arg GetChanne
 	return i, err
 }
 
+const getChannelBySlugInWorkspaceAnyStatus = `-- name: GetChannelBySlugInWorkspaceAnyStatus :one
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled FROM channel
+WHERE slug = $1 AND workspace_id = $2
+`
+
+type GetChannelBySlugInWorkspaceAnyStatusParams struct {
+	Slug        string      `json:"slug"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetChannelBySlugInWorkspaceAnyStatus(ctx context.Context, arg GetChannelBySlugInWorkspaceAnyStatusParams) (Channel, error) {
+	row := q.db.QueryRow(ctx, getChannelBySlugInWorkspaceAnyStatus, arg.Slug, arg.WorkspaceID)
+	var i Channel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.GroupID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Visibility,
+		&i.Instructions,
+		&i.Summary,
+		&i.DefaultProjectID,
+		&i.DefaultAssigneeType,
+		&i.DefaultAssigneeID,
+		&i.Position,
+		&i.CreatedBy,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Proactivity,
+		&i.MentionIssueSearchEnabled,
+	)
+	return i, err
+}
+
 const getChannelDispatchPlanByID = `-- name: GetChannelDispatchPlanByID :one
 SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
 WHERE id = $1
@@ -1070,6 +1137,43 @@ type GetChannelInWorkspaceParams struct {
 
 func (q *Queries) GetChannelInWorkspace(ctx context.Context, arg GetChannelInWorkspaceParams) (Channel, error) {
 	row := q.db.QueryRow(ctx, getChannelInWorkspace, arg.ID, arg.WorkspaceID)
+	var i Channel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.GroupID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Visibility,
+		&i.Instructions,
+		&i.Summary,
+		&i.DefaultProjectID,
+		&i.DefaultAssigneeType,
+		&i.DefaultAssigneeID,
+		&i.Position,
+		&i.CreatedBy,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Proactivity,
+		&i.MentionIssueSearchEnabled,
+	)
+	return i, err
+}
+
+const getChannelInWorkspaceAnyStatus = `-- name: GetChannelInWorkspaceAnyStatus :one
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled FROM channel
+WHERE id = $1 AND workspace_id = $2
+`
+
+type GetChannelInWorkspaceAnyStatusParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetChannelInWorkspaceAnyStatus(ctx context.Context, arg GetChannelInWorkspaceAnyStatusParams) (Channel, error) {
+	row := q.db.QueryRow(ctx, getChannelInWorkspaceAnyStatus, arg.ID, arg.WorkspaceID)
 	var i Channel
 	err := row.Scan(
 		&i.ID,
@@ -1740,12 +1844,18 @@ func (q *Queries) ListChannelMessagesBySession(ctx context.Context, arg ListChan
 
 const listChannelSessions = `-- name: ListChannelSessions :many
 SELECT id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at FROM channel_session
-WHERE channel_id = $1 AND archived_at IS NULL
+WHERE channel_id = $1
+  AND ($2::boolean OR archived_at IS NULL)
 ORDER BY updated_at DESC, created_at DESC
 `
 
-func (q *Queries) ListChannelSessions(ctx context.Context, channelID pgtype.UUID) ([]ChannelSession, error) {
-	rows, err := q.db.Query(ctx, listChannelSessions, channelID)
+type ListChannelSessionsParams struct {
+	ChannelID       pgtype.UUID `json:"channel_id"`
+	IncludeArchived bool        `json:"include_archived"`
+}
+
+func (q *Queries) ListChannelSessions(ctx context.Context, arg ListChannelSessionsParams) ([]ChannelSession, error) {
+	rows, err := q.db.Query(ctx, listChannelSessions, arg.ChannelID, arg.IncludeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -1970,19 +2080,25 @@ LEFT JOIN channel_member cm
       AND cm.member_type = 'member'
       AND cm.member_id = $2
 WHERE c.workspace_id = $1
-  AND c.archived_at IS NULL
-  AND (c.visibility = 'public' OR cm.id IS NOT NULL OR $3::boolean)
+  AND ($3::boolean OR c.archived_at IS NULL)
+  AND (c.visibility = 'public' OR cm.id IS NOT NULL OR $4::boolean)
 ORDER BY c.position ASC, c.created_at ASC
 `
 
 type ListVisibleChannelsParams struct {
-	WorkspaceID    pgtype.UUID `json:"workspace_id"`
-	MemberID       pgtype.UUID `json:"member_id"`
-	IncludePrivate bool        `json:"include_private"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	MemberID        pgtype.UUID `json:"member_id"`
+	IncludeArchived bool        `json:"include_archived"`
+	IncludePrivate  bool        `json:"include_private"`
 }
 
 func (q *Queries) ListVisibleChannels(ctx context.Context, arg ListVisibleChannelsParams) ([]Channel, error) {
-	rows, err := q.db.Query(ctx, listVisibleChannels, arg.WorkspaceID, arg.MemberID, arg.IncludePrivate)
+	rows, err := q.db.Query(ctx, listVisibleChannels,
+		arg.WorkspaceID,
+		arg.MemberID,
+		arg.IncludeArchived,
+		arg.IncludePrivate,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -2176,6 +2292,75 @@ func (q *Queries) ResolveApprovalRequest(ctx context.Context, arg ResolveApprova
 		&i.ResolutionNote,
 		&i.ResolvedBy,
 		&i.ResolvedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const restoreChannel = `-- name: RestoreChannel :one
+UPDATE channel
+SET archived_at = NULL, updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled
+`
+
+type RestoreChannelParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) RestoreChannel(ctx context.Context, arg RestoreChannelParams) (Channel, error) {
+	row := q.db.QueryRow(ctx, restoreChannel, arg.ID, arg.WorkspaceID)
+	var i Channel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.GroupID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.Visibility,
+		&i.Instructions,
+		&i.Summary,
+		&i.DefaultProjectID,
+		&i.DefaultAssigneeType,
+		&i.DefaultAssigneeID,
+		&i.Position,
+		&i.CreatedBy,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Proactivity,
+		&i.MentionIssueSearchEnabled,
+	)
+	return i, err
+}
+
+const restoreChannelSession = `-- name: RestoreChannelSession :one
+UPDATE channel_session
+SET status = 'active', archived_at = NULL, updated_at = now()
+WHERE id = $1 AND channel_id = $2
+RETURNING id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at
+`
+
+type RestoreChannelSessionParams struct {
+	ID        pgtype.UUID `json:"id"`
+	ChannelID pgtype.UUID `json:"channel_id"`
+}
+
+func (q *Queries) RestoreChannelSession(ctx context.Context, arg RestoreChannelSessionParams) (ChannelSession, error) {
+	row := q.db.QueryRow(ctx, restoreChannelSession, arg.ID, arg.ChannelID)
+	var i ChannelSession
+	err := row.Scan(
+		&i.ID,
+		&i.ChannelID,
+		&i.Title,
+		&i.Summary,
+		&i.Status,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

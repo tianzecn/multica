@@ -4,10 +4,12 @@ import { api } from "../api";
 export const channelKeys = {
   all: (wsId: string) => ["channels", wsId] as const,
   groups: (wsId: string) => [...channelKeys.all(wsId), "groups"] as const,
-  list: (wsId: string) => [...channelKeys.all(wsId), "list"] as const,
+  list: (wsId: string, includeArchived = false) =>
+    [...channelKeys.all(wsId), "list", includeArchived ? "with-archived" : "active"] as const,
   detail: (wsId: string, id: string) => [...channelKeys.all(wsId), "detail", id] as const,
   members: (wsId: string, channelId: string) => [...channelKeys.detail(wsId, channelId), "members"] as const,
-  sessions: (wsId: string, channelId: string) => [...channelKeys.detail(wsId, channelId), "sessions"] as const,
+  sessions: (wsId: string, channelId: string, includeArchived = false) =>
+    [...channelKeys.detail(wsId, channelId), "sessions", includeArchived ? "with-archived" : "active"] as const,
   messages: (wsId: string, channelId: string, sessionId: string) =>
     [...channelKeys.detail(wsId, channelId), "sessions", sessionId, "messages"] as const,
   agentRuns: (wsId: string, channelId: string, sessionId: string) =>
@@ -28,10 +30,11 @@ export function channelGroupsOptions(wsId: string) {
   });
 }
 
-export function channelListOptions(wsId: string) {
+export function channelListOptions(wsId: string, params?: { includeArchived?: boolean }) {
+  const includeArchived = params?.includeArchived === true;
   return queryOptions({
-    queryKey: channelKeys.list(wsId),
-    queryFn: () => api.listChannels(),
+    queryKey: channelKeys.list(wsId, includeArchived),
+    queryFn: () => api.listChannels({ include_archived: includeArchived }),
     staleTime: Infinity,
   });
 }
@@ -54,10 +57,11 @@ export function channelMembersOptions(wsId: string, channelId: string) {
   });
 }
 
-export function channelSessionsOptions(wsId: string, channelId: string) {
+export function channelSessionsOptions(wsId: string, channelId: string, params?: { includeArchived?: boolean }) {
+  const includeArchived = params?.includeArchived === true;
   return queryOptions({
-    queryKey: channelKeys.sessions(wsId, channelId),
-    queryFn: () => api.listChannelSessions(channelId),
+    queryKey: channelKeys.sessions(wsId, channelId, includeArchived),
+    queryFn: () => api.listChannelSessions(channelId, { include_archived: includeArchived }),
     enabled: !!channelId,
     staleTime: Infinity,
   });

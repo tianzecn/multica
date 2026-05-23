@@ -553,6 +553,41 @@ func (h *Handler) loadChannelInWorkspace(w http.ResponseWriter, r *http.Request,
 	return channel, member, workspaceID, true
 }
 
+func (h *Handler) loadChannelInWorkspaceAnyStatus(w http.ResponseWriter, r *http.Request, idOrSlug string) (db.Channel, db.Member, string, bool) {
+	workspaceID := workspaceIDFromURL(r, "workspaceId")
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
+		return db.Channel{}, db.Member{}, "", false
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return db.Channel{}, db.Member{}, "", false
+	}
+
+	var channel db.Channel
+	var err error
+	if idUUID, parseErr := util.ParseUUID(idOrSlug); parseErr == nil {
+		channel, err = h.Queries.GetChannelInWorkspaceAnyStatus(r.Context(), db.GetChannelInWorkspaceAnyStatusParams{
+			ID:          idUUID,
+			WorkspaceID: wsUUID,
+		})
+	} else {
+		channel, err = h.Queries.GetChannelBySlugInWorkspaceAnyStatus(r.Context(), db.GetChannelBySlugInWorkspaceAnyStatusParams{
+			Slug:        strings.ToLower(idOrSlug),
+			WorkspaceID: wsUUID,
+		})
+	}
+	if err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return db.Channel{}, db.Member{}, "", false
+	}
+	if !h.canReadChannel(w, r, channel, member) {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return db.Channel{}, db.Member{}, "", false
+	}
+	return channel, member, workspaceID, true
+}
+
 func (h *Handler) validateChannelEntity(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, memberType string, memberID pgtype.UUID) bool {
 	switch memberType {
 	case "member":
@@ -706,9 +741,10 @@ func (h *Handler) ListChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	channels, err := h.Queries.ListVisibleChannels(r.Context(), db.ListVisibleChannelsParams{
-		WorkspaceID:    wsUUID,
-		MemberID:       member.UserID,
-		IncludePrivate: member.Role == "owner" || member.Role == "admin",
+		WorkspaceID:     wsUUID,
+		MemberID:        member.UserID,
+		IncludeArchived: r.URL.Query().Get("include_archived") == "true",
+		IncludePrivate:  member.Role == "owner" || member.Role == "admin",
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list channels")
@@ -1011,6 +1047,28 @@ func (h *Handler) ArchiveChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) RestoreChannel(w http.ResponseWriter, r *http.Request) {
+	channel, member, workspaceID, ok := h.loadChannelInWorkspaceAnyStatus(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageChannel(r, channel, member) {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return
+	}
+	restored, err := h.Queries.RestoreChannel(r.Context(), db.RestoreChannelParams{
+		ID:          channel.ID,
+		WorkspaceID: channel.WorkspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore channel")
+		return
+	}
+	resp := channelToResponse(restored)
+	h.publish(protocol.EventChannelUpdated, workspaceID, "member", uuidToString(member.UserID), map[string]any{"channel": resp})
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) JoinChannel(w http.ResponseWriter, r *http.Request) {
 	channel, member, workspaceID, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -1178,7 +1236,10 @@ func (h *Handler) ListChannelSessions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sessions, err := h.Queries.ListChannelSessions(r.Context(), channel.ID)
+	sessions, err := h.Queries.ListChannelSessions(r.Context(), db.ListChannelSessionsParams{
+		ChannelID:       channel.ID,
+		IncludeArchived: r.URL.Query().Get("include_archived") == "true",
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list channel sessions")
 		return
@@ -1241,6 +1302,78 @@ func (h *Handler) CreateChannelSession(w http.ResponseWriter, r *http.Request) {
 		"session":    resp,
 	})
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) ArchiveChannelSession(w http.ResponseWriter, r *http.Request) {
+	channel, member, workspaceID, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageChannel(r, channel, member) {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return
+	}
+	sessionID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "sessionId"), "session_id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetChannelSession(r.Context(), db.GetChannelSessionParams{
+		ID:          sessionID,
+		ChannelID:   channel.ID,
+		WorkspaceID: channel.WorkspaceID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "channel session not found")
+		return
+	}
+
+	session, err := h.Queries.ArchiveChannelSession(r.Context(), db.ArchiveChannelSessionParams{
+		ID:        sessionID,
+		ChannelID: channel.ID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to archive channel session")
+		return
+	}
+	resp := channelSessionToResponse(session)
+	h.publish(protocol.EventChannelSessionUpdated, workspaceID, "member", uuidToString(member.UserID), map[string]any{
+		"channel_id": uuidToString(channel.ID),
+		"session":    resp,
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) RestoreChannelSession(w http.ResponseWriter, r *http.Request) {
+	channel, member, workspaceID, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageChannel(r, channel, member) {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return
+	}
+	sessionID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "sessionId"), "session_id")
+	if !ok {
+		return
+	}
+
+	session, err := h.Queries.RestoreChannelSession(r.Context(), db.RestoreChannelSessionParams{
+		ID:        sessionID,
+		ChannelID: channel.ID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "channel session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to restore channel session")
+		return
+	}
+	resp := channelSessionToResponse(session)
+	h.publish(protocol.EventChannelSessionUpdated, workspaceID, "member", uuidToString(member.UserID), map[string]any{
+		"channel_id": uuidToString(channel.ID),
+		"session":    resp,
+	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) ListChannelMessages(w http.ResponseWriter, r *http.Request) {

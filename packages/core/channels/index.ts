@@ -14,6 +14,8 @@ export {
 export {
   useAddChannelMember,
   useAddAgentToChannelDispatchPlan,
+  useArchiveChannel,
+  useArchiveChannelSession,
   useCancelChannelDispatchPlan,
   useChangeChannelDispatchPlanMode,
   useCreateApprovalRequest,
@@ -24,6 +26,8 @@ export {
   useJoinChannel,
   useLinkIssueToChannel,
   useRemoveChannelMember,
+  useRestoreChannel,
+  useRestoreChannelSession,
   useRetryChannelDispatchStep,
   useResolveApprovalRequest,
   useSkipChannelDispatchStep,

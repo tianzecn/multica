@@ -31,13 +31,17 @@ LEFT JOIN channel_member cm
       AND cm.member_type = 'member'
       AND cm.member_id = $2
 WHERE c.workspace_id = $1
-  AND c.archived_at IS NULL
+  AND (sqlc.arg('include_archived')::boolean OR c.archived_at IS NULL)
   AND (c.visibility = 'public' OR cm.id IS NOT NULL OR sqlc.arg('include_private')::boolean)
 ORDER BY c.position ASC, c.created_at ASC;
 
 -- name: GetChannelInWorkspace :one
 SELECT * FROM channel
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL;
+
+-- name: GetChannelInWorkspaceAnyStatus :one
+SELECT * FROM channel
+WHERE id = $1 AND workspace_id = $2;
 
 -- name: GetChannelByID :one
 SELECT * FROM channel
@@ -46,6 +50,10 @@ WHERE id = $1 AND archived_at IS NULL;
 -- name: GetChannelBySlugInWorkspace :one
 SELECT * FROM channel
 WHERE slug = $1 AND workspace_id = $2 AND archived_at IS NULL;
+
+-- name: GetChannelBySlugInWorkspaceAnyStatus :one
+SELECT * FROM channel
+WHERE slug = $1 AND workspace_id = $2;
 
 -- name: UpdateChannel :one
 UPDATE channel SET
@@ -68,6 +76,12 @@ RETURNING *;
 -- name: ArchiveChannel :one
 UPDATE channel
 SET archived_at = now(), updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING *;
+
+-- name: RestoreChannel :one
+UPDATE channel
+SET archived_at = NULL, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;
 
@@ -109,7 +123,8 @@ RETURNING *;
 
 -- name: ListChannelSessions :many
 SELECT * FROM channel_session
-WHERE channel_id = $1 AND archived_at IS NULL
+WHERE channel_id = $1
+  AND (sqlc.arg('include_archived')::boolean OR archived_at IS NULL)
 ORDER BY updated_at DESC, created_at DESC;
 
 -- name: GetChannelSession :one
@@ -120,6 +135,18 @@ WHERE cs.id = $1 AND cs.channel_id = $2 AND c.workspace_id = $3 AND cs.archived_
 -- name: GetChannelSessionByID :one
 SELECT * FROM channel_session
 WHERE id = $1 AND archived_at IS NULL;
+
+-- name: ArchiveChannelSession :one
+UPDATE channel_session
+SET status = 'archived', archived_at = now(), updated_at = now()
+WHERE id = $1 AND channel_id = $2
+RETURNING *;
+
+-- name: RestoreChannelSession :one
+UPDATE channel_session
+SET status = 'active', archived_at = NULL, updated_at = now()
+WHERE id = $1 AND channel_id = $2
+RETURNING *;
 
 -- name: TouchChannelSession :exec
 UPDATE channel_session

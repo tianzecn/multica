@@ -2,7 +2,7 @@
 
 import { Fragment, type ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Bot, Check, File as FileIcon, GitBranch, Hash, Link2, Loader2, Lock, Plus, RotateCcw, Send, ShieldCheck, SkipForward, Terminal, UserPlus, Users, X } from "lucide-react";
+import { Archive, ArrowLeft, Bot, Check, File as FileIcon, GitBranch, Hash, Link2, Loader2, Lock, Plus, RotateCcw, Send, ShieldCheck, SkipForward, Terminal, UserPlus, Users, X } from "lucide-react";
 import {
   channelAgentRunsOptions,
   channelApprovalsOptions,
@@ -14,12 +14,14 @@ import {
   channelSessionsOptions,
   useAddAgentToChannelDispatchPlan,
   useAddChannelMember,
+  useArchiveChannelSession,
   useCancelChannelDispatchPlan,
   useChangeChannelDispatchPlanMode,
   useCreateChannelMessage,
   useCreateChannelSession,
   useLinkIssueToChannel,
   useRemoveChannelMember,
+  useRestoreChannelSession,
   useRetryChannelDispatchStep,
   useResolveApprovalRequest,
   useSkipChannelDispatchStep,
@@ -29,6 +31,7 @@ import { api } from "@multica/core/api";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
+import { useCurrentMember } from "@multica/core/permissions";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions, memberListOptions, squadListOptions } from "@multica/core/workspace/queries";
 import type { Agent, ApprovalRequest, Attachment, Channel, ChannelAgentRun, ChannelDispatchMode, ChannelDispatchPlan, ChannelDispatchStep, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, Squad, TaskMessagePayload } from "@multica/core/types";
@@ -62,19 +65,37 @@ export function ChannelDetailPage() {
   const { pathname } = useNavigation();
   const channelId = decodeURIComponent(pathname.split("/").pop() ?? "");
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const { data: channel, isLoading: channelLoading } = useQuery({
     ...channelDetailOptions(wsId, channelId),
     enabled: !!wsId && !!channelId,
   });
   const canonicalChannelId = channel?.id || channelId;
-  const { data: sessions = EMPTY_SESSIONS } = useQuery({
+  const { data: activeSessions = EMPTY_SESSIONS } = useQuery({
     ...channelSessionsOptions(wsId, canonicalChannelId),
     enabled: !!wsId && !!channel?.id,
+  });
+  const { data: sessionsWithArchived = EMPTY_SESSIONS } = useQuery({
+    ...channelSessionsOptions(wsId, canonicalChannelId, { includeArchived: true }),
+    enabled: !!wsId && !!channel?.id && showArchivedSessions,
   });
   const { data: channelMembers = EMPTY_CHANNEL_MEMBERS } = useQuery({
     ...channelMembersOptions(wsId, canonicalChannelId),
     enabled: !!wsId && !!channel?.id,
   });
+  const { userId, role } = useCurrentMember(wsId);
+  const canManageChannel = useMemo(
+    () =>
+      role === "owner" ||
+      role === "admin" ||
+      channelMembers.some(
+        (member) =>
+          member.member_type === "member" &&
+          member.member_id === userId &&
+          (member.role === "owner" || member.role === "admin"),
+      ),
+    [channelMembers, role, userId],
+  );
   const { data: agents = EMPTY_AGENTS } = useQuery({
     ...agentListOptions(wsId),
     enabled: !!wsId,
@@ -87,7 +108,19 @@ export function ChannelDetailPage() {
     ...memberListOptions(wsId),
     enabled: !!wsId,
   });
-  const activeSessionId = selectedSessionId ?? sessions[0]?.id ?? "";
+  const archivedSessions = useMemo(
+    () => sessionsWithArchived.filter((session) => session.archived_at),
+    [sessionsWithArchived],
+  );
+  const visibleSessions = showArchivedSessions ? archivedSessions : activeSessions;
+  const activeSessionId = selectedSessionId && activeSessions.some((session) => session.id === selectedSessionId)
+    ? selectedSessionId
+    : activeSessions[0]?.id ?? "";
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    if (activeSessions.some((session) => session.id === selectedSessionId)) return;
+    setSelectedSessionId(null);
+  }, [activeSessions, selectedSessionId]);
 
   if (channelLoading || !channel) {
     return <ChannelDetailSkeleton />;
@@ -111,15 +144,18 @@ export function ChannelDetailPage() {
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[260px_minmax(0,1fr)_320px]">
         <SessionRail
           channelId={canonicalChannelId}
-          sessions={sessions}
+          sessions={visibleSessions}
           selectedSessionId={activeSessionId}
           onSelectSession={setSelectedSessionId}
+          canManageChannel={canManageChannel}
+          showArchived={showArchivedSessions}
+          onShowArchivedChange={setShowArchivedSessions}
         />
         <MessagePane
           channel={channel}
           channelId={canonicalChannelId}
           sessionId={activeSessionId}
-          sessions={sessions}
+          sessions={activeSessions}
           channelMembers={channelMembers}
           agents={agents}
           squads={squads}
@@ -143,15 +179,23 @@ function SessionRail({
   sessions,
   selectedSessionId,
   onSelectSession,
+  canManageChannel,
+  showArchived,
+  onShowArchivedChange,
 }: {
   channelId: string;
   sessions: ChannelSession[];
   selectedSessionId: string;
   onSelectSession: (id: string) => void;
+  canManageChannel: boolean;
+  showArchived: boolean;
+  onShowArchivedChange: (showArchived: boolean) => void;
 }) {
   const { t } = useT("channels");
   const [title, setTitle] = useState("");
   const createSession = useCreateChannelSession(channelId);
+  const archiveSession = useArchiveChannelSession(channelId);
+  const restoreSession = useRestoreChannelSession(channelId);
   const submit = () => {
     const nextTitle = title.trim();
     if (!nextTitle) return;
@@ -166,44 +210,111 @@ function SessionRail({
       },
     );
   };
+  const submitArchiveSession = (session: ChannelSession) => {
+    if (!window.confirm(`归档会话「${session.title}」？归档后默认会话列表会隐藏它，消息历史不会删除。`)) return;
+    const nextSessionId = sessions.find((item) => item.id !== session.id)?.id ?? "";
+    archiveSession.mutate(session.id, {
+      onSuccess: () => {
+        if (selectedSessionId === session.id) onSelectSession(nextSessionId);
+        toast.success("会话已归档");
+      },
+      onError: (error) => toast.error(error instanceof Error ? error.message : "归档会话失败"),
+    });
+  };
+  const submitRestoreSession = (session: ChannelSession) => {
+    restoreSession.mutate(session.id, {
+      onSuccess: (restored) => {
+        onShowArchivedChange(false);
+        onSelectSession(restored.id);
+        toast.success("会话已恢复");
+      },
+      onError: (error) => toast.error(error instanceof Error ? error.message : "恢复会话失败"),
+    });
+  };
 
   return (
     <aside className="flex min-h-0 flex-col border-b bg-muted/20 lg:border-b-0 lg:border-r">
       <div className="flex h-12 shrink-0 items-center justify-between border-b px-3">
         <span className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{t(($) => $.detail.sessions)}</span>
-        <span className="font-mono text-[11px] text-muted-foreground">{sessions.length}</span>
+        <div className="flex items-center gap-2">
+          {canManageChannel && (
+            <Button
+              type="button"
+              size="sm"
+              variant={showArchived ? "secondary" : "ghost"}
+              className="h-7 px-2 text-xs"
+              onClick={() => onShowArchivedChange(!showArchived)}
+            >
+              已归档
+            </Button>
+          )}
+          <span className="font-mono text-[11px] text-muted-foreground">{sessions.length}</span>
+        </div>
       </div>
-      <div className="flex shrink-0 gap-2 border-b p-3">
-        <Input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") submit();
-          }}
-          placeholder={t(($) => $.detail.new_session_placeholder)}
-          className="h-8 text-sm"
-        />
-        <Button size="icon" variant="outline" onClick={submit} disabled={!title.trim() || createSession.isPending}>
-          <Plus className="size-3.5" />
-        </Button>
-      </div>
+      {!showArchived ? (
+        <div className="flex shrink-0 gap-2 border-b p-3">
+          <Input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit();
+            }}
+            placeholder={t(($) => $.detail.new_session_placeholder)}
+            className="h-8 text-sm"
+          />
+          <Button size="icon" variant="outline" onClick={submit} disabled={!title.trim() || createSession.isPending}>
+            <Plus className="size-3.5" />
+          </Button>
+        </div>
+      ) : (
+        <div className="border-b px-3 py-2 text-xs leading-5 text-muted-foreground">
+          归档会话默认隐藏，恢复后可继续讨论。
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 gap-1 overflow-y-auto p-2 lg:flex-col">
         {sessions.length === 0 ? (
-          <p className="px-2 py-4 text-xs leading-5 text-muted-foreground">{t(($) => $.detail.no_sessions)}</p>
+          <p className="px-2 py-4 text-xs leading-5 text-muted-foreground">
+            {showArchived ? "还没有归档会话" : t(($) => $.detail.no_sessions)}
+          </p>
         ) : (
           sessions.map((session) => (
-            <button
+            <div
               key={session.id}
-              type="button"
-              onClick={() => onSelectSession(session.id)}
               className={cn(
-                "flex min-w-48 flex-col rounded-md px-2.5 py-2 text-left text-sm transition-colors lg:min-w-0",
+                "group/session flex min-w-48 items-start gap-1 rounded-md text-sm transition-colors lg:min-w-0",
                 selectedSessionId === session.id ? "bg-background shadow-sm" : "text-muted-foreground hover:bg-background/60",
               )}
             >
-              <span className="truncate font-medium">{session.title}</span>
-              {session.summary && <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{session.summary}</span>}
-            </button>
+              {showArchived ? (
+                <div className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                  <span className="block truncate font-medium">{session.title}</span>
+                  {session.summary && <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{session.summary}</span>}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onSelectSession(session.id)}
+                  className="min-w-0 flex-1 px-2.5 py-2 text-left"
+                >
+                  <span className="block truncate font-medium">{session.title}</span>
+                  {session.summary && <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{session.summary}</span>}
+                </button>
+              )}
+              {canManageChannel && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="mr-1 mt-1 size-6 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/session:opacity-100 focus:opacity-100"
+                  onClick={() => (showArchived ? submitRestoreSession(session) : submitArchiveSession(session))}
+                  disabled={archiveSession.isPending || restoreSession.isPending}
+                  title={showArchived ? "恢复会话" : "归档会话"}
+                  aria-label={`${showArchived ? "恢复" : "归档"}会话 ${session.title}`}
+                >
+                  {showArchived ? <RotateCcw className="size-3" /> : <Archive className="size-3" />}
+                </Button>
+              )}
+            </div>
           ))
         )}
       </div>

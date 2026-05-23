@@ -114,6 +114,7 @@ const (
 	EventChannelCreated             = "channel:created"
 	EventChannelUpdated             = "channel:updated"
 	EventChannelSessionCreated      = "channel_session:created"
+	EventChannelSessionUpdated      = "channel_session:updated"
 	EventChannelMessageCreated      = "channel_message:created"
 	EventChannelIssueLinked         = "channel_issue:linked"
 	EventChannelApprovalUpdated     = "channel_approval:updated"

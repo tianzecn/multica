@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Hash, Lock, Plus, Search, X } from "lucide-react";
-import { channelGroupsOptions, channelListOptions, useCreateChannel } from "@multica/core/channels";
+import { Archive, Hash, Lock, Plus, RotateCcw, Search, X } from "lucide-react";
+import { channelGroupsOptions, channelListOptions, useArchiveChannel, useCreateChannel, useRestoreChannel } from "@multica/core/channels";
+import { useCurrentMember } from "@multica/core/permissions";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import type { Agent, Channel, ChannelGroup, ChannelVisibility } from "@multica/core/types";
@@ -34,14 +35,27 @@ export function ChannelsPage() {
   const p = useWorkspacePaths();
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  const { data: channels = EMPTY_CHANNELS, isLoading } = useQuery({
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: activeChannels = EMPTY_CHANNELS, isLoading: activeLoading } = useQuery({
     ...channelListOptions(wsId),
     enabled: !!wsId,
+  });
+  const { data: channelsWithArchived = EMPTY_CHANNELS, isLoading: archivedLoading } = useQuery({
+    ...channelListOptions(wsId, { includeArchived: true }),
+    enabled: !!wsId && showArchived,
   });
   const { data: groups = EMPTY_GROUPS } = useQuery({
     ...channelGroupsOptions(wsId),
     enabled: !!wsId,
   });
+  const { userId, role } = useCurrentMember(wsId);
+  const canArchiveWorkspaceChannels = role === "owner" || role === "admin";
+  const archivedChannels = useMemo(
+    () => channelsWithArchived.filter((channel) => channel.archived_at),
+    [channelsWithArchived],
+  );
+  const channels = showArchived ? archivedChannels : activeChannels;
+  const isLoading = activeLoading || (showArchived && archivedLoading);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -63,10 +77,16 @@ export function ChannelsPage() {
             <span className="font-mono text-xs tabular-nums text-muted-foreground">{channels.length}</span>
           )}
         </div>
-        <Button size="sm" variant="outline" onClick={() => setShowCreate(true)}>
-          <Plus className="mr-1.5 size-3.5" />
-          {t(($) => $.page.new_button)}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant={showArchived ? "secondary" : "outline"} onClick={() => setShowArchived((value) => !value)}>
+            <Archive className="mr-1.5 size-3.5" />
+            已归档
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setShowCreate(true)}>
+            <Plus className="mr-1.5 size-3.5" />
+            {t(($) => $.page.new_button)}
+          </Button>
+        </div>
       </PageHeader>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -88,7 +108,7 @@ export function ChannelsPage() {
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <Hash className="size-10 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">
-              {channels.length === 0 ? t(($) => $.page.empty) : t(($) => $.page.empty_search)}
+              {channels.length === 0 && showArchived ? "还没有归档频道" : channels.length === 0 ? t(($) => $.page.empty) : t(($) => $.page.empty_search)}
             </p>
           </div>
         ) : (
@@ -102,7 +122,13 @@ export function ChannelsPage() {
                   </div>
                   <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                     {group.channels.map((channel) => (
-                      <ChannelTile key={channel.id} channel={channel} href={p.channelDetail(channel.slug)} />
+                      <ChannelTile
+                        key={channel.id}
+                        channel={channel}
+                        href={p.channelDetail(channel.slug)}
+                        canArchive={canArchiveWorkspaceChannels || channel.created_by === userId}
+                        isArchived={!!channel.archived_at}
+                      />
                     ))}
                   </div>
                 </section>
@@ -130,25 +156,77 @@ function groupChannels(channels: Channel[], groups: ChannelGroup[]) {
   return Array.from(buckets.values());
 }
 
-function ChannelTile({ channel, href }: { channel: Channel; href: string }) {
-  return (
-    <AppLink
-      href={href}
-      className="flex min-h-24 min-w-0 flex-col justify-between rounded-lg border bg-background p-3 transition-colors hover:bg-accent/50"
-    >
+function ChannelTile({
+  channel,
+  href,
+  canArchive,
+  isArchived,
+}: {
+  channel: Channel;
+  href: string;
+  canArchive: boolean;
+  isArchived: boolean;
+}) {
+  const archiveChannel = useArchiveChannel(channel.id);
+  const restoreChannel = useRestoreChannel(channel.id);
+  const submitVisibilityChange = () => {
+    if (isArchived) {
+      restoreChannel.mutate(undefined, {
+        onSuccess: () => toast.success("频道已恢复"),
+        onError: (error) => toast.error(error instanceof Error ? error.message : "恢复频道失败"),
+      });
+      return;
+    }
+    if (!window.confirm(`归档频道「${channel.name}」？归档后默认列表会隐藏它，历史消息不会删除。`)) return;
+    archiveChannel.mutate(undefined, {
+      onSuccess: () => toast.success("频道已归档"),
+      onError: (error) => toast.error(error instanceof Error ? error.message : "归档频道失败"),
+    });
+  };
+  const content = (
+    <>
       <div className="flex min-w-0 items-start gap-2">
         <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
           {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
         </div>
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{channel.name}</p>
+          <div className="flex min-w-0 items-center gap-2">
+            <p className="truncate text-sm font-medium">{channel.name}</p>
+            {isArchived && <Badge variant="outline" className="h-5 shrink-0 rounded-[4px] px-1.5 text-[10px]">已归档</Badge>}
+          </div>
           <p className="truncate font-mono text-xs text-muted-foreground">#{channel.slug}</p>
         </div>
       </div>
       {channel.description && (
         <p className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">{channel.description}</p>
       )}
-    </AppLink>
+    </>
+  );
+
+  return (
+    <div className="group/channel relative min-h-24 min-w-0 rounded-lg border bg-background transition-colors hover:bg-accent/50">
+      {isArchived ? (
+        <div className="flex min-h-24 min-w-0 flex-col justify-between p-3 pr-10">{content}</div>
+      ) : (
+        <AppLink href={href} className="flex min-h-24 min-w-0 flex-col justify-between p-3 pr-10">
+          {content}
+        </AppLink>
+      )}
+      {canArchive && (
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="absolute right-2 top-2 size-7 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/channel:opacity-100 focus:opacity-100"
+          onClick={submitVisibilityChange}
+          disabled={archiveChannel.isPending || restoreChannel.isPending}
+          title={isArchived ? "恢复频道" : "归档频道"}
+          aria-label={`${isArchived ? "恢复" : "归档"}频道 ${channel.name}`}
+        >
+          {isArchived ? <RotateCcw className="size-3.5" /> : <Archive className="size-3.5" />}
+        </Button>
+      )}
+    </div>
   );
 }
 

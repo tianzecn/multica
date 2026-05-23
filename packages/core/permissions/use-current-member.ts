@@ -21,7 +21,10 @@ export function useCurrentMember(wsId: string): {
   isLoading: boolean;
 } {
   const userId = useAuthStore((s) => s.user?.id ?? null);
-  const { data: members, isLoading } = useQuery(memberListOptions(wsId));
+  const { data: members, isLoading } = useQuery({
+    ...memberListOptions(wsId),
+    enabled: !!wsId && !!userId,
+  });
   const member = members?.find((m) => m.user_id === userId) ?? null;
   return {
     userId,

@@ -1523,8 +1523,11 @@ export class ApiClient {
     });
   }
 
-  async listChannels(): Promise<Channel[]> {
-    const raw = await this.fetch<unknown>("/api/channels");
+  async listChannels(params?: { include_archived?: boolean }): Promise<Channel[]> {
+    const search = new URLSearchParams();
+    if (params?.include_archived) search.set("include_archived", "true");
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(`/api/channels${query ? `?${query}` : ""}`);
     return parseWithFallback(raw, ChannelListSchema, EMPTY_CHANNELS, {
       endpoint: "GET /api/channels",
     });
@@ -1566,6 +1569,15 @@ export class ApiClient {
     });
   }
 
+  async restoreChannel(channelId: string): Promise<Channel> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/restore`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
+      endpoint: "POST /api/channels/:id/restore",
+    });
+  }
+
   async joinChannel(channelId: string): Promise<ChannelMember> {
     const raw = await this.fetch<unknown>(`/api/channels/${channelId}/join`, {
       method: "POST",
@@ -1599,8 +1611,11 @@ export class ApiClient {
     });
   }
 
-  async listChannelSessions(channelId: string): Promise<ChannelSession[]> {
-    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions`);
+  async listChannelSessions(channelId: string, params?: { include_archived?: boolean }): Promise<ChannelSession[]> {
+    const search = new URLSearchParams();
+    if (params?.include_archived) search.set("include_archived", "true");
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions${query ? `?${query}` : ""}`);
     return parseWithFallback(raw, ChannelSessionListSchema, EMPTY_CHANNEL_SESSIONS, {
       endpoint: "GET /api/channels/:id/sessions",
     });
@@ -1613,6 +1628,24 @@ export class ApiClient {
     });
     return parseWithFallback(raw, ChannelSessionSchema, EMPTY_CHANNEL_SESSION, {
       endpoint: "POST /api/channels/:id/sessions",
+    });
+  }
+
+  async archiveChannelSession(channelId: string, sessionId: string): Promise<ChannelSession> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions/${sessionId}`, {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, ChannelSessionSchema, EMPTY_CHANNEL_SESSION, {
+      endpoint: "DELETE /api/channels/:id/sessions/:sessionId",
+    });
+  }
+
+  async restoreChannelSession(channelId: string, sessionId: string): Promise<ChannelSession> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/sessions/${sessionId}/restore`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, ChannelSessionSchema, EMPTY_CHANNEL_SESSION, {
+      endpoint: "POST /api/channels/:id/sessions/:sessionId/restore",
     });
   }
 

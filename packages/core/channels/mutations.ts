@@ -6,6 +6,7 @@ import type {
   AddChannelDispatchAgentRequest,
   ChangeChannelDispatchModeRequest,
   Channel,
+  ChannelSession,
   CreateApprovalRequestRequest,
   CreateChannelGroupRequest,
   CreateChannelMessageRequest,
@@ -78,7 +79,19 @@ export function useArchiveChannel(channelId: string) {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: channelKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
       qc.removeQueries({ queryKey: channelKeys.detail(wsId, channelId) });
+    },
+  });
+}
+
+export function useRestoreChannel(channelId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: () => api.restoreChannel(channelId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
     },
   });
 }
@@ -126,6 +139,39 @@ export function useCreateChannelSession(channelId: string) {
     mutationFn: (data: CreateChannelSessionRequest) => api.createChannelSession(channelId, data),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: channelKeys.sessions(wsId, channelId) });
+    },
+  });
+}
+
+export function useArchiveChannelSession(channelId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (sessionId: string) => api.archiveChannelSession(channelId, sessionId),
+    onMutate: async (sessionId) => {
+      await qc.cancelQueries({ queryKey: channelKeys.sessions(wsId, channelId) });
+      const prevSessions = qc.getQueryData<ChannelSession[]>(channelKeys.sessions(wsId, channelId));
+      qc.setQueryData<ChannelSession[]>(channelKeys.sessions(wsId, channelId), (old) =>
+        old?.filter((session) => session.id !== sessionId),
+      );
+      return { prevSessions };
+    },
+    onError: (_error, _sessionId, ctx) => {
+      if (ctx?.prevSessions) qc.setQueryData(channelKeys.sessions(wsId, channelId), ctx.prevSessions);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.detail(wsId, channelId) });
+    },
+  });
+}
+
+export function useRestoreChannelSession(channelId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (sessionId: string) => api.restoreChannelSession(channelId, sessionId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.detail(wsId, channelId) });
     },
   });
 }
