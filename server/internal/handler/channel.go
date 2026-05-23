@@ -40,6 +40,7 @@ type ChannelResponse struct {
 	Description         string  `json:"description"`
 	Visibility          string  `json:"visibility"`
 	Proactivity         string  `json:"proactivity"`
+	MentionIssueSearch  bool    `json:"mention_issue_search_enabled"`
 	Instructions        string  `json:"instructions"`
 	Summary             string  `json:"summary"`
 	DefaultProjectID    *string `json:"default_project_id"`
@@ -227,6 +228,7 @@ func channelToResponse(channel db.Channel) ChannelResponse {
 		Description:         channel.Description,
 		Visibility:          channel.Visibility,
 		Proactivity:         channel.Proactivity,
+		MentionIssueSearch:  channel.MentionIssueSearchEnabled,
 		Instructions:        channel.Instructions,
 		Summary:             channel.Summary,
 		DefaultProjectID:    uuidToPtr(channel.DefaultProjectID),
@@ -735,6 +737,7 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		Description         string                 `json:"description"`
 		Visibility          string                 `json:"visibility"`
 		Proactivity         string                 `json:"proactivity"`
+		MentionIssueSearch  *bool                  `json:"mention_issue_search_enabled"`
 		Instructions        string                 `json:"instructions"`
 		Summary             string                 `json:"summary"`
 		DefaultProjectID    string                 `json:"default_project_id"`
@@ -821,22 +824,27 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	mentionIssueSearchEnabled := true
+	if req.MentionIssueSearch != nil {
+		mentionIssueSearchEnabled = *req.MentionIssueSearch
+	}
 
 	channel, err := h.Queries.CreateChannel(r.Context(), db.CreateChannelParams{
-		WorkspaceID:         wsUUID,
-		GroupID:             groupID,
-		Slug:                slug,
-		Name:                req.Name,
-		Description:         req.Description,
-		Visibility:          req.Visibility,
-		Proactivity:         req.Proactivity,
-		Instructions:        req.Instructions,
-		Summary:             req.Summary,
-		DefaultProjectID:    defaultProjectID,
-		DefaultAssigneeType: defaultAssigneeType,
-		DefaultAssigneeID:   defaultAssigneeID,
-		Position:            req.Position,
-		CreatedBy:           member.UserID,
+		WorkspaceID:               wsUUID,
+		GroupID:                   groupID,
+		Slug:                      slug,
+		Name:                      req.Name,
+		Description:               req.Description,
+		Visibility:                req.Visibility,
+		Proactivity:               req.Proactivity,
+		Instructions:              req.Instructions,
+		Summary:                   req.Summary,
+		DefaultProjectID:          defaultProjectID,
+		DefaultAssigneeType:       defaultAssigneeType,
+		DefaultAssigneeID:         defaultAssigneeID,
+		Position:                  req.Position,
+		CreatedBy:                 member.UserID,
+		MentionIssueSearchEnabled: mentionIssueSearchEnabled,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -895,6 +903,7 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		Description         *string  `json:"description"`
 		Visibility          *string  `json:"visibility"`
 		Proactivity         *string  `json:"proactivity"`
+		MentionIssueSearch  *bool    `json:"mention_issue_search_enabled"`
 		Instructions        *string  `json:"instructions"`
 		Summary             *string  `json:"summary"`
 		DefaultProjectID    *string  `json:"default_project_id"`
@@ -949,20 +958,25 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if req.Position != nil {
 		position = pgtype.Float8{Float64: *req.Position, Valid: true}
 	}
+	mentionIssueSearchEnabled := pgtype.Bool{}
+	if req.MentionIssueSearch != nil {
+		mentionIssueSearchEnabled = pgtype.Bool{Bool: *req.MentionIssueSearch, Valid: true}
+	}
 	updated, err := h.Queries.UpdateChannel(r.Context(), db.UpdateChannelParams{
-		ID:                  channel.ID,
-		WorkspaceID:         channel.WorkspaceID,
-		GroupID:             groupID,
-		Name:                optionalTextPtr(req.Name),
-		Description:         optionalTextPtr(req.Description),
-		Visibility:          optionalTextPtr(req.Visibility),
-		Proactivity:         optionalTextPtr(req.Proactivity),
-		Instructions:        optionalTextPtr(req.Instructions),
-		Summary:             optionalTextPtr(req.Summary),
-		DefaultProjectID:    defaultProjectID,
-		DefaultAssigneeType: optionalTextPtr(req.DefaultAssigneeType),
-		DefaultAssigneeID:   defaultAssigneeID,
-		Position:            position,
+		ID:                        channel.ID,
+		WorkspaceID:               channel.WorkspaceID,
+		GroupID:                   groupID,
+		Name:                      optionalTextPtr(req.Name),
+		Description:               optionalTextPtr(req.Description),
+		Visibility:                optionalTextPtr(req.Visibility),
+		Proactivity:               optionalTextPtr(req.Proactivity),
+		Instructions:              optionalTextPtr(req.Instructions),
+		Summary:                   optionalTextPtr(req.Summary),
+		DefaultProjectID:          defaultProjectID,
+		DefaultAssigneeType:       optionalTextPtr(req.DefaultAssigneeType),
+		DefaultAssigneeID:         defaultAssigneeID,
+		Position:                  position,
+		MentionIssueSearchEnabled: mentionIssueSearchEnabled,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update channel")

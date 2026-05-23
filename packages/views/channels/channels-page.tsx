@@ -15,6 +15,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@multica/ui/components/ui/radio-group";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
 import { AppLink } from "../navigation";
@@ -173,6 +174,7 @@ function CreateChannelDialog({
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
   const [visibility, setVisibility] = useState<ChannelVisibility>("private");
+  const [mentionIssueSearchEnabled, setMentionIssueSearchEnabled] = useState(true);
   const [groupId, setGroupId] = useState("");
   const [memberSearch, setMemberSearch] = useState("");
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
@@ -212,6 +214,7 @@ function CreateChannelDialog({
         description: description.trim(),
         instructions: instructions.trim(),
         visibility,
+        mention_issue_search_enabled: mentionIssueSearchEnabled,
         group_id: groupId || null,
         members: selectedAgentIds.map((id) => ({
           member_type: "agent",
@@ -226,6 +229,7 @@ function CreateChannelDialog({
           setDescription("");
           setInstructions("");
           setVisibility("private");
+          setMentionIssueSearchEnabled(true);
           setGroupId("");
           setMemberSearch("");
           setSelectedAgentIds([]);
@@ -293,6 +297,19 @@ function CreateChannelDialog({
               value={instructions}
               onChange={(event) => setInstructions(event.target.value)}
               className="min-h-20"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+            <div className="min-w-0">
+              <Label htmlFor="channel-issue-mention-search">Issue @ 补全</Label>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                输入 @ 时允许搜索并插入 Issue。讨论型频道可以关闭它，让 @ 只显示频道成员。
+              </p>
+            </div>
+            <Switch
+              id="channel-issue-mention-search"
+              checked={mentionIssueSearchEnabled}
+              onCheckedChange={setMentionIssueSearchEnabled}
             />
           </div>
           <div className="grid gap-2">

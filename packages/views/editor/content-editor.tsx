@@ -45,6 +45,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { Attachment } from "@multica/core/types";
 import { createEditorExtensions } from "./extensions";
 import { uploadAndInsertFile } from "./extensions/file-upload";
+import type { MentionItem } from "./extensions/mention-suggestion";
 import { preprocessMarkdown } from "./utils/preprocess";
 import { openLink, isMentionHref } from "./utils/link-handler";
 import { EditorBubbleMenu } from "./bubble-menu";
@@ -96,6 +97,10 @@ interface ContentEditorProps {
    * prompts) but *preserving* an existing one still matters.
    */
   disableMentions?: boolean;
+  /** Optional scoped mention list. When provided, @ completion uses only these targets. */
+  mentionItems?: MentionItem[];
+  /** Defaults to true. Set false when a surface should mention people only. */
+  mentionSearchIssues?: boolean;
   /**
    * Attachments referenced by this content. The download buttons on file
    * cards and images inside the editor look up an attachment by `url` and
@@ -139,6 +144,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       submitOnEnter = false,
       currentIssueId,
       disableMentions = false,
+      mentionItems,
+      mentionSearchIssues = true,
       attachments,
     },
     ref,
@@ -148,6 +155,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const onSubmitRef = useRef(onSubmit);
     const onBlurRef = useRef(onBlur);
     const onUploadFileRef = useRef(onUploadFile);
+    const mentionItemsRef = useRef(mentionItems);
+    const mentionSearchIssuesRef = useRef(mentionSearchIssues);
     const lastEmittedRef = useRef<string | null>(null);
 
     // Current workspace slug kept in a ref so the click handler always sees the
@@ -162,6 +171,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     onSubmitRef.current = onSubmit;
     onBlurRef.current = onBlur;
     onUploadFileRef.current = onUploadFile;
+    mentionItemsRef.current = mentionItems;
+    mentionSearchIssuesRef.current = mentionSearchIssues;
 
     const queryClient = useQueryClient();
 
@@ -182,6 +193,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         onUploadFileRef,
         submitOnEnter,
         disableMentions,
+        mentionItemsRef,
+        mentionSearchIssuesRef,
       }),
       onUpdate: ({ editor: ed }) => {
         if (!onUpdateRef.current) return;

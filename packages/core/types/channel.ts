@@ -32,6 +32,7 @@ export interface Channel {
   description: string;
   visibility: ChannelVisibility;
   proactivity: ChannelProactivity;
+  mention_issue_search_enabled: boolean;
   instructions: string;
   summary: string;
   default_project_id: string | null;
@@ -196,6 +197,7 @@ export interface CreateChannelRequest {
   description?: string;
   visibility?: ChannelVisibility;
   proactivity?: ChannelProactivity;
+  mention_issue_search_enabled?: boolean;
   instructions?: string;
   summary?: string;
   default_project_id?: string | null;
@@ -215,6 +217,7 @@ export interface UpdateChannelRequest {
   description?: string;
   visibility?: ChannelVisibility;
   proactivity?: ChannelProactivity;
+  mention_issue_search_enabled?: boolean;
   instructions?: string;
   summary?: string;
   default_project_id?: string | null;

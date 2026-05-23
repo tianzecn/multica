@@ -26,5 +26,6 @@ export {
   useRetryChannelDispatchStep,
   useResolveApprovalRequest,
   useSkipChannelDispatchStep,
+  useUpdateChannel,
 } from "./mutations";
 export { deriveChannelsSettings } from "./settings";

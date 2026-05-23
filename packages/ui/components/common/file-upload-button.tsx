@@ -8,6 +8,10 @@ import { cn } from "@multica/ui/lib/utils";
 interface FileUploadButtonProps {
   /** Called with the selected File — caller handles upload. */
   onSelect: (file: File) => void;
+  /** Called with every selected file when multi-select is enabled. */
+  onSelectFiles?: (files: File[]) => void;
+  /** Allows Shift/Command multi-select in the native file picker. */
+  multiple?: boolean;
   disabled?: boolean;
   className?: string;
   size?: "sm" | "default";
@@ -15,6 +19,8 @@ interface FileUploadButtonProps {
 
 function FileUploadButton({
   onSelect,
+  onSelectFiles,
+  multiple = false,
   disabled,
   className,
   size = "default",
@@ -24,10 +30,14 @@ function FileUploadButton({
   const attachLabel = t(($) => $.attach_file);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
     e.target.value = "";
-    onSelect(file);
+    if (files.length === 0) return;
+    if (multiple && onSelectFiles) {
+      onSelectFiles(files);
+      return;
+    }
+    files.forEach(onSelect);
   };
 
   const iconSize = size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
@@ -52,6 +62,7 @@ function FileUploadButton({
       <input
         ref={inputRef}
         type="file"
+        multiple={multiple}
         className="hidden"
         onChange={handleChange}
       />

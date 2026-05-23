@@ -16,11 +16,11 @@ WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL;
 INSERT INTO channel (
     workspace_id, group_id, slug, name, description, visibility,
     proactivity, instructions, summary, default_project_id, default_assignee_type,
-    default_assignee_id, position, created_by
+    default_assignee_id, position, created_by, mention_issue_search_enabled
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10, $11,
-    $12, $13, $14
+    $12, $13, $14, $15
 )
 RETURNING *;
 
@@ -60,6 +60,7 @@ UPDATE channel SET
     default_assignee_type = COALESCE(sqlc.narg('default_assignee_type'), default_assignee_type),
     default_assignee_id = COALESCE(sqlc.narg('default_assignee_id'), default_assignee_id),
     position = COALESCE(sqlc.narg('position'), position),
+    mention_issue_search_enabled = COALESCE(sqlc.narg('mention_issue_search_enabled'), mention_issue_search_enabled),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;

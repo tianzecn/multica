@@ -117,6 +117,59 @@ describe("createMentionSuggestion", () => {
     expect(items.some((i) => i.type === "agent" && i.label === "Aegis")).toBe(true);
   });
 
+  it("uses scoped mention items instead of the global workspace roster", () => {
+    const qc = fakeQc({
+      members: [{ user_id: "u-global", name: "Global User", role: "member" }],
+      agents: [
+        {
+          id: "a-global",
+          name: "Global Agent",
+          archived_at: null,
+          visibility: "workspace",
+          owner_id: null,
+        },
+      ],
+    });
+    const scopedItemsRef: { current: MentionItem[] | undefined } = {
+      current: [
+        { id: "all", label: "All members", type: "all" },
+        { id: "a-channel", label: "Channel Agent", type: "agent" },
+        { id: "u-channel", label: "Channel User", type: "member" },
+      ],
+    };
+    const searchIssuesRef = { current: false };
+
+    const config = createMentionSuggestion(qc, { scopedItemsRef, searchIssuesRef });
+    const result = config.items!({ query: "", editor: {} as never });
+    const items = result as MentionItem[];
+
+    expect(items.map((item) => item.label)).toEqual([
+      "All members",
+      "Channel Agent",
+      "Channel User",
+    ]);
+    expect(items.some((item) => item.label === "Global Agent")).toBe(false);
+    expect(items.some((item) => item.label === "Global User")).toBe(false);
+  });
+
+  it("reads scoped mention items from the ref at query time", () => {
+    const qc = fakeQc({});
+    const scopedItemsRef: { current: MentionItem[] | undefined } = {
+      current: [{ id: "a-old", label: "Old Agent", type: "agent" }],
+    };
+    const config = createMentionSuggestion(qc, {
+      scopedItemsRef,
+      searchIssuesRef: { current: false },
+    });
+
+    scopedItemsRef.current = [{ id: "a-new", label: "New Agent", type: "agent" }];
+    const result = config.items!({ query: "", editor: {} as never });
+    const items = result as MentionItem[];
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.label).toBe("New Agent");
+  });
+
   it("loads server issue matches into the popup when the list cache misses", async () => {
     searchIssuesMock.mockResolvedValue({
       issues: [
@@ -150,6 +203,13 @@ describe("createMentionSuggestion", () => {
   it("does not call searchIssues for an empty query", () => {
     render(<I18nWrapper><MentionList items={[]} query="" command={vi.fn()} /></I18nWrapper>);
 
+    expect(searchIssuesMock).not.toHaveBeenCalled();
+  });
+
+  it("does not call searchIssues when issue search is disabled", () => {
+    render(<I18nWrapper><MentionList items={[]} query="协作" command={vi.fn()} searchIssues={false} /></I18nWrapper>);
+
+    expect(screen.getByText("No results")).toBeInTheDocument();
     expect(searchIssuesMock).not.toHaveBeenCalled();
   });
 

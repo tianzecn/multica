@@ -22,22 +22,24 @@ import {
   useRetryChannelDispatchStep,
   useResolveApprovalRequest,
   useSkipChannelDispatchStep,
+  useUpdateChannel,
 } from "@multica/core/channels";
 import { api } from "@multica/core/api";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { useWorkspacePaths } from "@multica/core/paths";
-import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
-import type { Agent, ApprovalRequest, Attachment, ChannelAgentRun, ChannelDispatchMode, ChannelDispatchPlan, ChannelDispatchStep, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, TaskMessagePayload } from "@multica/core/types";
+import { agentListOptions, memberListOptions, squadListOptions } from "@multica/core/workspace/queries";
+import type { Agent, ApprovalRequest, Attachment, Channel, ChannelAgentRun, ChannelDispatchMode, ChannelDispatchPlan, ChannelDispatchStep, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, Squad, TaskMessagePayload } from "@multica/core/types";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../common/actor-avatar";
-import { ContentEditor, type ContentEditorRef, FileDropOverlay, ReadonlyContent, useFileDropZone } from "../editor";
+import { ContentEditor, type ContentEditorRef, FileDropOverlay, type MentionItem, ReadonlyContent, useFileDropZone } from "../editor";
 import { AppLink, useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
@@ -50,6 +52,7 @@ const EMPTY_CHANNEL_MEMBERS: ChannelMember[] = [];
 const EMPTY_CHANNEL_AGENT_RUNS: ChannelAgentRun[] = [];
 const EMPTY_CHANNEL_DISPATCH_PLANS: ChannelDispatchPlan[] = [];
 const EMPTY_AGENTS: Agent[] = [];
+const EMPTY_SQUADS: Squad[] = [];
 const EMPTY_WORKSPACE_MEMBERS: MemberWithUser[] = [];
 
 export function ChannelDetailPage() {
@@ -73,6 +76,10 @@ export function ChannelDetailPage() {
   });
   const { data: agents = EMPTY_AGENTS } = useQuery({
     ...agentListOptions(wsId),
+    enabled: !!wsId,
+  });
+  const { data: squads = EMPTY_SQUADS } = useQuery({
+    ...squadListOptions(wsId),
     enabled: !!wsId,
   });
   const { data: workspaceMembers = EMPTY_WORKSPACE_MEMBERS } = useQuery({
@@ -108,14 +115,17 @@ export function ChannelDetailPage() {
           onSelectSession={setSelectedSessionId}
         />
         <MessagePane
+          channel={channel}
           channelId={canonicalChannelId}
           sessionId={activeSessionId}
           sessions={sessions}
           channelMembers={channelMembers}
           agents={agents}
+          squads={squads}
           workspaceMembers={workspaceMembers}
         />
         <ContextPane
+          channel={channel}
           channelId={canonicalChannelId}
           sessionId={activeSessionId}
           channelMembers={channelMembers}
@@ -201,18 +211,22 @@ function SessionRail({
 }
 
 function MessagePane({
+  channel,
   channelId,
   sessionId,
   sessions,
   channelMembers,
   agents,
+  squads,
   workspaceMembers,
 }: {
+  channel: Channel;
   channelId: string;
   sessionId: string;
   sessions: ChannelSession[];
   channelMembers: ChannelMember[];
   agents: Agent[];
+  squads: Squad[];
   workspaceMembers: MemberWithUser[];
 }) {
   const { t } = useT("channels");
@@ -237,10 +251,45 @@ function MessagePane({
   const { uploadWithToast } = useFileUpload(api, (error) => toast.error(error.message));
   const session = sessions.find((item) => item.id === sessionId);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  const squadById = useMemo(() => new Map(squads.map((squad) => [squad.id, squad])), [squads]);
   const memberByUserId = useMemo(
     () => new Map(workspaceMembers.map((member) => [member.user_id, member])),
     [workspaceMembers],
   );
+  const channelMentionItems = useMemo<MentionItem[]>(() => {
+    const items: MentionItem[] = [{ id: "all", label: "All members", type: "all" }];
+    for (const member of channelMembers) {
+      if (member.member_type === "member") {
+        const workspaceMember = memberByUserId.get(member.member_id);
+        items.push({
+          id: member.member_id,
+          label: workspaceMember?.name || member.member_id,
+          type: "member",
+        });
+        continue;
+      }
+      if (member.member_type === "agent") {
+        const agent = agentById.get(member.member_id);
+        if (!agent || agent.archived_at) continue;
+        items.push({
+          id: member.member_id,
+          label: agent.name,
+          type: "agent",
+        });
+        continue;
+      }
+      if (member.member_type === "squad") {
+        const squad = squadById.get(member.member_id);
+        if (!squad || squad.archived_at) continue;
+        items.push({
+          id: member.member_id,
+          label: squad.name,
+          type: "squad",
+        });
+      }
+    }
+    return items;
+  }, [agentById, channelMembers, memberByUserId, squadById]);
   const channelAgentMembers = useMemo(
     () =>
       channelMembers
@@ -289,20 +338,23 @@ function MessagePane({
 
   const uploadChannelFiles = useCallback(
     async (files: File[]) => {
-      if (!sessionId) return;
-      for (const file of files) {
-        setPendingUploads((count) => count + 1);
-        try {
-          const result = await uploadWithToast(file, {
-            channelId,
-            channelSessionId: sessionId,
-          });
-          if (result) {
-            setPendingAttachments((current) => [...current, result]);
-          }
-        } finally {
-          setPendingUploads((count) => Math.max(0, count - 1));
+      if (!sessionId || files.length === 0) return;
+      setPendingUploads((count) => count + files.length);
+      try {
+        const results = await Promise.all(
+          files.map((file) =>
+            uploadWithToast(file, {
+              channelId,
+              channelSessionId: sessionId,
+            }),
+          ),
+        );
+        const attachments = results.filter(Boolean) as Attachment[];
+        if (attachments.length > 0) {
+          setPendingAttachments((current) => [...current, ...attachments]);
         }
+      } finally {
+        setPendingUploads((count) => Math.max(0, count - files.length));
       }
     },
     [channelId, sessionId, uploadWithToast],
@@ -449,11 +501,15 @@ function MessagePane({
               className="min-h-16"
               showBubbleMenu={false}
               submitOnEnter
+              mentionItems={channelMentionItems}
+              mentionSearchIssues={channel.mention_issue_search_enabled !== false}
             />
           </div>
           <div className="mt-1 flex items-center justify-end gap-1">
             <FileUploadButton
               onSelect={(file) => void uploadChannelFiles([file])}
+              onSelectFiles={(files) => void uploadChannelFiles(files)}
+              multiple
               disabled={!sessionId || createMessage.isPending || pendingUploads > 0}
             />
             <Button
@@ -890,12 +946,14 @@ function ChannelMessageCard({
 }
 
 function ContextPane({
+  channel,
   channelId,
   sessionId,
   channelMembers,
   agents,
   workspaceMembers,
 }: {
+  channel: Channel;
   channelId: string;
   sessionId: string;
   channelMembers: ChannelMember[];
@@ -920,6 +978,7 @@ function ContextPane({
   });
   const linkIssue = useLinkIssueToChannel(channelId);
   const addMember = useAddChannelMember(channelId);
+  const updateChannel = useUpdateChannel(channelId);
   const pendingApprovals = approvals.filter((approval) => approval.status === "pending");
   const activePlans = dispatchPlans.filter((plan) => ["queued", "running", "paused"].includes(plan.status));
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
@@ -956,6 +1015,15 @@ function ContextPane({
           toast.success("AI 同事已加入频道");
         },
         onError: (error) => toast.error(error instanceof Error ? error.message : "添加 AI 同事失败"),
+      },
+    );
+  };
+  const toggleMentionIssueSearch = (checked: boolean) => {
+    updateChannel.mutate(
+      { mention_issue_search_enabled: checked },
+      {
+        onSuccess: () => toast.success(checked ? "Issue @ 补全已开启" : "Issue @ 补全已关闭"),
+        onError: (error) => toast.error(error instanceof Error ? error.message : "频道设置更新失败"),
       },
     );
   };
@@ -1014,6 +1082,28 @@ function ContextPane({
               </Button>
             </div>
           )}
+        </div>
+      </section>
+      <section className="border-b p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Hash className="size-4 text-muted-foreground" />
+          <h2 className="text-sm font-medium">频道设置</h2>
+        </div>
+        <div className="rounded-md border bg-background p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Issue @ 补全</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                开启后，输入 @ 可搜索 Issue；关闭后只显示频道成员。
+              </p>
+            </div>
+            <Switch
+              checked={channel.mention_issue_search_enabled !== false}
+              onCheckedChange={toggleMentionIssueSearch}
+              disabled={updateChannel.isPending}
+              aria-label="切换 Issue @ 补全"
+            />
+          </div>
         </div>
       </section>
       <section className="border-b p-4">

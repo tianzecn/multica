@@ -55,6 +55,8 @@ export function useUpdateChannel(channelId: string) {
         old?.map((item) => (item.id === channel.id ? channel : item)),
       );
       qc.setQueryData(channelKeys.detail(wsId, channelId), channel);
+      qc.setQueryData(channelKeys.detail(wsId, channel.id), channel);
+      qc.setQueryData(channelKeys.detail(wsId, channel.slug), channel);
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: channelKeys.list(wsId) });

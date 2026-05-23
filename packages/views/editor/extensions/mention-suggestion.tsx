@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 import { ReactRenderer } from "@tiptap/react";
 import { computePosition, offset, flip, shift } from "@floating-ui/dom";
@@ -57,6 +58,7 @@ interface MentionListProps {
   items: MentionItem[];
   query: string;
   command: (item: MentionItem) => void;
+  searchIssues?: boolean;
 }
 
 export interface MentionListRef {
@@ -120,7 +122,7 @@ function mergeMentionItems(
 }
 
 export const MentionList = forwardRef<MentionListRef, MentionListProps>(
-  function MentionList({ items, query, command }, ref) {
+  function MentionList({ items, query, command, searchIssues = true }, ref) {
     const { t } = useT("editor");
     const [selectedIndex, setSelectedIndex] = useState(0);
     const [serverIssueItems, setServerIssueItems] = useState<MentionItem[]>([]);
@@ -133,7 +135,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
       const q = normalizedQuery;
       setServerIssueItems([]);
 
-      if (!q) {
+      if (!q || !searchIssues) {
         setIsSearchingIssues(false);
         setSearchedIssueQuery("");
         return;
@@ -178,7 +180,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
         clearTimeout(timer);
         controller.abort();
       };
-    }, [normalizedQuery]);
+    }, [normalizedQuery, searchIssues]);
 
     const displayItems = useMemo(() => {
       const currentServerIssueItems =
@@ -233,6 +235,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
 
     if (displayItems.length === 0) {
       const isWaitingForServer =
+        searchIssues &&
         normalizedQuery !== "" &&
         (isSearchingIssues || searchedIssueQuery !== normalizedQuery);
 
@@ -369,10 +372,32 @@ function issueToMention(i: Pick<Issue, "id" | "identifier" | "title" | "status">
   };
 }
 
+interface MentionSuggestionOptions {
+  scopedItemsRef?: RefObject<MentionItem[] | undefined>;
+  searchIssuesRef?: RefObject<boolean | undefined>;
+}
+
+function matchesMentionItem(item: MentionItem, query: string) {
+  if (!query) return true;
+  return (
+    item.label.toLowerCase().includes(query) ||
+    matchesPinyin(item.label, query) ||
+    item.description?.toLowerCase().includes(query)
+  );
+}
+
 export function createMentionSuggestion(qc: QueryClient): Omit<
   SuggestionOptions<MentionItem>,
   "editor"
-> {
+>;
+export function createMentionSuggestion(
+  qc: QueryClient,
+  options: MentionSuggestionOptions,
+): Omit<SuggestionOptions<MentionItem>, "editor">;
+export function createMentionSuggestion(
+  qc: QueryClient,
+  options: MentionSuggestionOptions = {},
+): Omit<SuggestionOptions<MentionItem>, "editor"> {
   // Renderer/popup instances live in this closure so each ContentEditor owns
   // its own TipTap suggestion popup lifecycle.
   let renderer: ReactRenderer<MentionListRef> | null = null;
@@ -401,6 +426,23 @@ export function createMentionSuggestion(qc: QueryClient): Omit<
       members.find((m) => m.user_id === userId)?.role ?? null;
 
     const q = query.toLowerCase();
+    const searchIssues = options.searchIssuesRef?.current ?? true;
+
+    const scopedItems = options.scopedItemsRef?.current;
+    if (scopedItems) {
+      const userItems = scopedItems.filter((item) => matchesMentionItem(item, q));
+      if (!searchIssues) return userItems;
+
+      const issueItems: MentionItem[] = cachedIssues
+        .filter(
+          (i) =>
+            i.identifier.toLowerCase().includes(q) ||
+            i.title.toLowerCase().includes(q),
+        )
+        .map(issueToMention);
+
+      return [...userItems, ...issueItems];
+    }
 
     const allItem: MentionItem[] =
       "all members".includes(q) || "all".includes(q)
@@ -439,13 +481,15 @@ export function createMentionSuggestion(qc: QueryClient): Omit<
 
     // Cached issues give an instant first paint; MentionList adds server
     // matches for done/cancelled and any other issues not in this cache.
-    const issueItems: MentionItem[] = cachedIssues
-      .filter(
-        (i) =>
-          i.identifier.toLowerCase().includes(q) ||
-          i.title.toLowerCase().includes(q),
-      )
-      .map(issueToMention);
+    const issueItems: MentionItem[] = searchIssues
+      ? cachedIssues
+          .filter(
+            (i) =>
+              i.identifier.toLowerCase().includes(q) ||
+              i.title.toLowerCase().includes(q),
+          )
+          .map(issueToMention)
+      : [];
 
     return [...allItem, ...userItems, ...issueItems];
   }
@@ -464,6 +508,7 @@ export function createMentionSuggestion(qc: QueryClient): Omit<
               items: props.items,
               query: props.query,
               command: props.command,
+              searchIssues: options.searchIssuesRef?.current ?? true,
             },
             editor: props.editor,
           });
@@ -482,6 +527,7 @@ export function createMentionSuggestion(qc: QueryClient): Omit<
             items: props.items,
             query: props.query,
             command: props.command,
+            searchIssues: options.searchIssuesRef?.current ?? true,
           });
           if (popup) updatePosition(popup, props.clientRect);
         },

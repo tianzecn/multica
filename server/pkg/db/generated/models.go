@@ -187,24 +187,25 @@ type AutopilotTrigger struct {
 }
 
 type Channel struct {
-	ID                  pgtype.UUID        `json:"id"`
-	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
-	GroupID             pgtype.UUID        `json:"group_id"`
-	Slug                string             `json:"slug"`
-	Name                string             `json:"name"`
-	Description         string             `json:"description"`
-	Visibility          string             `json:"visibility"`
-	Instructions        string             `json:"instructions"`
-	Summary             string             `json:"summary"`
-	DefaultProjectID    pgtype.UUID        `json:"default_project_id"`
-	DefaultAssigneeType pgtype.Text        `json:"default_assignee_type"`
-	DefaultAssigneeID   pgtype.UUID        `json:"default_assignee_id"`
-	Position            float64            `json:"position"`
-	CreatedBy           pgtype.UUID        `json:"created_by"`
-	ArchivedAt          pgtype.Timestamptz `json:"archived_at"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
-	Proactivity         string             `json:"proactivity"`
+	ID                        pgtype.UUID        `json:"id"`
+	WorkspaceID               pgtype.UUID        `json:"workspace_id"`
+	GroupID                   pgtype.UUID        `json:"group_id"`
+	Slug                      string             `json:"slug"`
+	Name                      string             `json:"name"`
+	Description               string             `json:"description"`
+	Visibility                string             `json:"visibility"`
+	Instructions              string             `json:"instructions"`
+	Summary                   string             `json:"summary"`
+	DefaultProjectID          pgtype.UUID        `json:"default_project_id"`
+	DefaultAssigneeType       pgtype.Text        `json:"default_assignee_type"`
+	DefaultAssigneeID         pgtype.UUID        `json:"default_assignee_id"`
+	Position                  float64            `json:"position"`
+	CreatedBy                 pgtype.UUID        `json:"created_by"`
+	ArchivedAt                pgtype.Timestamptz `json:"archived_at"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	Proactivity               string             `json:"proactivity"`
+	MentionIssueSearchEnabled bool               `json:"mention_issue_search_enabled"`
 }
 
 type ChannelAgentRun struct {
