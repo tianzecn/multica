@@ -58,6 +58,7 @@ const EMPTY_CHANNEL_DISPATCH_PLANS: ChannelDispatchPlan[] = [];
 const EMPTY_AGENTS: Agent[] = [];
 const EMPTY_SQUADS: Squad[] = [];
 const EMPTY_WORKSPACE_MEMBERS: MemberWithUser[] = [];
+const DEFAULT_SESSION_TITLE = "新话题";
 
 export function ChannelDetailPage() {
   const wsId = useWorkspaceId();
@@ -197,8 +198,7 @@ function SessionRail({
   const archiveSession = useArchiveChannelSession(channelId);
   const restoreSession = useRestoreChannelSession(channelId);
   const submit = () => {
-    const nextTitle = title.trim();
-    if (!nextTitle) return;
+    const nextTitle = title.trim() || nextDefaultSessionTitle(sessions, DEFAULT_SESSION_TITLE);
     createSession.mutate(
       { title: nextTitle },
       {
@@ -262,7 +262,7 @@ function SessionRail({
             placeholder={t(($) => $.detail.new_session_placeholder)}
             className="h-8 text-sm"
           />
-          <Button size="icon" variant="outline" onClick={submit} disabled={!title.trim() || createSession.isPending}>
+          <Button size="icon" variant="outline" onClick={submit} disabled={createSession.isPending}>
             <Plus className="size-3.5" />
           </Button>
         </div>
@@ -320,6 +320,15 @@ function SessionRail({
       </div>
     </aside>
   );
+}
+
+function nextDefaultSessionTitle(sessions: ChannelSession[], baseTitle: string) {
+  const existingTitles = new Set(sessions.map((session) => session.title.trim()).filter(Boolean));
+  if (!existingTitles.has(baseTitle)) return baseTitle;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${baseTitle} ${index}`;
+    if (!existingTitles.has(candidate)) return candidate;
+  }
 }
 
 function MessagePane({
