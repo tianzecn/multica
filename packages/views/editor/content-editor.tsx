@@ -52,7 +52,7 @@ import { EditorBubbleMenu } from "./bubble-menu";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import { AttachmentDownloadProvider } from "./attachment-download-context";
 import "katex/dist/katex.min.css";
-import "./content-editor.css";
+import "./styles/index.css";
 
 // ---------------------------------------------------------------------------
 // Helpers
