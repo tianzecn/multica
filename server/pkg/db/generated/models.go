@@ -206,6 +206,7 @@ type Channel struct {
 	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
 	Proactivity               string             `json:"proactivity"`
 	MentionIssueSearchEnabled bool               `json:"mention_issue_search_enabled"`
+	ProjectID                 pgtype.UUID        `json:"project_id"`
 }
 
 type ChannelAgentRun struct {

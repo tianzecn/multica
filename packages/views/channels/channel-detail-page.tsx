@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable i18next/no-literal-string */
 
 import { Fragment, type ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -20,6 +21,7 @@ import {
   useCreateChannelMessage,
   useCreateChannelSession,
   useLinkIssueToChannel,
+  useMarkChannelRead,
   useRemoveChannelMember,
   useRestoreChannelSession,
   useRetryChannelDispatchStep,
@@ -34,6 +36,7 @@ import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { useCurrentMember } from "@multica/core/permissions";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions, memberListOptions, squadListOptions } from "@multica/core/workspace/queries";
+import { projectListOptions } from "@multica/core/projects/queries";
 import type { Agent, ApprovalRequest, Attachment, Channel, ChannelAgentRun, ChannelDispatchMode, ChannelDispatchPlan, ChannelDispatchStep, ChannelIssue, ChannelMember, ChannelMessage, ChannelSession, MemberWithUser, Squad, TaskMessagePayload } from "@multica/core/types";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
@@ -72,6 +75,7 @@ export function ChannelDetailPage() {
     enabled: !!wsId && !!channelId,
   });
   const canonicalChannelId = channel?.id || channelId;
+  const { mutate: markRead, isPending: isMarkingRead } = useMarkChannelRead(canonicalChannelId);
   const { data: activeSessions = EMPTY_SESSIONS } = useQuery({
     ...channelSessionsOptions(wsId, canonicalChannelId),
     enabled: !!wsId && !!channel?.id,
@@ -123,6 +127,11 @@ export function ChannelDetailPage() {
     setSelectedSessionId(null);
   }, [activeSessions, selectedSessionId]);
 
+  useEffect(() => {
+    if (!channel?.id || !channel.has_unread || isMarkingRead) return;
+    markRead();
+  }, [channel?.id, channel?.has_unread, isMarkingRead, markRead]);
+
   if (channelLoading || !channel) {
     return <ChannelDetailSkeleton />;
   }
@@ -131,7 +140,7 @@ export function ChannelDetailPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader className="justify-between px-5">
         <div className="flex min-w-0 items-center gap-2">
-          <AppLink href={p.channels()} className="text-muted-foreground hover:text-foreground">
+          <AppLink href={channel.project_id ? p.projectDetail(channel.project_id) : p.projects()} className="text-muted-foreground hover:text-foreground">
             <ArrowLeft className="size-4" />
           </AppLink>
           {channel.visibility === "private" ? <Lock className="size-4 text-muted-foreground" /> : <Hash className="size-4 text-muted-foreground" />}
@@ -646,6 +655,7 @@ function MessagePane({
               submitOnEnter
               mentionItems={channelMentionItems}
               mentionSearchIssues={channel.mention_issue_search_enabled !== false}
+              mentionIssueProjectId={channel.project_id}
             />
           </div>
           <div className="mt-1 flex items-center justify-end gap-1">
@@ -1115,6 +1125,10 @@ function ContextPane({
     ...channelApprovalsOptions(wsId, channelId),
     enabled: !!wsId && !!channelId,
   });
+  const { data: projects = [] } = useQuery({
+    ...projectListOptions(wsId),
+    enabled: !!wsId,
+  });
   const { data: dispatchPlans = EMPTY_CHANNEL_DISPATCH_PLANS } = useQuery({
     ...channelDispatchPlansOptions(wsId, channelId, sessionId),
     enabled: !!wsId && !!channelId && !!sessionId,
@@ -1180,6 +1194,15 @@ function ContextPane({
       { mention_issue_search_enabled: checked },
       {
         onSuccess: () => toast.success(checked ? "Issue @ 补全已开启" : "Issue @ 补全已关闭"),
+        onError: (error) => toast.error(error instanceof Error ? error.message : "频道设置更新失败"),
+      },
+    );
+  };
+  const updateProject = (projectId: string) => {
+    updateChannel.mutate(
+      { project_id: projectId || null },
+      {
+        onSuccess: () => toast.success("频道项目归属已更新"),
         onError: (error) => toast.error(error instanceof Error ? error.message : "频道设置更新失败"),
       },
     );
@@ -1285,6 +1308,24 @@ function ContextPane({
               aria-label="切换 Issue @ 补全"
             />
           </div>
+          {projects.length > 0 && (
+            <div className="mt-3 border-t pt-3">
+              <label htmlFor="channel-project-setting" className="text-sm font-medium">所属项目</label>
+              <select
+                id="channel-project-setting"
+                value={channel.project_id ?? ""}
+                onChange={(event) => updateProject(event.target.value)}
+                disabled={updateChannel.isPending}
+                className="mt-2 h-8 w-full rounded-md border bg-background px-2 text-sm"
+              >
+                <option value="">未归属项目</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.title}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">只影响未来新建 Issue 和频道内搜索上下文。</p>
+            </div>
+          )}
         </div>
       </section>
       <section className="border-b p-4">

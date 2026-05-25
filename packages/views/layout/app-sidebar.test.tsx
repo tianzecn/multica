@@ -1,11 +1,13 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import React from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { AppSidebar } from "./app-sidebar";
 
-const { detail, deletePin, pins } = vi.hoisted(() => ({
+const { detail, deletePin, navigation, pins, projects, toggleProject, treeState } = vi.hoisted(() => ({
   detail: { current: { isPending: false, isError: false, data: null as unknown, error: null as unknown } },
   deletePin: vi.fn(),
+  navigation: { current: { pathname: "/acme/issues" } },
   pins: {
     current: [
       {
@@ -18,6 +20,15 @@ const { detail, deletePin, pins } = vi.hoisted(() => ({
         created_at: "2026-05-06T00:00:00Z",
       },
     ],
+  },
+  projects: { current: [] as unknown[] },
+  toggleProject: vi.fn(),
+  treeState: {
+    current: {
+      expandedProjectIds: [] as string[],
+      archivedChannelsOpen: false,
+      unassignedChannelsOpen: false,
+    },
   },
 }));
 
@@ -43,7 +54,8 @@ vi.mock("@multica/ui/components/ui/sidebar", () => ({
   SidebarGroupLabel: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarHeader: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SidebarMenuButton: ({ children }: { children: React.ReactNode }) => <button type="button">{children}</button>,
+  SidebarMenuButton: ({ children, render }: { children: React.ReactNode; render?: React.ReactElement<{ children?: React.ReactNode }> }) =>
+    React.isValidElement(render) ? React.cloneElement(render, {}, children) : <button type="button">{children}</button>,
   SidebarMenuItem: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarRail: () => null,
 }));
@@ -71,17 +83,18 @@ vi.mock("../auth", () => ({ useLogout: () => vi.fn() }));
 vi.mock("../issues/components/status-icon", () => ({ StatusIcon: () => <span /> }));
 vi.mock("../navigation", () => ({
   AppLink: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
-  useNavigation: () => ({ pathname: "/acme/issues", push: vi.fn() }),
+  useNavigation: () => ({ pathname: navigation.current.pathname, push: vi.fn() }),
 }));
 vi.mock("../projects/components/project-icon", () => ({ ProjectIcon: () => <span /> }));
 vi.mock("../workspace/workspace-avatar", () => ({ WorkspaceAvatar: () => <span /> }));
 vi.mock("@multica/ui/components/common/actor-avatar", () => ({ ActorAvatar: () => <span /> }));
+vi.mock("../channels", () => ({ CreateChannelDialog: () => null }));
 
 vi.mock("@multica/core/auth", () => ({
   useAuthStore: (selector: (state: { user: { id: string } }) => unknown) => selector({ user: { id: "user-1" } }),
 }));
 vi.mock("@multica/core/paths", () => ({
-  paths: { workspace: (slug: string) => ({ issues: () => `/${slug}/issues` }) },
+  paths: { workspace: (slug: string) => ({ issues: () => `/${slug}/issues`, projectDetail: (id: string) => `/${slug}/projects/${id}` }) },
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme", slug: "acme", settings: {} }),
   useWorkspacePaths: () => ({
     inbox: () => "/acme/inbox",
@@ -99,11 +112,14 @@ vi.mock("@multica/core/paths", () => ({
     settings: () => "/acme/settings",
     issueDetail: (id: string) => `/acme/issues/${id}`,
     projectDetail: (id: string) => `/acme/projects/${id}`,
+    projectIssues: (id: string) => `/acme/projects/${id}/issues`,
   }),
 }));
 vi.mock("@multica/core/channels", () => ({
   channelListOptions: () => ({ queryKey: ["channels"] }),
+  channelGroupsOptions: () => ({ queryKey: ["channel-groups"] }),
   deriveChannelsSettings: () => ({ channelsEnabled: true }),
+  useRestoreChannel: () => ({ isPending: false, mutate: vi.fn() }),
 }));
 vi.mock("@multica/core/api", async (importOriginal) => ({ ...(await importOriginal<typeof import("@multica/core/api")>()), api: {} }));
 vi.mock("@multica/core/inbox/queries", () => ({ deduplicateInboxItems: (items: unknown[]) => items, inboxKeys: { list: () => ["inbox"] } }));
@@ -116,7 +132,21 @@ vi.mock("@multica/core/issues/stores/draft-store", () => ({ useIssueDraftStore: 
 vi.mock("@multica/core/modals", () => ({ useModalStore: { getState: () => ({ modal: null, open: vi.fn() }) } }));
 vi.mock("@multica/core/pins/mutations", () => ({ useDeletePin: () => ({ mutate: deletePin }), useReorderPins: () => ({ mutate: vi.fn() }) }));
 vi.mock("@multica/core/pins/queries", () => ({ pinListOptions: () => ({ queryKey: ["pins"] }) }));
-vi.mock("@multica/core/projects/queries", () => ({ projectDetailOptions: () => ({ queryKey: ["project"] }) }));
+vi.mock("@multica/core/projects", () => ({
+  useProjectSidebarTreeStore: (selector: (state: unknown) => unknown) =>
+    selector({
+      expandedProjectIds: treeState.current.expandedProjectIds,
+      toggleProject,
+      archivedChannelsOpen: treeState.current.archivedChannelsOpen,
+      setArchivedChannelsOpen: vi.fn(),
+      unassignedChannelsOpen: treeState.current.unassignedChannelsOpen,
+      setUnassignedChannelsOpen: vi.fn(),
+    }),
+}));
+vi.mock("@multica/core/projects/queries", () => ({
+  projectDetailOptions: () => ({ queryKey: ["project"] }),
+  projectListOptions: () => ({ queryKey: ["projects"] }),
+}));
 vi.mock("@multica/core/runtimes/hooks", () => ({ useMyRuntimesNeedUpdate: () => false }));
 vi.mock("@multica/core/workspace/queries", () => ({
   myInvitationListOptions: () => ({ queryKey: ["invitations"] }),
@@ -129,6 +159,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
   useQuery: ({ queryKey }: { queryKey: readonly unknown[] }) => {
     if (queryKey[0] === "pins") return { data: pins.current };
     if (queryKey[0] === "issue") return detail.current;
+    if (queryKey[0] === "projects") return { data: projects.current };
     return { data: [] };
   },
   useQueryClient: () => ({ fetchQuery: vi.fn(), invalidateQueries: vi.fn() }),
@@ -137,7 +168,13 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 describe("PinRow", () => {
   beforeEach(() => {
     deletePin.mockReset();
+    toggleProject.mockReset();
     detail.current = { isPending: false, isError: false, data: null, error: null };
+    navigation.current.pathname = "/acme/issues";
+    projects.current = [];
+    treeState.current.expandedProjectIds = [];
+    treeState.current.archivedChannelsOpen = false;
+    treeState.current.unassignedChannelsOpen = false;
   });
 
   it("unpins missing details", async () => {
@@ -156,5 +193,32 @@ describe("PinRow", () => {
     detail.current = { isPending: false, isError: false, data: { identifier: "MUL-123", title: "Keep this pin", status: "todo" }, error: null };
     render(<AppSidebar />);
     expect(await screen.findByText("MUL-123 Keep this pin")).toBeInTheDocument();
+  });
+
+  it("keeps the project Issues tree entry on the project detail surface", async () => {
+    navigation.current.pathname = "/acme/projects/project-1";
+    treeState.current.expandedProjectIds = ["project-1"];
+    projects.current = [
+      {
+        id: "project-1",
+        title: "Launch",
+        icon: "🚀",
+        issue_count: 2,
+        updated_at: "2026-05-25T00:00:00Z",
+      },
+    ];
+
+    render(<AppSidebar />);
+
+    expect(screen.getByText("Launch").closest("a")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+    expect(toggleProject).toHaveBeenCalledWith("project-1");
+    const projectSurfaceLinks = screen.getAllByRole("link").filter((link) => link.getAttribute("href") === "/acme/projects/project-1");
+    expect(projectSurfaceLinks).toHaveLength(1);
+    expect(
+      screen
+        .getAllByRole("link")
+        .some((link) => link.getAttribute("href") === "/acme/projects/project-1/issues"),
+    ).toBe(false);
   });
 });

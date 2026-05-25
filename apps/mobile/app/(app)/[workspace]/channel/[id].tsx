@@ -38,6 +38,7 @@ import {
   useCreateChannelSession,
   useCancelChannelDispatchPlan,
   useLinkIssueToChannel,
+  useMarkChannelRead,
   useRetryChannelDispatchStep,
   useResolveChannelApproval,
   useSkipChannelDispatchStep,
@@ -59,6 +60,7 @@ export default function ChannelDetailScreen() {
     channelDetailOptions(wsId, channelRef),
   );
   const channelId = channel?.id || channelRef;
+  const { mutate: markRead, isPending: isMarkingRead } = useMarkChannelRead(channelId);
 
   const { data: sessions = [], isLoading: sessionsLoading } = useQuery(
     channelSessionsOptions(wsId, channelId),
@@ -101,6 +103,11 @@ export default function ChannelDetailScreen() {
   const [draft, setDraft] = useState("");
   const [draftAttachments, setDraftAttachments] = useState<Attachment[]>([]);
   const { pickAndUploadFile, uploading: attachmentUploading } = useFileAttach();
+
+  useEffect(() => {
+    if (!channel?.id || !channel.has_unread || isMarkingRead) return;
+    markRead();
+  }, [channel?.id, channel?.has_unread, isMarkingRead, markRead]);
 
   useEffect(() => {
     setDraft("");

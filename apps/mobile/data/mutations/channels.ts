@@ -10,6 +10,13 @@ import { api } from "@/data/api";
 import { channelKeys } from "@/data/queries/channels";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
+function upsertChannel(channels: Channel[] | undefined, channel: Channel) {
+  if (!channels) return channels;
+  return channels.some((item) => item.id === channel.id)
+    ? channels.map((item) => (item.id === channel.id ? channel : item))
+    : [channel, ...channels];
+}
+
 export function useCreateChannel() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -18,12 +25,36 @@ export function useCreateChannel() {
     mutationFn: (data: CreateChannelRequest) => api.createChannel(data),
     onSuccess: (channel) => {
       qc.setQueryData<Channel[]>(channelKeys.list(wsId), (old) =>
-        old && !old.some((item) => item.id === channel.id)
-          ? [channel, ...old]
-          : old,
+        upsertChannel(old, channel),
+      );
+      qc.setQueryData<Channel[]>(channelKeys.list(wsId, true), (old) =>
+        upsertChannel(old, channel),
       );
     },
     onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
+    },
+  });
+}
+
+export function useMarkChannelRead(channelId: string | null) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: () => api.markChannelRead(channelId!),
+    onSuccess: (channel) => {
+      qc.setQueryData<Channel[]>(channelKeys.list(wsId), (old) =>
+        old?.map((item) =>
+          item.id === channel.id ? { ...item, has_unread: false } : item,
+        ),
+      );
+      qc.setQueryData(channelKeys.detail(wsId, channelId ?? ""), channel);
+      qc.setQueryData(channelKeys.detail(wsId, channel.id), channel);
+      qc.setQueryData(channelKeys.detail(wsId, channel.slug), channel);
+    },
+    onSettled: () => {
+      if (!channelId) return;
       qc.invalidateQueries({ queryKey: channelKeys.list(wsId) });
     },
   });

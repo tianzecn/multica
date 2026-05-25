@@ -17,6 +17,7 @@ import type {
   CreateAgentFromTemplateResponse,
   GroupedIssuesResponse,
   ListIssuesResponse,
+  SearchChannelsResponse,
   ListWebhookDeliveriesResponse,
   TimelineEntry,
   User,
@@ -279,6 +280,7 @@ export const ChannelSchema = z.object({
   mention_issue_search_enabled: z.boolean().default(true),
   instructions: z.string().default(""),
   summary: z.string().default(""),
+  project_id: z.string().nullable().optional(),
   default_project_id: z.string().nullable().optional(),
   default_assignee_type: z.string().nullable().optional(),
   default_assignee_id: z.string().nullable().optional(),
@@ -287,7 +289,15 @@ export const ChannelSchema = z.object({
   archived_at: z.string().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
-}).loose();
+  has_unread: z.boolean().default(false),
+}).loose().transform((channel) => {
+  const projectId = channel.project_id ?? channel.default_project_id ?? null;
+  return {
+    ...channel,
+    project_id: projectId,
+    default_project_id: channel.default_project_id ?? projectId,
+  };
+});
 
 export const ChannelMemberSchema = z.object({
   id: z.string(),
@@ -431,6 +441,10 @@ export const ApprovalRequestSchema = z.object({
 
 export const ChannelGroupListSchema = z.array(ChannelGroupSchema);
 export const ChannelListSchema = z.array(ChannelSchema);
+export const SearchChannelsResponseSchema = z.object({
+  channels: ChannelListSchema.default([]),
+  total: z.number().default(0),
+}).loose();
 export const ChannelMemberListSchema = z.array(ChannelMemberSchema);
 export const ChannelSessionListSchema = z.array(ChannelSessionSchema);
 export const ChannelMessageListSchema = z.array(ChannelMessageSchema);
@@ -462,6 +476,7 @@ export const EMPTY_CHANNEL: Channel = {
   mention_issue_search_enabled: true,
   instructions: "",
   summary: "",
+  project_id: null,
   default_project_id: null,
   default_assignee_type: null,
   default_assignee_id: null,
@@ -470,6 +485,12 @@ export const EMPTY_CHANNEL: Channel = {
   archived_at: null,
   created_at: "",
   updated_at: "",
+  has_unread: false,
+};
+
+export const EMPTY_SEARCH_CHANNELS_RESPONSE: SearchChannelsResponse = {
+  channels: [],
+  total: 0,
 };
 
 export const EMPTY_CHANNEL_MEMBER: ChannelMember = {

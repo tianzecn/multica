@@ -1,6 +1,7 @@
 import type { Issue, IssueMetadata, IssueStatus, IssuePriority, IssueAssigneeType } from "./issue";
 import type { MemberRole } from "./workspace";
 import type { Project } from "./project";
+import type { Channel } from "./channel";
 
 // Issue API
 export interface CreateIssueRequest {
@@ -150,6 +151,11 @@ export interface SearchProjectResult extends Project {
 
 export interface SearchProjectsResponse {
   projects: SearchProjectResult[];
+  total: number;
+}
+
+export interface SearchChannelsResponse {
+  channels: Channel[];
   total: number;
 }
 

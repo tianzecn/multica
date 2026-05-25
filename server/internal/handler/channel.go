@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -45,6 +46,7 @@ type ChannelResponse struct {
 	MentionIssueSearch  bool    `json:"mention_issue_search_enabled"`
 	Instructions        string  `json:"instructions"`
 	Summary             string  `json:"summary"`
+	ProjectID           *string `json:"project_id"`
 	DefaultProjectID    *string `json:"default_project_id"`
 	DefaultAssigneeType *string `json:"default_assignee_type"`
 	DefaultAssigneeID   *string `json:"default_assignee_id"`
@@ -53,6 +55,7 @@ type ChannelResponse struct {
 	ArchivedAt          *string `json:"archived_at"`
 	CreatedAt           string  `json:"created_at"`
 	UpdatedAt           string  `json:"updated_at"`
+	HasUnread           bool    `json:"has_unread"`
 }
 
 type ChannelMemberResponse struct {
@@ -220,7 +223,15 @@ func channelGroupToResponse(group db.ChannelGroup) ChannelGroupResponse {
 	}
 }
 
-func channelToResponse(channel db.Channel) ChannelResponse {
+func channelToResponse(channel db.Channel, hasUnread ...bool) ChannelResponse {
+	projectID := channel.ProjectID
+	if !projectID.Valid {
+		projectID = channel.DefaultProjectID
+	}
+	unread := false
+	if len(hasUnread) > 0 {
+		unread = hasUnread[0]
+	}
 	return ChannelResponse{
 		ID:                  uuidToString(channel.ID),
 		WorkspaceID:         uuidToString(channel.WorkspaceID),
@@ -233,7 +244,8 @@ func channelToResponse(channel db.Channel) ChannelResponse {
 		MentionIssueSearch:  channel.MentionIssueSearchEnabled,
 		Instructions:        channel.Instructions,
 		Summary:             channel.Summary,
-		DefaultProjectID:    uuidToPtr(channel.DefaultProjectID),
+		ProjectID:           uuidToPtr(projectID),
+		DefaultProjectID:    uuidToPtr(projectID),
 		DefaultAssigneeType: textToPtr(channel.DefaultAssigneeType),
 		DefaultAssigneeID:   uuidToPtr(channel.DefaultAssigneeID),
 		Position:            channel.Position,
@@ -241,6 +253,7 @@ func channelToResponse(channel db.Channel) ChannelResponse {
 		ArchivedAt:          timestampToPtr(channel.ArchivedAt),
 		CreatedAt:           timestampToString(channel.CreatedAt),
 		UpdatedAt:           timestampToString(channel.UpdatedAt),
+		HasUnread:           unread,
 	}
 }
 
@@ -484,6 +497,95 @@ func stringValue(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
+}
+
+func nullableStringFromRaw(w http.ResponseWriter, fields map[string]json.RawMessage, key string) (string, bool, bool) {
+	raw, present := fields[key]
+	if !present {
+		return "", false, true
+	}
+	if string(raw) == "null" {
+		return "", true, true
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		writeError(w, http.StatusBadRequest, key+" must be a string or null")
+		return "", true, false
+	}
+	return strings.TrimSpace(value), true, true
+}
+
+func (h *Handler) resolveChannelProjectID(
+	w http.ResponseWriter,
+	r *http.Request,
+	workspaceID pgtype.UUID,
+	projectValue string,
+	projectPresent bool,
+	defaultProjectValue string,
+	defaultProjectPresent bool,
+) (pgtype.UUID, bool, bool) {
+	if !projectPresent && !defaultProjectPresent {
+		return pgtype.UUID{}, false, true
+	}
+	if projectPresent && defaultProjectPresent && projectValue != defaultProjectValue {
+		writeError(w, http.StatusBadRequest, "project_id and default_project_id must match")
+		return pgtype.UUID{}, true, false
+	}
+	chosen := projectValue
+	fieldName := "project_id"
+	if !projectPresent {
+		chosen = defaultProjectValue
+		fieldName = "default_project_id"
+	}
+	projectID, ok := nullableUUIDFromString(w, chosen, fieldName)
+	if !ok {
+		return pgtype.UUID{}, true, false
+	}
+	if projectID.Valid {
+		if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+			ID:          projectID,
+			WorkspaceID: workspaceID,
+		}); err != nil {
+			writeError(w, http.StatusBadRequest, "project not found in this workspace")
+			return pgtype.UUID{}, true, false
+		}
+	}
+	return projectID, true, true
+}
+
+func (h *Handler) channelUnreadMap(ctx context.Context, channels []db.Channel, userID pgtype.UUID) map[string]bool {
+	out := make(map[string]bool)
+	if len(channels) == 0 {
+		return out
+	}
+	channelIDs := make([]pgtype.UUID, 0, len(channels))
+	for _, channel := range channels {
+		channelIDs = append(channelIDs, channel.ID)
+	}
+	unreadIDs, err := h.Queries.ListUnreadChannelIDsForUser(ctx, db.ListUnreadChannelIDsForUserParams{
+		UserID:     userID,
+		ChannelIds: channelIDs,
+	})
+	if err != nil {
+		slog.Warn("failed to load channel unread states", "error", err)
+		return out
+	}
+	for _, id := range unreadIDs {
+		out[uuidToString(id)] = true
+	}
+	return out
+}
+
+func (h *Handler) channelHasUnread(ctx context.Context, channelID pgtype.UUID, userID pgtype.UUID) bool {
+	hasUnread, err := h.Queries.ChannelHasUnreadForUser(ctx, db.ChannelHasUnreadForUserParams{
+		ChannelID: channelID,
+		UserID:    userID,
+	})
+	if err != nil {
+		slog.Warn("failed to load channel unread state", "channel_id", uuidToString(channelID), "error", err)
+		return false
+	}
+	return hasUnread
 }
 
 func (h *Handler) channelHasHumanMember(ctx http.ResponseWriter, r *http.Request, channel db.Channel, userID string) bool {
@@ -751,10 +853,61 @@ func (h *Handler) ListChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := make([]ChannelResponse, len(channels))
+	unreadByChannelID := h.channelUnreadMap(r.Context(), channels, member.UserID)
 	for i, channel := range channels {
-		resp[i] = channelToResponse(channel)
+		resp[i] = channelToResponse(channel, unreadByChannelID[uuidToString(channel.ID)])
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) SearchChannels(w http.ResponseWriter, r *http.Request) {
+	workspaceID := workspaceIDFromURL(r, "workspaceId")
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "q parameter is required")
+		return
+	}
+	limit := 20
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	normalized := strings.ToLower(q)
+	escaped := escapeLike(normalized)
+	channels, err := h.Queries.SearchVisibleChannels(r.Context(), db.SearchVisibleChannelsParams{
+		WorkspaceID:    wsUUID,
+		MemberID:       member.UserID,
+		IncludePrivate: member.Role == "owner" || member.Role == "admin",
+		Pattern:        "%" + escaped + "%",
+		Exact:          escaped,
+		StartsWith:     escaped + "%",
+		LimitCount:     int32(limit),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to search channels")
+		return
+	}
+	unreadByChannelID := h.channelUnreadMap(r.Context(), channels, member.UserID)
+	resp := make([]ChannelResponse, len(channels))
+	for i, channel := range channels {
+		resp[i] = channelToResponse(channel, unreadByChannelID[uuidToString(channel.ID)])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channels": resp,
+		"total":    len(resp),
+	})
 }
 
 func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
@@ -768,6 +921,11 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 	var req struct {
 		GroupID             string                 `json:"group_id"`
 		Slug                string                 `json:"slug"`
@@ -778,13 +936,19 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		MentionIssueSearch  *bool                  `json:"mention_issue_search_enabled"`
 		Instructions        string                 `json:"instructions"`
 		Summary             string                 `json:"summary"`
+		ProjectID           string                 `json:"project_id"`
 		DefaultProjectID    string                 `json:"default_project_id"`
 		DefaultAssigneeType string                 `json:"default_assignee_type"`
 		DefaultAssigneeID   string                 `json:"default_assignee_id"`
 		Position            float64                `json:"position"`
 		Members             []channelMemberRequest `json:"members"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawFields); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -827,18 +991,25 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	defaultProjectID, ok := nullableUUIDFromString(w, req.DefaultProjectID, "default_project_id")
+	projectValue, projectPresent, ok := nullableStringFromRaw(w, rawFields, "project_id")
 	if !ok {
 		return
 	}
-	if defaultProjectID.Valid {
-		if _, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
-			ID:          defaultProjectID,
-			WorkspaceID: wsUUID,
-		}); err != nil {
-			writeError(w, http.StatusBadRequest, "default project not found in this workspace")
-			return
-		}
+	defaultProjectValue, defaultProjectPresent, ok := nullableStringFromRaw(w, rawFields, "default_project_id")
+	if !ok {
+		return
+	}
+	if !projectPresent && req.ProjectID != "" {
+		projectValue = strings.TrimSpace(req.ProjectID)
+		projectPresent = true
+	}
+	if !defaultProjectPresent && req.DefaultProjectID != "" {
+		defaultProjectValue = strings.TrimSpace(req.DefaultProjectID)
+		defaultProjectPresent = true
+	}
+	projectID, _, ok := h.resolveChannelProjectID(w, r, wsUUID, projectValue, projectPresent, defaultProjectValue, defaultProjectPresent)
+	if !ok {
+		return
 	}
 	defaultAssigneeID, ok := nullableUUIDFromString(w, req.DefaultAssigneeID, "default_assignee_id")
 	if !ok {
@@ -877,7 +1048,7 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		Proactivity:               req.Proactivity,
 		Instructions:              req.Instructions,
 		Summary:                   req.Summary,
-		DefaultProjectID:          defaultProjectID,
+		ProjectID:                 projectID,
 		DefaultAssigneeType:       defaultAssigneeType,
 		DefaultAssigneeID:         defaultAssigneeID,
 		Position:                  req.Position,
@@ -936,11 +1107,11 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetChannel(w http.ResponseWriter, r *http.Request) {
-	channel, _, _, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
+	channel, member, _, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, channelToResponse(channel))
+	writeJSON(w, http.StatusOK, channelToResponse(channel, h.channelHasUnread(r.Context(), channel.ID, member.UserID)))
 }
 
 func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
@@ -953,6 +1124,11 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
 	var req struct {
 		GroupID             *string  `json:"group_id"`
 		Name                *string  `json:"name"`
@@ -962,12 +1138,18 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		MentionIssueSearch  *bool    `json:"mention_issue_search_enabled"`
 		Instructions        *string  `json:"instructions"`
 		Summary             *string  `json:"summary"`
+		ProjectID           *string  `json:"project_id"`
 		DefaultProjectID    *string  `json:"default_project_id"`
 		DefaultAssigneeType *string  `json:"default_assignee_type"`
 		DefaultAssigneeID   *string  `json:"default_assignee_id"`
 		Position            *float64 `json:"position"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawFields); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -996,7 +1178,15 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defaultProjectID, ok := nullableUUIDFromString(w, stringValue(req.DefaultProjectID), "default_project_id")
+	projectValue, projectPresent, ok := nullableStringFromRaw(w, rawFields, "project_id")
+	if !ok {
+		return
+	}
+	defaultProjectValue, defaultProjectPresent, ok := nullableStringFromRaw(w, rawFields, "default_project_id")
+	if !ok {
+		return
+	}
+	projectID, projectIDSet, ok := h.resolveChannelProjectID(w, r, channel.WorkspaceID, projectValue, projectPresent, defaultProjectValue, defaultProjectPresent)
 	if !ok {
 		return
 	}
@@ -1028,7 +1218,8 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		Proactivity:               optionalTextPtr(req.Proactivity),
 		Instructions:              optionalTextPtr(req.Instructions),
 		Summary:                   optionalTextPtr(req.Summary),
-		DefaultProjectID:          defaultProjectID,
+		ProjectIDSet:              projectIDSet,
+		ProjectID:                 projectID,
 		DefaultAssigneeType:       optionalTextPtr(req.DefaultAssigneeType),
 		DefaultAssigneeID:         defaultAssigneeID,
 		Position:                  position,
@@ -1083,6 +1274,32 @@ func (h *Handler) RestoreChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := channelToResponse(restored)
+	h.publish(protocol.EventChannelUpdated, workspaceID, "member", uuidToString(member.UserID), map[string]any{"channel": resp})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) MarkChannelRead(w http.ResponseWriter, r *http.Request) {
+	channel, member, workspaceID, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	latestMessageID, err := h.Queries.LatestChannelMessageID(r.Context(), channel.ID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to load latest channel message")
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		latestMessageID = pgtype.UUID{}
+	}
+	if _, err := h.Queries.UpsertChannelReadState(r.Context(), db.UpsertChannelReadStateParams{
+		ChannelID:         channel.ID,
+		UserID:            member.UserID,
+		LastReadMessageID: latestMessageID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to mark channel as read")
+		return
+	}
+	resp := channelToResponse(channel, false)
 	h.publish(protocol.EventChannelUpdated, workspaceID, "member", uuidToString(member.UserID), map[string]any{"channel": resp})
 	writeJSON(w, http.StatusOK, resp)
 }

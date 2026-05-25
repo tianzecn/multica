@@ -5,6 +5,7 @@ import type {
   GroupedIssuesResponse,
   ListIssuesResponse,
   SearchIssuesResponse,
+  SearchChannelsResponse,
   SearchProjectsResponse,
   UpdateMeRequest,
   CreateMemberRequest,
@@ -160,6 +161,7 @@ import {
   ChannelSchema,
   ChannelSessionListSchema,
   ChannelSessionSchema,
+  SearchChannelsResponseSchema,
   ChildIssuesResponseSchema,
   CommentsListSchema,
   CloudRuntimeNodeListSchema,
@@ -179,6 +181,7 @@ import {
   EMPTY_CHANNEL_MESSAGES,
   EMPTY_CHANNEL_SESSIONS,
   EMPTY_CHANNELS,
+  EMPTY_SEARCH_CHANNELS_RESPONSE,
   EMPTY_CLOUD_RUNTIME_NODE,
   EMPTY_CLOUD_RUNTIME_NODE_LIST,
   EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE,
@@ -536,11 +539,12 @@ export class ApiClient {
     });
   }
 
-  async searchIssues(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; signal?: AbortSignal }): Promise<SearchIssuesResponse> {
+  async searchIssues(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; project_id?: string | null; signal?: AbortSignal }): Promise<SearchIssuesResponse> {
     const search = new URLSearchParams({ q: params.q });
     if (params.limit !== undefined) search.set("limit", String(params.limit));
     if (params.offset !== undefined) search.set("offset", String(params.offset));
     if (params.include_closed) search.set("include_closed", "true");
+    if (params.project_id) search.set("project_id", params.project_id);
     return this.fetch(`/api/issues/search?${search}`, params.signal ? { signal: params.signal } : undefined);
   }
 
@@ -1533,6 +1537,15 @@ export class ApiClient {
     });
   }
 
+  async searchChannels(params: { q: string; limit?: number; signal?: AbortSignal }): Promise<SearchChannelsResponse> {
+    const search = new URLSearchParams({ q: params.q });
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(`/api/channels/search?${search}`, params.signal ? { signal: params.signal } : undefined);
+    return parseWithFallback(raw, SearchChannelsResponseSchema, EMPTY_SEARCH_CHANNELS_RESPONSE, {
+      endpoint: "GET /api/channels/search",
+    });
+  }
+
   async getChannel(id: string): Promise<Channel> {
     const raw = await this.fetch<unknown>(`/api/channels/${id}`);
     return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
@@ -1575,6 +1588,15 @@ export class ApiClient {
     });
     return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
       endpoint: "POST /api/channels/:id/restore",
+    });
+  }
+
+  async markChannelRead(channelId: string): Promise<Channel> {
+    const raw = await this.fetch<unknown>(`/api/channels/${channelId}/read`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
+      endpoint: "POST /api/channels/:id/read",
     });
   }
 

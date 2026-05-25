@@ -59,6 +59,7 @@ interface MentionListProps {
   query: string;
   command: (item: MentionItem) => void;
   searchIssues?: boolean;
+  issueProjectId?: string | null;
 }
 
 export interface MentionListRef {
@@ -122,7 +123,7 @@ function mergeMentionItems(
 }
 
 export const MentionList = forwardRef<MentionListRef, MentionListProps>(
-  function MentionList({ items, query, command, searchIssues = true }, ref) {
+  function MentionList({ items, query, command, searchIssues = true, issueProjectId = null }, ref) {
     const { t } = useT("editor");
     const [selectedIndex, setSelectedIndex] = useState(0);
     const [serverIssueItems, setServerIssueItems] = useState<MentionItem[]>([]);
@@ -159,6 +160,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
               q,
               limit: SERVER_ISSUE_SEARCH_LIMIT,
               include_closed: true,
+              project_id: issueProjectId,
               signal: controller.signal,
             });
             if (!cancelled && !controller.signal.aborted) {
@@ -180,7 +182,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
         clearTimeout(timer);
         controller.abort();
       };
-    }, [normalizedQuery, searchIssues]);
+    }, [issueProjectId, normalizedQuery, searchIssues]);
 
     const displayItems = useMemo(() => {
       const currentServerIssueItems =
@@ -375,6 +377,7 @@ function issueToMention(i: Pick<Issue, "id" | "identifier" | "title" | "status">
 interface MentionSuggestionOptions {
   scopedItemsRef?: RefObject<MentionItem[] | undefined>;
   searchIssuesRef?: RefObject<boolean | undefined>;
+  issueProjectIdRef?: RefObject<string | null | undefined>;
 }
 
 function matchesMentionItem(item: MentionItem, query: string) {
@@ -427,6 +430,7 @@ export function createMentionSuggestion(
 
     const q = query.toLowerCase();
     const searchIssues = options.searchIssuesRef?.current ?? true;
+    const issueProjectId = options.issueProjectIdRef?.current ?? null;
 
     const scopedItems = options.scopedItemsRef?.current;
     if (scopedItems) {
@@ -434,6 +438,7 @@ export function createMentionSuggestion(
       if (!searchIssues) return userItems;
 
       const issueItems: MentionItem[] = cachedIssues
+        .filter((i) => !issueProjectId || i.project_id === issueProjectId)
         .filter(
           (i) =>
             i.identifier.toLowerCase().includes(q) ||
@@ -483,6 +488,7 @@ export function createMentionSuggestion(
     // matches for done/cancelled and any other issues not in this cache.
     const issueItems: MentionItem[] = searchIssues
       ? cachedIssues
+          .filter((i) => !issueProjectId || i.project_id === issueProjectId)
           .filter(
             (i) =>
               i.identifier.toLowerCase().includes(q) ||
@@ -509,6 +515,7 @@ export function createMentionSuggestion(
               query: props.query,
               command: props.command,
               searchIssues: options.searchIssuesRef?.current ?? true,
+              issueProjectId: options.issueProjectIdRef?.current ?? null,
             },
             editor: props.editor,
           });
@@ -528,6 +535,7 @@ export function createMentionSuggestion(
             query: props.query,
             command: props.command,
             searchIssues: options.searchIssuesRef?.current ?? true,
+            issueProjectId: options.issueProjectIdRef?.current ?? null,
           });
           if (popup) updatePosition(popup, props.clientRect);
         },

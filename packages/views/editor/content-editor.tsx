@@ -101,6 +101,8 @@ interface ContentEditorProps {
   mentionItems?: MentionItem[];
   /** Defaults to true. Set false when a surface should mention people only. */
   mentionSearchIssues?: boolean;
+  /** Optional project scope for server-backed @ issue search. */
+  mentionIssueProjectId?: string | null;
   /**
    * Attachments referenced by this content. The download buttons on file
    * cards and images inside the editor look up an attachment by `url` and
@@ -147,6 +149,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       disableMentions = false,
       mentionItems,
       mentionSearchIssues = true,
+      mentionIssueProjectId = null,
       attachments,
     },
     ref,
@@ -158,6 +161,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const onUploadFileRef = useRef(onUploadFile);
     const mentionItemsRef = useRef(mentionItems);
     const mentionSearchIssuesRef = useRef(mentionSearchIssues);
+    const mentionIssueProjectIdRef = useRef<string | null | undefined>(mentionIssueProjectId);
     const lastEmittedRef = useRef<string | null>(null);
 
     // Current workspace slug kept in a ref so the click handler always sees the
@@ -174,6 +178,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     onUploadFileRef.current = onUploadFile;
     mentionItemsRef.current = mentionItems;
     mentionSearchIssuesRef.current = mentionSearchIssues;
+    mentionIssueProjectIdRef.current = mentionIssueProjectId;
 
     const queryClient = useQueryClient();
 
@@ -196,6 +201,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         disableMentions,
         mentionItemsRef,
         mentionSearchIssuesRef,
+        mentionIssueProjectIdRef,
       }),
       onUpdate: ({ editor: ed }) => {
         if (!onUpdateRef.current) return;

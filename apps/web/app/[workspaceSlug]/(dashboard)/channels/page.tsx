@@ -1,5 +1,10 @@
-import { ChannelsPage } from "@multica/views/channels";
+import { redirect } from "next/navigation";
 
-export default function Page() {
-  return <ChannelsPage />;
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ workspaceSlug: string }>;
+}) {
+  const { workspaceSlug } = await params;
+  redirect(`/${encodeURIComponent(workspaceSlug)}/projects`);
 }

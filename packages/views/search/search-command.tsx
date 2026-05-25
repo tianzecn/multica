@@ -21,6 +21,8 @@ import {
   Sun,
   BookOpenText,
   Settings,
+  Hash,
+  Lock,
   type LucideIcon,
 } from "lucide-react";
 import { Command as CommandPrimitive } from "cmdk";
@@ -28,6 +30,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type {
   MemberWithUser,
+  Channel,
   SearchIssueResult,
   SearchProjectResult,
 } from "@multica/core/types";
@@ -159,20 +162,24 @@ interface CommandItem {
 interface SearchResults {
   issues: SearchIssueResult[];
   projects: SearchProjectResult[];
+  channels: Channel[];
 }
 
 export function SearchCommand() {
   const { t } = useT("search");
-  const navPages: NavPage[] = [
-    { key: "inbox", label: t(($) => $.pages.inbox), icon: Inbox, keywords: ["inbox", "notifications", "收件箱"] },
-    { key: "myIssues", label: t(($) => $.pages.my_issues), icon: CircleUser, keywords: ["my", "issues", "assigned", "我的"] },
-    { key: "issues", label: t(($) => $.pages.issues), icon: ListTodo, keywords: ["issues", "tasks", "bugs"] },
-    { key: "projects", label: t(($) => $.pages.projects), icon: FolderKanban, keywords: ["projects", "kanban", "项目"] },
-    { key: "agents", label: t(($) => $.pages.agents), icon: Bot, keywords: ["agents", "bots", "ai"] },
-    { key: "runtimes", label: t(($) => $.pages.runtimes), icon: Monitor, keywords: ["runtimes", "environments"] },
-    { key: "skills", label: t(($) => $.pages.skills), icon: BookOpenText, keywords: ["skills", "library"] },
-    { key: "settings", label: t(($) => $.pages.settings), icon: Settings, keywords: ["settings", "config", "preferences", "设置"] },
-  ];
+  const navPages: NavPage[] = useMemo(
+    () => [
+      { key: "inbox", label: t(($) => $.pages.inbox), icon: Inbox, keywords: ["inbox", "notifications", "收件箱"] },
+      { key: "myIssues", label: t(($) => $.pages.my_issues), icon: CircleUser, keywords: ["my", "issues", "assigned", "我的"] },
+      { key: "issues", label: t(($) => $.pages.issues), icon: ListTodo, keywords: ["issues", "tasks", "bugs"] },
+      { key: "projects", label: t(($) => $.pages.projects), icon: FolderKanban, keywords: ["projects", "kanban", "项目"] },
+      { key: "agents", label: t(($) => $.pages.agents), icon: Bot, keywords: ["agents", "bots", "ai"] },
+      { key: "runtimes", label: t(($) => $.pages.runtimes), icon: Monitor, keywords: ["runtimes", "environments"] },
+      { key: "skills", label: t(($) => $.pages.skills), icon: BookOpenText, keywords: ["skills", "library"] },
+      { key: "settings", label: t(($) => $.pages.settings), icon: Settings, keywords: ["settings", "config", "preferences", "设置"] },
+    ],
+    [t],
+  );
   const { push, pathname, getShareableUrl } = useNavigation();
   const open = useSearchStore((s) => s.open);
   const setOpen = useSearchStore((s) => s.setOpen);
@@ -196,7 +203,7 @@ export function SearchCommand() {
   );
 
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResults>({ issues: [], projects: [] });
+  const [results, setResults] = useState<SearchResults>({ issues: [], projects: [], channels: [] });
   const [isLoading, setIsLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -209,7 +216,7 @@ export function SearchCommand() {
         page.label.toLowerCase().includes(q) ||
         page.keywords.some((kw) => kw.includes(q)),
     );
-  }, [query]);
+  }, [navPages, query]);
 
   // Detect if current route is an issue detail page — /{slug}/issues/{id}.
   // Falls back to null on any other route; used to gate issue-specific commands.
@@ -352,6 +359,7 @@ export function SearchCommand() {
   const hasResults =
     results.issues.length > 0 ||
     results.projects.length > 0 ||
+    results.channels.length > 0 ||
     filteredMembers.length > 0;
 
   // Global Cmd+K / Ctrl+K shortcut
@@ -392,7 +400,7 @@ export function SearchCommand() {
   useEffect(() => {
     if (!open) {
       setQuery("");
-      setResults({ issues: [], projects: [] });
+      setResults({ issues: [], projects: [], channels: [] });
       setIsLoading(false);
     }
   }, [open]);
@@ -402,7 +410,7 @@ export function SearchCommand() {
     if (abortRef.current) abortRef.current.abort();
 
     if (!q.trim()) {
-      setResults({ issues: [], projects: [] });
+      setResults({ issues: [], projects: [], channels: [] });
       setIsLoading(false);
       return;
     }
@@ -412,7 +420,7 @@ export function SearchCommand() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        const [issueRes, projectRes] = await Promise.all([
+        const [issueRes, projectRes, channelRes] = await Promise.all([
           api.searchIssues({
             q: q.trim(),
             limit: 20,
@@ -425,11 +433,17 @@ export function SearchCommand() {
             include_closed: true,
             signal: controller.signal,
           }),
+          api.searchChannels({
+            q: q.trim(),
+            limit: 10,
+            signal: controller.signal,
+          }),
         ]);
         if (!controller.signal.aborted) {
           setResults({
             issues: issueRes.issues,
             projects: projectRes.projects,
+            channels: channelRes.channels,
           });
           setIsLoading(false);
         }
@@ -455,6 +469,8 @@ export function SearchCommand() {
       if (value.startsWith("project:")) {
         // value is "project:<id>" — slice off the 8-char prefix to extract the id.
         push(p.projectDetail(value.slice(8)));
+      } else if (value.startsWith("channel:")) {
+        push(p.channelDetail(value.slice(8)));
       } else {
         push(p.issueDetail(value));
       }
@@ -637,6 +653,32 @@ export function SearchCommand() {
                           </span>
                         </div>
                       )}
+                  </CommandPrimitive.Item>
+                ))}
+              </CommandPrimitive.Group>
+            )}
+
+            {!isLoading && results.channels.length > 0 && (
+              <CommandPrimitive.Group
+                heading="Channels"
+                className="p-2 [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground"
+              >
+                {results.channels.map((channel) => (
+                  <CommandPrimitive.Item
+                    key={`channel:${channel.slug}`}
+                    value={`channel:${channel.slug}`}
+                    onSelect={handleSelect}
+                    className="flex cursor-default select-none items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-selected:bg-accent"
+                  >
+                    {channel.visibility === "private" ? (
+                      <Lock className="size-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <Hash className="size-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="truncate">
+                      <HighlightText text={channel.name} query={query} />
+                    </span>
+                    <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">#{channel.slug}</span>
                   </CommandPrimitive.Item>
                 ))}
               </CommandPrimitive.Group>

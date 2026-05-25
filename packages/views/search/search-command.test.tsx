@@ -28,6 +28,7 @@ const {
   mockPush,
   mockSearchIssues,
   mockSearchProjects,
+  mockSearchChannels,
   mockRecentItems,
   mockAllIssues,
   mockSetTheme,
@@ -42,6 +43,7 @@ const {
   mockPush: vi.fn(),
   mockSearchIssues: vi.fn(),
   mockSearchProjects: vi.fn(),
+  mockSearchChannels: vi.fn(),
   mockRecentItems: { current: [] as Array<{ id: string; visitedAt: number }> },
   mockAllIssues: { current: [] as Array<Record<string, unknown>> },
   mockSetTheme: vi.fn(),
@@ -69,6 +71,7 @@ vi.mock("@multica/core/api", () => ({
   api: {
     searchIssues: mockSearchIssues,
     searchProjects: mockSearchProjects,
+    searchChannels: mockSearchChannels,
   },
 }));
 
@@ -109,6 +112,8 @@ vi.mock("@multica/core/paths", () => ({
     issueDetail: (id: string) => `/ws-test/issues/${id}`,
     memberDetail: (id: string) => `/ws-test/members/${id}`,
     projectDetail: (id: string) => `/ws-test/projects/${id}`,
+    projectIssues: (id: string) => `/ws-test/projects/${id}/issues`,
+    channelDetail: (id: string) => `/ws-test/channels/${id}`,
   }),
 }));
 
@@ -171,6 +176,7 @@ describe("SearchCommand", () => {
     mockPush.mockReset();
     mockSearchIssues.mockReset().mockResolvedValue({ issues: [] });
     mockSearchProjects.mockReset().mockResolvedValue({ projects: [] });
+    mockSearchChannels.mockReset().mockResolvedValue({ channels: [] });
     mockRecentItems.current = [];
     mockAllIssues.current = [];
     mockSetTheme.mockReset();
@@ -530,5 +536,56 @@ describe("SearchCommand", () => {
         el?.tagName === "SPAN",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("searches channels and navigates to the channel detail route", async () => {
+    const user = userEvent.setup();
+    mockSearchChannels.mockResolvedValue({
+      channels: [
+        {
+          id: "channel-1",
+          workspace_id: "ws-test",
+          group_id: null,
+          slug: "launch-room",
+          name: "Launch Room",
+          description: "Product launch coordination",
+          visibility: "private",
+          proactivity: "active",
+          mention_issue_search_enabled: true,
+          instructions: "",
+          summary: "",
+          project_id: "project-1",
+          default_project_id: "project-1",
+          default_assignee_type: null,
+          default_assignee_id: null,
+          position: 0,
+          created_by: "user-1",
+          archived_at: null,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          has_unread: true,
+        },
+      ],
+      total: 1,
+    });
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "launch");
+
+    await waitFor(() => {
+      expect(screen.getByText("Channels")).toBeInTheDocument();
+      expect(
+        screen.getByText((_, el) => el?.textContent === "Launch Room" && el?.tagName === "SPAN"),
+      ).toBeInTheDocument();
+    });
+
+    const channelItem = await screen.findByText(
+      (_, el) => el?.textContent === "Launch Room" && el?.tagName === "SPAN",
+    );
+    await user.click(channelItem);
+
+    expect(mockPush).toHaveBeenCalledWith("/ws-test/channels/launch-room");
+    expect(useSearchStore.getState().open).toBe(false);
   });
 });

@@ -35,6 +35,7 @@ export interface Channel {
   mention_issue_search_enabled: boolean;
   instructions: string;
   summary: string;
+  project_id: string | null;
   default_project_id: string | null;
   default_assignee_type: ChannelMemberType | null;
   default_assignee_id: string | null;
@@ -43,6 +44,7 @@ export interface Channel {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  has_unread: boolean;
 }
 
 export interface ChannelMember {
@@ -200,6 +202,7 @@ export interface CreateChannelRequest {
   mention_issue_search_enabled?: boolean;
   instructions?: string;
   summary?: string;
+  project_id?: string | null;
   default_project_id?: string | null;
   default_assignee_type?: ChannelMemberType | null;
   default_assignee_id?: string | null;
@@ -220,6 +223,7 @@ export interface UpdateChannelRequest {
   mention_issue_search_enabled?: boolean;
   instructions?: string;
   summary?: string;
+  project_id?: string | null;
   default_project_id?: string | null;
   default_assignee_type?: ChannelMemberType | null;
   default_assignee_id?: string | null;

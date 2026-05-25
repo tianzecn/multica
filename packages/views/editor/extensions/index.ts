@@ -99,6 +99,8 @@ export interface EditorExtensionsOptions {
   mentionItemsRef?: RefObject<MentionItem[] | undefined>;
   /** When false, the mention popup does not include/search issues. */
   mentionSearchIssuesRef?: RefObject<boolean | undefined>;
+  /** Optional project scope for issue suggestions. */
+  mentionIssueProjectIdRef?: RefObject<string | null | undefined>;
 }
 
 export function createEditorExtensions(
@@ -149,6 +151,7 @@ export function createEditorExtensions(
               suggestion: createMentionSuggestion(options.queryClient, {
                 scopedItemsRef: options.mentionItemsRef,
                 searchIssuesRef: options.mentionSearchIssuesRef,
+                issueProjectIdRef: options.mentionIssueProjectIdRef,
               }),
             }
           : {}),

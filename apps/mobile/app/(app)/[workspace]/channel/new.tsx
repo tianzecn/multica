@@ -26,7 +26,11 @@ function slugify(value: string) {
 }
 
 export default function NewChannelScreen() {
-  const { workspace } = useLocalSearchParams<{ workspace: string }>();
+  const { workspace, projectId, lockedProject } = useLocalSearchParams<{
+    workspace: string;
+    projectId?: string;
+    lockedProject?: string;
+  }>();
   const createChannel = useCreateChannel();
 
   const [name, setName] = useState("");
@@ -56,6 +60,7 @@ export default function NewChannelScreen() {
         description: description.trim(),
         instructions: instructions.trim(),
         visibility,
+        project_id: projectId ?? null,
       });
       router.replace({
         pathname: "/[workspace]/channel/[id]",
@@ -83,6 +88,17 @@ export default function NewChannelScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <Card className="gap-4">
+          {projectId ? (
+            <View className="rounded-md bg-secondary/50 px-3 py-2">
+              <Text className="text-xs font-medium text-muted-foreground">
+                Project channel
+              </Text>
+              <Text className="mt-1 text-sm text-foreground" numberOfLines={1}>
+                {lockedProject ? "Locked to this project" : "Project prefilled"}
+              </Text>
+            </View>
+          ) : null}
+
           <Field label="Name">
             <TextField
               value={name}

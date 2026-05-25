@@ -24,6 +24,7 @@ export {
   useCreateChannelMessage,
   useCreateChannelSession,
   useJoinChannel,
+  useMarkChannelRead,
   useLinkIssueToChannel,
   useRemoveChannelMember,
   useRestoreChannel,

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { AppLink, useNavigation } from "../navigation";
@@ -29,13 +29,14 @@ import {
   BookOpenText,
   SquarePen,
   CircleUser,
-  FolderKanban,
   BarChart3,
   X,
   Zap,
   Users,
   Hash,
   Lock,
+  Archive,
+  RotateCcw,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
@@ -77,11 +78,13 @@ import { useMyRuntimesNeedUpdate } from "@multica/core/runtimes/hooks";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import { issueDetailOptions } from "@multica/core/issues/queries";
-import { projectDetailOptions } from "@multica/core/projects/queries";
-import { channelListOptions, deriveChannelsSettings } from "@multica/core/channels";
-import type { Channel, PinnedItem } from "@multica/core/types";
+import { projectDetailOptions, projectListOptions } from "@multica/core/projects/queries";
+import { useProjectSidebarTreeStore } from "@multica/core/projects";
+import { channelGroupsOptions, channelListOptions, deriveChannelsSettings, useRestoreChannel } from "@multica/core/channels";
+import type { Channel, ChannelGroup, PinnedItem, Project } from "@multica/core/types";
 import { useLogout } from "../auth";
 import { ProjectIcon } from "../projects/components/project-icon";
+import { CreateChannelDialog } from "../channels";
 import { useT } from "../i18n";
 
 // Top-level nav items stay active when the user is on a child route
@@ -99,9 +102,44 @@ function isNavActive(pathname: string, href: string): boolean {
 // re-render loops when the effect itself calls `setState`.
 const EMPTY_PINS: PinnedItem[] = [];
 const EMPTY_CHANNELS: Channel[] = [];
+const EMPTY_CHANNEL_GROUPS: ChannelGroup[] = [];
+const EMPTY_PROJECTS: Project[] = [];
 const EMPTY_WORKSPACES: Awaited<ReturnType<typeof api.listWorkspaces>> = [];
 const EMPTY_INVITATIONS: Awaited<ReturnType<typeof api.listMyInvitations>> = [];
 const EMPTY_INBOX: Awaited<ReturnType<typeof api.listInbox>> = [];
+
+const SIDEBAR_LABEL_FALLBACKS = {
+  en: {
+    archivedChannels: "Archived channels",
+    collapseProject: "Collapse",
+    createProjectChannel: "Create project channel",
+    createProjectChannelNamed: "Create channel in",
+    expandProject: "Expand",
+    projectIssues: "Issues",
+    restoreChannel: "Restore channel",
+    restoreChannelNamed: "Restore",
+    unassignedChannels: "Unassigned channels",
+  },
+  zh: {
+    archivedChannels: "已归档频道",
+    collapseProject: "收起项目",
+    createProjectChannel: "新建项目频道",
+    createProjectChannelNamed: "在项目中新建频道",
+    expandProject: "展开项目",
+    projectIssues: "Issue",
+    restoreChannel: "恢复频道",
+    restoreChannelNamed: "恢复频道",
+    unassignedChannels: "未归属频道",
+  },
+} as const;
+
+function resolveSidebarLabel(value: string, key: string, fallback: string) {
+  return value === key ? fallback : value;
+}
+
+function getSidebarLabelFallbacks(language?: string) {
+  return language?.startsWith("zh") ? SIDEBAR_LABEL_FALLBACKS.zh : SIDEBAR_LABEL_FALLBACKS.en;
+}
 
 // Nav items reference WorkspacePaths method names so they can be resolved
 // against the current workspace slug at render time (see AppSidebar body).
@@ -140,7 +178,6 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] 
 
 const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
   { key: "issues", labelKey: "issues", icon: ListTodo },
-  { key: "projects", labelKey: "projects", icon: FolderKanban },
   { key: "autopilots", labelKey: "autopilots", icon: Zap },
   { key: "agents", labelKey: "agents", icon: Bot },
   { key: "squads", labelKey: "squads", icon: Users },
@@ -157,6 +194,60 @@ function DraftDot() {
   const hasDraft = useIssueDraftStore((s) => !!(s.draft.title || s.draft.description));
   if (!hasDraft) return null;
   return <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />;
+}
+
+function sortProjectsByUpdatedAt(projects: Project[]) {
+  return [...projects].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+}
+
+function sortChannelsForProjectTree(channels: Channel[]) {
+  return [...channels].sort((a, b) => {
+    if (a.position !== b.position) return a.position - b.position;
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  });
+}
+
+function ChannelUnreadDot({ channel, label }: { channel: Channel; label: string }) {
+  if (!channel.has_unread) return null;
+  return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-brand" aria-label={label} />;
+}
+
+function ArchivedChannelSidebarRow({ channel, href }: { channel: Channel; href: string }) {
+  const { t, i18n } = useT("layout");
+  const sidebarFallbacks = getSidebarLabelFallbacks(i18n.resolvedLanguage ?? i18n.language);
+  const restoreChannelLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.restore_channel),
+    "sidebar.restore_channel",
+    sidebarFallbacks.restoreChannel,
+  );
+  const restoreChannelNamedLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.restore_channel_named, { name: channel.name }),
+    "sidebar.restore_channel_named",
+    `${sidebarFallbacks.restoreChannelNamed} ${channel.name}`,
+  );
+  const restoreChannel = useRestoreChannel(channel.id);
+  return (
+    <SidebarMenuItem>
+      <div className="group/archived-channel flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-sm text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground">
+        <AppLink href={href} className="flex min-w-0 flex-1 items-center gap-2">
+          {channel.visibility === "private" ? <Lock className="size-3.5 shrink-0" /> : <Hash className="size-3.5 shrink-0" />}
+          <span className="truncate">{channel.name}</span>
+        </AppLink>
+        <Tooltip>
+          <TooltipTrigger
+            render={<button type="button" />}
+            className="flex size-6 shrink-0 items-center justify-center rounded-sm opacity-0 transition-opacity hover:bg-sidebar-accent group-hover/archived-channel:opacity-100 focus:opacity-100"
+            onClick={() => restoreChannel.mutate()}
+            disabled={restoreChannel.isPending}
+            aria-label={restoreChannelNamedLabel}
+          >
+            <RotateCcw className="size-3.5" />
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={4}>{restoreChannelLabel}</TooltipContent>
+        </Tooltip>
+      </div>
+    </SidebarMenuItem>
+  );
 }
 
 /**
@@ -344,7 +435,29 @@ interface AppSidebarProps {
 }
 
 export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }: AppSidebarProps = {}) {
-  const { t } = useT("layout");
+  const { t, i18n } = useT("layout");
+  const sidebarFallbacks = getSidebarLabelFallbacks(i18n.resolvedLanguage ?? i18n.language);
+  const createProjectChannelLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.create_project_channel),
+    "sidebar.create_project_channel",
+    sidebarFallbacks.createProjectChannel,
+  );
+  const projectIssuesLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.project_issues),
+    "sidebar.project_issues",
+    sidebarFallbacks.projectIssues,
+  );
+  const unassignedChannelsLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.unassigned_channels),
+    "sidebar.unassigned_channels",
+    sidebarFallbacks.unassignedChannels,
+  );
+  const archivedChannelsLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.archived_channels),
+    "sidebar.archived_channels",
+    sidebarFallbacks.archivedChannels,
+  );
+  const unreadChannelLabel = t(($) => $.sidebar.unread_channel);
   const { pathname, push } = useNavigation();
   const user = useAuthStore((s) => s.user);
   const userId = useAuthStore((s) => s.user?.id);
@@ -371,9 +484,49 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     enabled: !!wsId && !!userId,
   });
   const { data: channels = EMPTY_CHANNELS } = useQuery({
-    ...channelListOptions(wsId ?? ""),
+    ...channelListOptions(wsId ?? "", { includeArchived: true }),
     enabled: !!wsId && channelsEnabled,
   });
+  const { data: channelGroups = EMPTY_CHANNEL_GROUPS } = useQuery({
+    ...channelGroupsOptions(wsId ?? ""),
+    enabled: !!wsId && channelsEnabled,
+  });
+  const { data: projects = EMPTY_PROJECTS } = useQuery({
+    ...projectListOptions(wsId ?? ""),
+    enabled: !!wsId,
+  });
+  const expandedProjectIds = useProjectSidebarTreeStore((s) => s.expandedProjectIds);
+  const toggleProjectOpen = useProjectSidebarTreeStore((s) => s.toggleProject);
+  const archivedChannelsOpen = useProjectSidebarTreeStore((s) => s.archivedChannelsOpen);
+  const setArchivedChannelsOpen = useProjectSidebarTreeStore((s) => s.setArchivedChannelsOpen);
+  const unassignedChannelsOpen = useProjectSidebarTreeStore((s) => s.unassignedChannelsOpen);
+  const setUnassignedChannelsOpen = useProjectSidebarTreeStore((s) => s.setUnassignedChannelsOpen);
+  const [createChannelProjectId, setCreateChannelProjectId] = useState<string | null>(null);
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const sortedProjects = useMemo(() => sortProjectsByUpdatedAt(projects), [projects]);
+  const activeChannels = useMemo(() => channels.filter((channel) => !channel.archived_at), [channels]);
+  const archivedChannels = useMemo(() => channels.filter((channel) => channel.archived_at), [channels]);
+  const channelsByProjectId = useMemo(() => {
+    const buckets = new Map<string, Channel[]>();
+    for (const channel of activeChannels) {
+      if (!channel.project_id) continue;
+      const bucket = buckets.get(channel.project_id) ?? [];
+      bucket.push(channel);
+      buckets.set(channel.project_id, bucket);
+    }
+    for (const [projectId, bucket] of buckets) {
+      buckets.set(projectId, sortChannelsForProjectTree(bucket));
+    }
+    return buckets;
+  }, [activeChannels]);
+  const unassignedChannels = useMemo(
+    () => sortChannelsForProjectTree(activeChannels.filter((channel) => !channel.project_id)),
+    [activeChannels],
+  );
+  const openCreateChannel = useCallback((projectId: string | null = null) => {
+    setCreateChannelProjectId(projectId);
+    setShowCreateChannel(true);
+  }, []);
   const deletePin = useDeletePin();
   const reorderPins = useReorderPins();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -643,65 +796,188 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             </SidebarGroupContent>
           </SidebarGroup>
 
-          {channelsEnabled && (
-            <Collapsible defaultOpen>
-              <SidebarGroup className="group/channels">
-                <SidebarGroupLabel
-                  render={<CollapsibleTrigger />}
-                  className="group/trigger cursor-pointer hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+          <Collapsible defaultOpen>
+            <SidebarGroup className="group/projects">
+              <SidebarGroupLabel
+                render={<CollapsibleTrigger />}
+                className="group/trigger cursor-pointer hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+              >
+                <AppLink
+                  href={p.projects()}
+                  className="flex min-w-0 flex-1 items-center gap-1"
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  <span>{t(($) => $.sidebar.channels_label)}</span>
-                  <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={<AppLink href={p.channels()} />}
-                      className="ml-auto flex size-5 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground group-hover/channels:opacity-100"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <Plus className="size-3" />
-                    </TooltipTrigger>
-                    <TooltipContent side="top" sideOffset={4}>{t(($) => $.sidebar.create_channel)}</TooltipContent>
-                  </Tooltip>
-                </SidebarGroupLabel>
-                <CollapsibleContent>
-                  <SidebarGroupContent>
-                    <SidebarMenu className="gap-0.5">
-                      <SidebarMenuItem>
-                        <SidebarMenuButton
-                          size="sm"
-                          isActive={isNavActive(pathname, p.channels()) && pathname === p.channels()}
-                          render={<AppLink href={p.channels()} />}
-                          className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                        >
-                          <Hash className="size-3.5" />
-                          <span>{t(($) => $.sidebar.channels_all)}</span>
-                          {channels.length > 0 && (
-                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">{channels.length}</span>
-                          )}
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                      {channels.slice(0, 8).map((channel) => {
-                        const href = p.channelDetail(channel.slug);
-                        return (
-                          <SidebarMenuItem key={channel.id}>
-                            <SidebarMenuButton
-                              size="sm"
-                              isActive={isNavActive(pathname, href)}
-                              render={<AppLink href={href} />}
-                              className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                  <span>{t(($) => $.nav.projects)}</span>
+                </AppLink>
+                <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<button type="button" />}
+                    className="ml-auto flex size-5 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground group-hover/projects:opacity-100 focus:opacity-100"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      useModalStore.getState().open("create-project");
+                    }}
+                    aria-label={t(($) => $.sidebar.create_project)}
+                  >
+                    <Plus className="size-3" />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={4}>{t(($) => $.sidebar.create_project)}</TooltipContent>
+                </Tooltip>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent>
+                  <SidebarMenu className="gap-0.5">
+                    {sortedProjects.map((project) => {
+                      const projectChannels = channelsByProjectId.get(project.id) ?? EMPTY_CHANNELS;
+                      const projectOpen = expandedProjectIds.includes(project.id);
+                      const projectHref = p.projectDetail(project.id);
+                      const legacyProjectIssuesHref = p.projectIssues(project.id);
+                      const projectIssuesActive = pathname === projectHref || pathname === legacyProjectIssuesHref;
+                      const projectRowActive = isNavActive(pathname, projectHref) && !(projectOpen && projectIssuesActive);
+                      return (
+                        <React.Fragment key={project.id}>
+                          <SidebarMenuItem className="group/project-row">
+                            <div
+                              className={cn(
+                                "flex h-8 min-w-0 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                                projectRowActive && "bg-sidebar-accent text-sidebar-accent-foreground",
+                              )}
                             >
-                              {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
-                              <span className="truncate">{channel.name}</span>
-                            </SidebarMenuButton>
+                              <button
+                                type="button"
+                                className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 text-left hover:bg-sidebar-accent"
+                                onClick={() => toggleProjectOpen(project.id)}
+                                aria-expanded={projectOpen}
+                                aria-label={resolveSidebarLabel(
+                                  projectOpen
+                                    ? t(($) => $.sidebar.collapse_project, { name: project.title })
+                                    : t(($) => $.sidebar.expand_project, { name: project.title }),
+                                  projectOpen ? "sidebar.collapse_project" : "sidebar.expand_project",
+                                  `${projectOpen ? sidebarFallbacks.collapseProject : sidebarFallbacks.expandProject} ${project.title}`,
+                                )}
+                              >
+                                <ProjectIcon project={project} size="sm" />
+                                <span className="truncate">{project.title}</span>
+                              </button>
+                              {channelsEnabled && (
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={<button type="button" />}
+                                    className="flex size-6 shrink-0 items-center justify-center rounded-sm opacity-0 transition-opacity hover:bg-sidebar-accent group-hover/project-row:opacity-100 focus:opacity-100"
+                                    onClick={() => openCreateChannel(project.id)}
+                                    aria-label={resolveSidebarLabel(
+                                      t(($) => $.sidebar.create_project_channel_named, { name: project.title }),
+                                      "sidebar.create_project_channel_named",
+                                      `${sidebarFallbacks.createProjectChannelNamed} ${project.title}`,
+                                    )}
+                                  >
+                                    <Plus className="size-3.5" />
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" sideOffset={4}>{createProjectChannelLabel}</TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
                           </SidebarMenuItem>
-                        );
-                      })}
-                    </SidebarMenu>
-                  </SidebarGroupContent>
-                </CollapsibleContent>
-              </SidebarGroup>
-            </Collapsible>
-          )}
+                          {projectOpen && (
+                            <>
+                              <SidebarMenuItem>
+                                <SidebarMenuButton
+                                  size="sm"
+                                  isActive={projectIssuesActive}
+                                  render={<AppLink href={projectHref} />}
+                                  className="pl-8 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                                >
+                                  <ListTodo className="size-3.5" />
+                                  <span>{projectIssuesLabel}</span>
+                                  {project.issue_count > 0 && (
+                                    <span className="ml-auto font-mono text-[10px] text-muted-foreground">{project.issue_count}</span>
+                                  )}
+                                </SidebarMenuButton>
+                              </SidebarMenuItem>
+                              {channelsEnabled && projectChannels.map((channel) => {
+                                const href = p.channelDetail(channel.slug);
+                                return (
+                                  <SidebarMenuItem key={channel.id}>
+                                    <SidebarMenuButton
+                                      size="sm"
+                                      isActive={isNavActive(pathname, href)}
+                                      render={<AppLink href={href} />}
+                                      className="pl-8 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                                    >
+                                      {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
+                                      <span className="truncate">{channel.name}</span>
+                                      <ChannelUnreadDot channel={channel} label={unreadChannelLabel} />
+                                    </SidebarMenuButton>
+                                  </SidebarMenuItem>
+                                );
+                              })}
+                            </>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    {channelsEnabled && unassignedChannels.length > 0 && (
+                      <Collapsible open={unassignedChannelsOpen} onOpenChange={setUnassignedChannelsOpen}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            size="sm"
+                            render={<CollapsibleTrigger />}
+                            className="group/unassigned text-muted-foreground hover:not-data-active:bg-sidebar-accent/70"
+                          >
+                            <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/unassigned:rotate-90" />
+                            <Hash className="size-3.5" />
+                            <span>{unassignedChannelsLabel}</span>
+                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">{unassignedChannels.length}</span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                        <CollapsibleContent>
+                          {unassignedChannels.map((channel) => {
+                            const href = p.channelDetail(channel.slug);
+                            return (
+                              <SidebarMenuItem key={channel.id}>
+                                <SidebarMenuButton
+                                  size="sm"
+                                  isActive={isNavActive(pathname, href)}
+                                  render={<AppLink href={href} />}
+                                  className="pl-8 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                                >
+                                  {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
+                                  <span className="truncate">{channel.name}</span>
+                                  <ChannelUnreadDot channel={channel} label={unreadChannelLabel} />
+                                </SidebarMenuButton>
+                              </SidebarMenuItem>
+                            );
+                          })}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
+                    {channelsEnabled && archivedChannels.length > 0 && (
+                      <Collapsible open={archivedChannelsOpen} onOpenChange={setArchivedChannelsOpen}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            size="sm"
+                            render={<CollapsibleTrigger />}
+                            className="group/archived text-muted-foreground hover:not-data-active:bg-sidebar-accent/70"
+                          >
+                            <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/archived:rotate-90" />
+                            <Archive className="size-3.5" />
+                            <span>{archivedChannelsLabel}</span>
+                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">{archivedChannels.length}</span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                        <CollapsibleContent>
+                          {sortChannelsForProjectTree(archivedChannels).map((channel) => (
+                            <ArchivedChannelSidebarRow key={channel.id} channel={channel} href={p.channelDetail(channel.slug)} />
+                          ))}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
 
           {localPinned.length > 0 && (
             <Collapsible defaultOpen>
@@ -796,6 +1072,16 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
           </div>
         </SidebarFooter>
         <SidebarRail />
+        {channelsEnabled && (
+          <CreateChannelDialog
+            open={showCreateChannel}
+            onOpenChange={setShowCreateChannel}
+            groups={channelGroups}
+            wsId={wsId ?? ""}
+            initialProjectId={createChannelProjectId}
+            lockedProjectId={createChannelProjectId}
+          />
+        )}
       </Sidebar>
   );
 }

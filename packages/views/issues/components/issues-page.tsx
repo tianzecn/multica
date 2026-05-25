@@ -14,7 +14,7 @@ import { BOARD_STATUSES } from "@multica/core/issues/config";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { WorkspaceAvatar } from "../../workspace/workspace-avatar";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { issueAssigneeGroupsOptions, issueListOptions, childIssueProgressOptions, type AssigneeGroupedIssuesFilter } from "@multica/core/issues/queries";
+import { issueAssigneeGroupsOptions, issueListOptions, projectIssueListOptions, childIssueProgressOptions, type AssigneeGroupedIssuesFilter } from "@multica/core/issues/queries";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
@@ -25,7 +25,12 @@ import { ListView } from "./list-view";
 import { BatchActionToolbar } from "./batch-action-toolbar";
 import { useT } from "../../i18n";
 
-export function IssuesPage() {
+interface IssuesPageProps {
+  projectId?: string;
+  projectTitle?: string;
+}
+
+export function IssuesPage({ projectId, projectTitle }: IssuesPageProps = {}) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
 
@@ -66,20 +71,25 @@ export function IssuesPage() {
       assignee_filters: assigneeFilters,
       include_no_assignee: includeNoAssignee,
       creator_filters: creatorFilters,
-      project_ids: projectFilters,
-      include_no_project: includeNoProject,
+      project_ids: projectId ? [projectId] : projectFilters,
+      include_no_project: projectId ? false : includeNoProject,
       label_ids: labelFilters,
     };
     if (scope === "members") filter.assignee_types = ["member"];
     if (scope === "agents") filter.assignee_types = ["agent", "squad"];
     return filter;
-  }, [assigneeFilters, creatorFilters, includeNoAssignee, includeNoProject, labelFilters, priorityFilters, projectFilters, scope, statusFilters]);
+  }, [assigneeFilters, creatorFilters, includeNoAssignee, includeNoProject, labelFilters, priorityFilters, projectFilters, projectId, scope, statusFilters]);
 
   const assigneeGroupsOptions = issueAssigneeGroupsOptions(wsId, assigneeGroupFilter);
-  const statusIssuesQuery = useQuery({
+  const workspaceStatusIssuesQuery = useQuery({
     ...issueListOptions(wsId),
-    enabled: !usesAssigneeBoard,
+    enabled: !usesAssigneeBoard && !projectId,
   });
+  const projectStatusIssuesQuery = useQuery({
+    ...projectIssueListOptions(wsId, projectId ?? ""),
+    enabled: !usesAssigneeBoard && !!projectId,
+  });
+  const statusIssuesQuery = projectId ? projectStatusIssuesQuery : workspaceStatusIssuesQuery;
   const assigneeGroupsQuery = useQuery({
     ...assigneeGroupsOptions,
     enabled: usesAssigneeBoard,
@@ -115,8 +125,8 @@ export function IssuesPage() {
   const headerIssues = usesAssigneeBoard ? assigneeIssues : scopedIssues;
 
   const issues = useMemo(
-    () => filterIssues(scopedIssues, { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds }),
-    [scopedIssues, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds],
+    () => filterIssues(scopedIssues, { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters: projectId ? [] : projectFilters, includeNoProject: projectId ? false : includeNoProject, labelFilters, agentRunningFilter, runningIssueIds }),
+    [scopedIssues, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, projectId, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds],
   );
 
   // Fetch sub-issue progress from the backend so counts are accurate
@@ -200,7 +210,7 @@ export function IssuesPage() {
           {workspace?.name ?? t(($) => $.page.breadcrumb_workspace_fallback)}
         </span>
         <ChevronRight className="h-3 w-3 text-muted-foreground" />
-        <span className="text-sm font-medium">{t(($) => $.page.breadcrumb_title)}</span>
+        <span className="text-sm font-medium">{projectTitle ? `${projectTitle} Issues` : t(($) => $.page.breadcrumb_title)}</span>
       </PageHeader>
 
       <ViewStoreProvider store={useIssueViewStore}>
@@ -226,9 +236,10 @@ export function IssuesPage() {
                 hiddenStatuses={hiddenStatuses}
                 onMoveIssue={handleMoveIssue}
                 childProgressMap={childProgressMap}
+                projectId={projectId}
               />
             ) : (
-              <ListView issues={issues} visibleStatuses={visibleStatuses} childProgressMap={childProgressMap} />
+              <ListView issues={issues} visibleStatuses={visibleStatuses} childProgressMap={childProgressMap} projectId={projectId} />
             )}
           </div>
         )}

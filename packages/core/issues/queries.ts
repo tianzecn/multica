@@ -13,6 +13,8 @@ import { BOARD_STATUSES } from "./config";
 export const issueKeys = {
   all: (wsId: string) => ["issues", wsId] as const,
   list: (wsId: string) => [...issueKeys.all(wsId), "list"] as const,
+  projectList: (wsId: string, projectId: string) =>
+    [...issueKeys.all(wsId), "project-list", projectId] as const,
   assigneeGroupsAll: (wsId: string) =>
     [...issueKeys.all(wsId), "assignee-groups"] as const,
   assigneeGroups: (wsId: string, filter: AssigneeGroupedIssuesFilter) =>
@@ -215,6 +217,15 @@ export function issueListOptions(wsId: string) {
     queryKey: issueKeys.list(wsId),
     queryFn: () => fetchFirstPages(),
     select: flattenIssueBuckets,
+  });
+}
+
+export function projectIssueListOptions(wsId: string, projectId: string) {
+  return queryOptions({
+    queryKey: issueKeys.projectList(wsId, projectId),
+    queryFn: () => fetchFirstPages({ project_id: projectId }),
+    select: flattenIssueBuckets,
+    enabled: !!wsId && !!projectId,
   });
 }
 

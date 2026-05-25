@@ -47,7 +47,7 @@ const archiveChannel = `-- name: ArchiveChannel :one
 UPDATE channel
 SET archived_at = now(), updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
 `
 
 type ArchiveChannelParams struct {
@@ -78,6 +78,7 @@ func (q *Queries) ArchiveChannel(ctx context.Context, arg ArchiveChannelParams) 
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -172,6 +173,34 @@ func (q *Queries) ChangeChannelDispatchPlanMode(ctx context.Context, arg ChangeC
 	return i, err
 }
 
+const channelHasUnreadForUser = `-- name: ChannelHasUnreadForUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM channel_message cm
+    LEFT JOIN channel_read_state crs
+      ON crs.channel_id = cm.channel_id
+     AND crs.user_id = $1
+    WHERE cm.channel_id = $2
+      AND cm.created_at > COALESCE(crs.last_read_at, '-infinity'::timestamptz)
+      AND NOT (
+        cm.author_type = 'member'
+        AND cm.author_id = $1
+      )
+) AS has_unread
+`
+
+type ChannelHasUnreadForUserParams struct {
+	UserID    pgtype.UUID `json:"user_id"`
+	ChannelID pgtype.UUID `json:"channel_id"`
+}
+
+func (q *Queries) ChannelHasUnreadForUser(ctx context.Context, arg ChannelHasUnreadForUserParams) (bool, error) {
+	row := q.db.QueryRow(ctx, channelHasUnreadForUser, arg.UserID, arg.ChannelID)
+	var has_unread bool
+	err := row.Scan(&has_unread)
+	return has_unread, err
+}
+
 const completeChannelAgentRun = `-- name: CompleteChannelAgentRun :exec
 UPDATE channel_agent_run
 SET status = 'completed', completed_at = now()
@@ -240,14 +269,14 @@ func (q *Queries) CreateApprovalRequest(ctx context.Context, arg CreateApprovalR
 const createChannel = `-- name: CreateChannel :one
 INSERT INTO channel (
     workspace_id, group_id, slug, name, description, visibility,
-    proactivity, instructions, summary, default_project_id, default_assignee_type,
+    proactivity, instructions, summary, project_id, default_project_id, default_assignee_type,
     default_assignee_id, position, created_by, mention_issue_search_enabled
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11,
+    $7, $8, $9, $10, $10, $11,
     $12, $13, $14, $15
 )
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
 `
 
 type CreateChannelParams struct {
@@ -260,7 +289,7 @@ type CreateChannelParams struct {
 	Proactivity               string      `json:"proactivity"`
 	Instructions              string      `json:"instructions"`
 	Summary                   string      `json:"summary"`
-	DefaultProjectID          pgtype.UUID `json:"default_project_id"`
+	ProjectID                 pgtype.UUID `json:"project_id"`
 	DefaultAssigneeType       pgtype.Text `json:"default_assignee_type"`
 	DefaultAssigneeID         pgtype.UUID `json:"default_assignee_id"`
 	Position                  float64     `json:"position"`
@@ -279,7 +308,7 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		arg.Proactivity,
 		arg.Instructions,
 		arg.Summary,
-		arg.DefaultProjectID,
+		arg.ProjectID,
 		arg.DefaultAssigneeType,
 		arg.DefaultAssigneeID,
 		arg.Position,
@@ -307,6 +336,7 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (C
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -855,7 +885,7 @@ func (q *Queries) GetChannelAgentThread(ctx context.Context, arg GetChannelAgent
 }
 
 const getChannelByID = `-- name: GetChannelByID :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
 WHERE id = $1 AND archived_at IS NULL
 `
 
@@ -882,12 +912,13 @@ func (q *Queries) GetChannelByID(ctx context.Context, id pgtype.UUID) (Channel, 
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const getChannelBySlugInWorkspace = `-- name: GetChannelBySlugInWorkspace :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
 WHERE slug = $1 AND workspace_id = $2 AND archived_at IS NULL
 `
 
@@ -919,12 +950,13 @@ func (q *Queries) GetChannelBySlugInWorkspace(ctx context.Context, arg GetChanne
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const getChannelBySlugInWorkspaceAnyStatus = `-- name: GetChannelBySlugInWorkspaceAnyStatus :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
 WHERE slug = $1 AND workspace_id = $2
 `
 
@@ -956,6 +988,7 @@ func (q *Queries) GetChannelBySlugInWorkspaceAnyStatus(ctx context.Context, arg 
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -1126,7 +1159,7 @@ func (q *Queries) GetChannelGroupInWorkspace(ctx context.Context, arg GetChannel
 }
 
 const getChannelInWorkspace = `-- name: GetChannelInWorkspace :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
 `
 
@@ -1158,12 +1191,13 @@ func (q *Queries) GetChannelInWorkspace(ctx context.Context, arg GetChannelInWor
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
 
 const getChannelInWorkspaceAnyStatus = `-- name: GetChannelInWorkspaceAnyStatus :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled FROM channel
+SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -1195,6 +1229,7 @@ func (q *Queries) GetChannelInWorkspaceAnyStatus(ctx context.Context, arg GetCha
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -1319,6 +1354,20 @@ func (q *Queries) IsChannelMember(ctx context.Context, arg IsChannelMemberParams
 	var is_member bool
 	err := row.Scan(&is_member)
 	return is_member, err
+}
+
+const latestChannelMessageID = `-- name: LatestChannelMessageID :one
+SELECT id FROM channel_message
+WHERE channel_id = $1
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) LatestChannelMessageID(ctx context.Context, channelID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, latestChannelMessageID, channelID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const linkIssueToChannel = `-- name: LinkIssueToChannel :one
@@ -2073,8 +2122,47 @@ func (q *Queries) ListReadyChannelDispatchSteps(ctx context.Context, planID pgty
 	return items, nil
 }
 
+const listUnreadChannelIDsForUser = `-- name: ListUnreadChannelIDsForUser :many
+SELECT DISTINCT cm.channel_id
+FROM channel_message cm
+LEFT JOIN channel_read_state crs
+  ON crs.channel_id = cm.channel_id
+ AND crs.user_id = $1
+WHERE cm.channel_id = ANY($2::uuid[])
+  AND cm.created_at > COALESCE(crs.last_read_at, '-infinity'::timestamptz)
+  AND NOT (
+    cm.author_type = 'member'
+    AND cm.author_id = $1
+  )
+`
+
+type ListUnreadChannelIDsForUserParams struct {
+	UserID     pgtype.UUID   `json:"user_id"`
+	ChannelIds []pgtype.UUID `json:"channel_ids"`
+}
+
+func (q *Queries) ListUnreadChannelIDsForUser(ctx context.Context, arg ListUnreadChannelIDsForUserParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listUnreadChannelIDsForUser, arg.UserID, arg.ChannelIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var channel_id pgtype.UUID
+		if err := rows.Scan(&channel_id); err != nil {
+			return nil, err
+		}
+		items = append(items, channel_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVisibleChannels = `-- name: ListVisibleChannels :many
-SELECT DISTINCT c.id, c.workspace_id, c.group_id, c.slug, c.name, c.description, c.visibility, c.instructions, c.summary, c.default_project_id, c.default_assignee_type, c.default_assignee_id, c.position, c.created_by, c.archived_at, c.created_at, c.updated_at, c.proactivity, c.mention_issue_search_enabled FROM channel c
+SELECT DISTINCT c.id, c.workspace_id, c.group_id, c.slug, c.name, c.description, c.visibility, c.instructions, c.summary, c.default_project_id, c.default_assignee_type, c.default_assignee_id, c.position, c.created_by, c.archived_at, c.created_at, c.updated_at, c.proactivity, c.mention_issue_search_enabled, c.project_id FROM channel c
 LEFT JOIN channel_member cm
        ON cm.channel_id = c.id
       AND cm.member_type = 'member'
@@ -2126,6 +2214,7 @@ func (q *Queries) ListVisibleChannels(ctx context.Context, arg ListVisibleChanne
 			&i.UpdatedAt,
 			&i.Proactivity,
 			&i.MentionIssueSearchEnabled,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -2302,7 +2391,7 @@ const restoreChannel = `-- name: RestoreChannel :one
 UPDATE channel
 SET archived_at = NULL, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
 `
 
 type RestoreChannelParams struct {
@@ -2333,6 +2422,7 @@ func (q *Queries) RestoreChannel(ctx context.Context, arg RestoreChannelParams) 
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -2365,6 +2455,98 @@ func (q *Queries) RestoreChannelSession(ctx context.Context, arg RestoreChannelS
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const searchVisibleChannels = `-- name: SearchVisibleChannels :many
+SELECT c.id, c.workspace_id, c.group_id, c.slug, c.name, c.description, c.visibility, c.instructions, c.summary, c.default_project_id, c.default_assignee_type, c.default_assignee_id, c.position, c.created_by, c.archived_at, c.created_at, c.updated_at, c.proactivity, c.mention_issue_search_enabled, c.project_id FROM channel c
+WHERE c.workspace_id = $1
+  AND c.archived_at IS NULL
+  AND (
+    c.visibility = 'public'
+    OR $2::boolean
+    OR EXISTS (
+      SELECT 1
+      FROM channel_member cm
+      WHERE cm.channel_id = c.id
+        AND cm.member_type = 'member'
+        AND cm.member_id = $3
+    )
+  )
+  AND (
+    LOWER(c.name) LIKE $4
+    OR LOWER(c.slug) LIKE $4
+    OR LOWER(c.description) LIKE $4
+  )
+ORDER BY
+  CASE
+    WHEN LOWER(c.slug) = $5 THEN 0
+    WHEN LOWER(c.name) = $5 THEN 1
+    WHEN LOWER(c.slug) LIKE $6 THEN 2
+    WHEN LOWER(c.name) LIKE $6 THEN 3
+    ELSE 4
+  END,
+  c.position ASC,
+  c.created_at ASC
+LIMIT $7::int
+`
+
+type SearchVisibleChannelsParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	IncludePrivate bool        `json:"include_private"`
+	MemberID       pgtype.UUID `json:"member_id"`
+	Pattern        string      `json:"pattern"`
+	Exact          string      `json:"exact"`
+	StartsWith     string      `json:"starts_with"`
+	LimitCount     int32       `json:"limit_count"`
+}
+
+func (q *Queries) SearchVisibleChannels(ctx context.Context, arg SearchVisibleChannelsParams) ([]Channel, error) {
+	rows, err := q.db.Query(ctx, searchVisibleChannels,
+		arg.WorkspaceID,
+		arg.IncludePrivate,
+		arg.MemberID,
+		arg.Pattern,
+		arg.Exact,
+		arg.StartsWith,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Channel{}
+	for rows.Next() {
+		var i Channel
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.GroupID,
+			&i.Slug,
+			&i.Name,
+			&i.Description,
+			&i.Visibility,
+			&i.Instructions,
+			&i.Summary,
+			&i.DefaultProjectID,
+			&i.DefaultAssigneeType,
+			&i.DefaultAssigneeID,
+			&i.Position,
+			&i.CreatedBy,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Proactivity,
+			&i.MentionIssueSearchEnabled,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const touchChannelSession = `-- name: TouchChannelSession :exec
@@ -2405,14 +2587,21 @@ UPDATE channel SET
     proactivity = COALESCE($7, proactivity),
     instructions = COALESCE($8, instructions),
     summary = COALESCE($9, summary),
-    default_project_id = COALESCE($10, default_project_id),
-    default_assignee_type = COALESCE($11, default_assignee_type),
-    default_assignee_id = COALESCE($12, default_assignee_id),
-    position = COALESCE($13, position),
-    mention_issue_search_enabled = COALESCE($14, mention_issue_search_enabled),
+    project_id = CASE
+        WHEN $10::boolean THEN $11
+        ELSE project_id
+    END,
+    default_project_id = CASE
+        WHEN $10::boolean THEN $11
+        ELSE default_project_id
+    END,
+    default_assignee_type = COALESCE($12, default_assignee_type),
+    default_assignee_id = COALESCE($13, default_assignee_id),
+    position = COALESCE($14, position),
+    mention_issue_search_enabled = COALESCE($15, mention_issue_search_enabled),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled
+RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
 `
 
 type UpdateChannelParams struct {
@@ -2425,7 +2614,8 @@ type UpdateChannelParams struct {
 	Proactivity               pgtype.Text   `json:"proactivity"`
 	Instructions              pgtype.Text   `json:"instructions"`
 	Summary                   pgtype.Text   `json:"summary"`
-	DefaultProjectID          pgtype.UUID   `json:"default_project_id"`
+	ProjectIDSet              bool          `json:"project_id_set"`
+	ProjectID                 pgtype.UUID   `json:"project_id"`
 	DefaultAssigneeType       pgtype.Text   `json:"default_assignee_type"`
 	DefaultAssigneeID         pgtype.UUID   `json:"default_assignee_id"`
 	Position                  pgtype.Float8 `json:"position"`
@@ -2443,7 +2633,8 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		arg.Proactivity,
 		arg.Instructions,
 		arg.Summary,
-		arg.DefaultProjectID,
+		arg.ProjectIDSet,
+		arg.ProjectID,
 		arg.DefaultAssigneeType,
 		arg.DefaultAssigneeID,
 		arg.Position,
@@ -2470,6 +2661,7 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (C
 		&i.UpdatedAt,
 		&i.Proactivity,
 		&i.MentionIssueSearchEnabled,
+		&i.ProjectID,
 	)
 	return i, err
 }

@@ -1,13 +1,15 @@
 "use client";
+/* eslint-disable i18next/no-literal-string */
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Archive, Hash, Lock, Plus, RotateCcw, Search, X } from "lucide-react";
 import { channelGroupsOptions, channelListOptions, useArchiveChannel, useCreateChannel, useRestoreChannel } from "@multica/core/channels";
+import { projectListOptions } from "@multica/core/projects/queries";
 import { useCurrentMember } from "@multica/core/permissions";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions } from "@multica/core/workspace/queries";
-import type { Agent, Channel, ChannelGroup, ChannelVisibility } from "@multica/core/types";
+import type { Agent, Channel, ChannelGroup, ChannelVisibility, Project } from "@multica/core/types";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
@@ -230,16 +232,53 @@ function ChannelTile({
   );
 }
 
-function CreateChannelDialog({
+function ProjectSelect({
+  projects,
+  value,
+  onChange,
+  disabled,
+}: {
+  projects: Project[];
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor="channel-project">所属项目</Label>
+      <select
+        id="channel-project"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        className="h-9 rounded-md border bg-background px-3 text-sm disabled:opacity-70"
+      >
+        <option value="">未归属项目</option>
+        {projects.map((project) => (
+          <option key={project.id} value={project.id}>{project.title}</option>
+        ))}
+      </select>
+      <p className="text-xs leading-5 text-muted-foreground">
+        所属项目会作为频道内新建 Issue 和 @ Issue 搜索的默认上下文。
+      </p>
+    </div>
+  );
+}
+
+export function CreateChannelDialog({
   open,
   onOpenChange,
   groups,
   wsId,
+  initialProjectId,
+  lockedProjectId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   groups: ChannelGroup[];
   wsId: string;
+  initialProjectId?: string | null;
+  lockedProjectId?: string | null;
 }) {
   const { t } = useT("channels");
   const createChannel = useCreateChannel();
@@ -249,6 +288,10 @@ function CreateChannelDialog({
     ...agentListOptions(wsId),
     enabled: !!wsId && open,
   });
+  const { data: projects = [] } = useQuery({
+    ...projectListOptions(wsId),
+    enabled: !!wsId && open,
+  });
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
@@ -256,6 +299,7 @@ function CreateChannelDialog({
   const [visibility, setVisibility] = useState<ChannelVisibility>("private");
   const [mentionIssueSearchEnabled, setMentionIssueSearchEnabled] = useState(true);
   const [groupId, setGroupId] = useState("");
+  const [projectId, setProjectId] = useState(lockedProjectId ?? initialProjectId ?? "");
   const [memberSearch, setMemberSearch] = useState("");
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
 
@@ -278,6 +322,11 @@ function CreateChannelDialog({
     setSelectedAgentIds(activeAgents.slice(0, 2).map((agent) => agent.id));
   }, [activeAgents, open, selectedAgentIds.length]);
 
+  useEffect(() => {
+    if (!open) return;
+    setProjectId(lockedProjectId ?? initialProjectId ?? "");
+  }, [initialProjectId, lockedProjectId, open]);
+
   const canSubmit = name.trim().length > 0 && !createChannel.isPending;
   const toggleAgent = (agentId: string) => {
     setSelectedAgentIds((current) =>
@@ -296,6 +345,7 @@ function CreateChannelDialog({
         visibility,
         mention_issue_search_enabled: mentionIssueSearchEnabled,
         group_id: groupId || null,
+        project_id: projectId || null,
         members: selectedAgentIds.map((id) => ({
           member_type: "agent",
           member_id: id,
@@ -311,6 +361,7 @@ function CreateChannelDialog({
           setVisibility("private");
           setMentionIssueSearchEnabled(true);
           setGroupId("");
+          setProjectId(lockedProjectId ?? initialProjectId ?? "");
           setMemberSearch("");
           setSelectedAgentIds([]);
           onOpenChange(false);
@@ -361,6 +412,14 @@ function CreateChannelDialog({
                 ))}
               </select>
             </div>
+          )}
+          {projects.length > 0 && (
+            <ProjectSelect
+              projects={projects}
+              value={projectId}
+              onChange={setProjectId}
+              disabled={!!lockedProjectId}
+            />
           )}
           <div className="grid gap-2">
             <Label htmlFor="channel-description">{t(($) => $.create.description_label)}</Label>

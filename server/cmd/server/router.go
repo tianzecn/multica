@@ -471,6 +471,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Channels
 			r.Route("/api/channels", func(r chi.Router) {
+				r.Get("/search", h.SearchChannels)
 				r.Get("/", h.ListChannels)
 				r.Post("/", h.CreateChannel)
 				r.Get("/groups", h.ListChannelGroups)
@@ -479,6 +480,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetChannel)
 					r.Patch("/", h.UpdateChannel)
 					r.Delete("/", h.ArchiveChannel)
+					r.Post("/read", h.MarkChannelRead)
 					r.Post("/restore", h.RestoreChannel)
 					r.Post("/join", h.JoinChannel)
 					r.Get("/members", h.ListChannelMembers)

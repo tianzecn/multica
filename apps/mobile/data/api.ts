@@ -54,6 +54,7 @@ import type {
   Reaction,
   ReorderPinsRequest,
   RuntimeDevice,
+  SearchChannelsResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   SendChatMessageResponse,
@@ -91,10 +92,12 @@ import {
   EMPTY_CHANNEL_SESSION,
   EMPTY_CHANNEL_SESSIONS,
   EMPTY_CHANNELS,
+  EMPTY_SEARCH_CHANNELS_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_TIMELINE_ENTRIES,
   IssueSchema,
   ListIssuesResponseSchema,
+  SearchChannelsResponseSchema,
   TimelineEntriesSchema,
 } from "@multica/core/api/schemas";
 import {
@@ -607,7 +610,7 @@ class ApiClient {
    *  search modal can cancel an in-flight request when the user types
    *  again — see app/(app)/[workspace]/search.tsx. */
   async searchIssues(
-    params: { q: string; limit?: number; include_closed?: boolean; offset?: number },
+    params: { q: string; limit?: number; include_closed?: boolean; offset?: number; project_id?: string | null },
     opts?: { signal?: AbortSignal },
   ): Promise<SearchIssuesResponse> {
     const search = new URLSearchParams();
@@ -1011,9 +1014,12 @@ class ApiClient {
   }
 
   // --- Channels ---
-  async listChannels(opts?: { signal?: AbortSignal }): Promise<Channel[]> {
+  async listChannels(opts?: { signal?: AbortSignal; include_archived?: boolean }): Promise<Channel[]> {
+    const search = new URLSearchParams();
+    if (opts?.include_archived) search.set("include_archived", "true");
+    const qs = search.toString();
     return this.fetchValidated(
-      "/api/channels",
+      `/api/channels${qs ? `?${qs}` : ""}`,
       ChannelListSchema,
       EMPTY_CHANNELS,
       { ...opts, endpoint: "GET /api/channels" },
@@ -1039,6 +1045,34 @@ class ApiClient {
       EMPTY_CHANNEL,
       { method: "POST", body: JSON.stringify(data) },
       { endpoint: "POST /api/channels" },
+    );
+  }
+
+  async searchChannels(
+    params: { q: string; limit?: number },
+    opts?: { signal?: AbortSignal },
+  ): Promise<SearchChannelsResponse> {
+    const search = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v == null) continue;
+      search.set(k, String(v));
+    }
+    const raw = await this.fetch<unknown>(
+      `/api/channels/search?${search.toString()}`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(raw, SearchChannelsResponseSchema, EMPTY_SEARCH_CHANNELS_RESPONSE, {
+      endpoint: "GET /api/channels/search",
+    });
+  }
+
+  async markChannelRead(channelId: string): Promise<Channel> {
+    return this.fetchValidatedWith(
+      `/api/channels/${channelId}/read`,
+      ChannelSchema,
+      EMPTY_CHANNEL,
+      { method: "POST" },
+      { endpoint: "POST /api/channels/:id/read" },
     );
   }
 

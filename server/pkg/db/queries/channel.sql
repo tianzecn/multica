@@ -15,11 +15,11 @@ WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL;
 -- name: CreateChannel :one
 INSERT INTO channel (
     workspace_id, group_id, slug, name, description, visibility,
-    proactivity, instructions, summary, default_project_id, default_assignee_type,
+    proactivity, instructions, summary, project_id, default_project_id, default_assignee_type,
     default_assignee_id, position, created_by, mention_issue_search_enabled
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11,
+    $7, $8, $9, $10, $10, $11,
     $12, $13, $14, $15
 )
 RETURNING *;
@@ -34,6 +34,38 @@ WHERE c.workspace_id = $1
   AND (sqlc.arg('include_archived')::boolean OR c.archived_at IS NULL)
   AND (c.visibility = 'public' OR cm.id IS NOT NULL OR sqlc.arg('include_private')::boolean)
 ORDER BY c.position ASC, c.created_at ASC;
+
+-- name: SearchVisibleChannels :many
+SELECT c.* FROM channel c
+WHERE c.workspace_id = sqlc.arg('workspace_id')
+  AND c.archived_at IS NULL
+  AND (
+    c.visibility = 'public'
+    OR sqlc.arg('include_private')::boolean
+    OR EXISTS (
+      SELECT 1
+      FROM channel_member cm
+      WHERE cm.channel_id = c.id
+        AND cm.member_type = 'member'
+        AND cm.member_id = sqlc.arg('member_id')
+    )
+  )
+  AND (
+    LOWER(c.name) LIKE sqlc.arg('pattern')
+    OR LOWER(c.slug) LIKE sqlc.arg('pattern')
+    OR LOWER(c.description) LIKE sqlc.arg('pattern')
+  )
+ORDER BY
+  CASE
+    WHEN LOWER(c.slug) = sqlc.arg('exact') THEN 0
+    WHEN LOWER(c.name) = sqlc.arg('exact') THEN 1
+    WHEN LOWER(c.slug) LIKE sqlc.arg('starts_with') THEN 2
+    WHEN LOWER(c.name) LIKE sqlc.arg('starts_with') THEN 3
+    ELSE 4
+  END,
+  c.position ASC,
+  c.created_at ASC
+LIMIT sqlc.arg('limit_count')::int;
 
 -- name: GetChannelInWorkspace :one
 SELECT * FROM channel
@@ -64,7 +96,14 @@ UPDATE channel SET
     proactivity = COALESCE(sqlc.narg('proactivity'), proactivity),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
     summary = COALESCE(sqlc.narg('summary'), summary),
-    default_project_id = COALESCE(sqlc.narg('default_project_id'), default_project_id),
+    project_id = CASE
+        WHEN sqlc.arg('project_id_set')::boolean THEN sqlc.narg('project_id')
+        ELSE project_id
+    END,
+    default_project_id = CASE
+        WHEN sqlc.arg('project_id_set')::boolean THEN sqlc.narg('project_id')
+        ELSE default_project_id
+    END,
     default_assignee_type = COALESCE(sqlc.narg('default_assignee_type'), default_assignee_type),
     default_assignee_id = COALESCE(sqlc.narg('default_assignee_id'), default_assignee_id),
     position = COALESCE(sqlc.narg('position'), position),
@@ -171,6 +210,40 @@ LIMIT $3;
 -- name: GetChannelMessage :one
 SELECT * FROM channel_message
 WHERE id = $1;
+
+-- name: LatestChannelMessageID :one
+SELECT id FROM channel_message
+WHERE channel_id = $1
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: ChannelHasUnreadForUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM channel_message cm
+    LEFT JOIN channel_read_state crs
+      ON crs.channel_id = cm.channel_id
+     AND crs.user_id = sqlc.arg('user_id')
+    WHERE cm.channel_id = sqlc.arg('channel_id')
+      AND cm.created_at > COALESCE(crs.last_read_at, '-infinity'::timestamptz)
+      AND NOT (
+        cm.author_type = 'member'
+        AND cm.author_id = sqlc.arg('user_id')
+      )
+) AS has_unread;
+
+-- name: ListUnreadChannelIDsForUser :many
+SELECT DISTINCT cm.channel_id
+FROM channel_message cm
+LEFT JOIN channel_read_state crs
+  ON crs.channel_id = cm.channel_id
+ AND crs.user_id = sqlc.arg('user_id')
+WHERE cm.channel_id = ANY(sqlc.arg('channel_ids')::uuid[])
+  AND cm.created_at > COALESCE(crs.last_read_at, '-infinity'::timestamptz)
+  AND NOT (
+    cm.author_type = 'member'
+    AND cm.author_id = sqlc.arg('user_id')
+  );
 
 -- name: GetChannelAgentThread :one
 SELECT * FROM channel_agent_thread

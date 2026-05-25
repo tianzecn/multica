@@ -29,6 +29,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type {
   Issue,
   IssueStatus,
+  Channel,
   SearchIssueResult,
   SearchProjectResult,
 } from "@multica/core/types";
@@ -120,6 +121,7 @@ type RowItem =
   | { kind: "header"; key: string; title: string }
   | { kind: "issue"; key: string; issue: SearchIssueResult; query: string }
   | { kind: "project"; key: string; project: SearchProjectResult; query: string }
+  | { kind: "channel"; key: string; channel: Channel; query: string }
   | { kind: "recent"; key: string; issue: Issue };
 
 function issueIconColor(status: IssueStatus): string {
@@ -256,6 +258,41 @@ function SearchProjectRow({ item, query, slug }: SearchProjectRowProps) {
   );
 }
 
+interface SearchChannelRowProps {
+  item: Channel;
+  query: string;
+  slug: string | null;
+}
+
+function SearchChannelRow({ item, query, slug }: SearchChannelRowProps) {
+  return (
+    <Pressable
+      onPress={() => navigateOnTap(slug, `/${slug}/channel/${item.slug || item.id}`)}
+      className="active:bg-secondary px-4 py-3"
+    >
+      <View className="flex-row items-center gap-3">
+        <Ionicons
+          name={item.visibility === "private" ? "lock-closed-outline" : "chatbubbles-outline"}
+          size={16}
+          color="#71717a"
+        />
+        <View className="flex-1">
+          <HighlightText
+            text={item.name}
+            query={query}
+            className="text-sm text-foreground"
+            numberOfLines={1}
+          />
+        </View>
+        {item.has_unread ? <View className="size-2 rounded-full bg-primary" /> : null}
+        <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+          #{item.slug}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
 interface RecentRowProps {
   item: Issue;
   slug: string | null;
@@ -291,9 +328,10 @@ function RecentRow({ item, slug }: RecentRowProps) {
 interface SearchResultsState {
   issues: SearchIssueResult[];
   projects: SearchProjectResult[];
+  channels: Channel[];
 }
 
-const EMPTY_RESULTS: SearchResultsState = { issues: [], projects: [] };
+const EMPTY_RESULTS: SearchResultsState = { issues: [], projects: [], channels: [] };
 
 export default function SearchModal() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -353,7 +391,7 @@ export default function SearchModal() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        const [issueRes, projectRes] = await Promise.all([
+        const [issueRes, projectRes, channelRes] = await Promise.all([
           api.searchIssues(
             { q: q.trim(), limit: ISSUE_LIMIT, include_closed: true },
             { signal: controller.signal },
@@ -362,9 +400,13 @@ export default function SearchModal() {
             { q: q.trim(), limit: PROJECT_LIMIT, include_closed: true },
             { signal: controller.signal },
           ),
+          api.searchChannels(
+            { q: q.trim(), limit: PROJECT_LIMIT },
+            { signal: controller.signal },
+          ),
         ]);
         if (!controller.signal.aborted) {
-          setResults({ issues: issueRes.issues, projects: projectRes.projects });
+          setResults({ issues: issueRes.issues, projects: projectRes.projects, channels: channelRes.channels });
           setIsLoading(false);
         }
       } catch {
@@ -386,7 +428,7 @@ export default function SearchModal() {
 
   const trimmedQuery = query.trim();
   const hasResults =
-    results.issues.length > 0 || results.projects.length > 0;
+    results.issues.length > 0 || results.projects.length > 0 || results.channels.length > 0;
 
   // Build the FlatList data. One flat array of discriminated rows means a
   // single virtualised list covers Recent (empty-state) and (Projects +
@@ -408,6 +450,12 @@ export default function SearchModal() {
       items.push({ kind: "header", key: "h-projects", title: "Projects" });
       for (const p of results.projects) {
         items.push({ kind: "project", key: `p-${p.id}`, project: p, query: trimmedQuery });
+      }
+    }
+    if (results.channels.length > 0) {
+      items.push({ kind: "header", key: "h-channels", title: "Channels" });
+      for (const channel of results.channels) {
+        items.push({ kind: "channel", key: `c-${channel.id}`, channel, query: trimmedQuery });
       }
     }
     if (results.issues.length > 0) {
@@ -432,6 +480,8 @@ export default function SearchModal() {
           return <SearchIssueRow item={item.issue} query={item.query} slug={slug} />;
         case "project":
           return <SearchProjectRow item={item.project} query={item.query} slug={slug} />;
+        case "channel":
+          return <SearchChannelRow item={item.channel} query={item.query} slug={slug} />;
         case "recent":
           return <RecentRow item={item.issue} slug={slug} />;
       }
@@ -451,7 +501,7 @@ export default function SearchModal() {
           <TextInput
             value={query}
             onChangeText={handleChange}
-            placeholder="Search issues and projects"
+            placeholder="Search issues, projects, and channels"
             placeholderTextColor="#a1a1aa"
             autoFocus
             autoCorrect={false}
@@ -483,7 +533,7 @@ export default function SearchModal() {
             ) : !trimmedQuery && recentIssues.length === 0 ? (
               <View className="items-center justify-center py-12 px-6">
                 <Text className="text-sm text-muted-foreground text-center">
-                  Type to search issues and projects.
+                  Type to search issues, projects, and channels.
                 </Text>
               </View>
             ) : null

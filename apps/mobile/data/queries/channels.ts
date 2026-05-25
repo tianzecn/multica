@@ -3,7 +3,8 @@ import { api } from "@/data/api";
 
 export const channelKeys = {
   all: (wsId: string | null) => ["channels", wsId] as const,
-  list: (wsId: string | null) => [...channelKeys.all(wsId), "list"] as const,
+  list: (wsId: string | null, includeArchived = false) =>
+    [...channelKeys.all(wsId), "list", includeArchived ? "with-archived" : "active"] as const,
   detail: (wsId: string | null, channelId: string) =>
     [...channelKeys.all(wsId), "detail", channelId] as const,
   sessions: (wsId: string | null, channelId: string) =>
@@ -28,13 +29,18 @@ export const channelKeys = {
     [...channelKeys.detail(wsId, channelId), "approvals"] as const,
 };
 
-export const channelListOptions = (wsId: string | null) =>
-  queryOptions({
-    queryKey: channelKeys.list(wsId),
-    queryFn: ({ signal }) => api.listChannels({ signal }),
+export const channelListOptions = (
+  wsId: string | null,
+  params?: { includeArchived?: boolean },
+) => {
+  const includeArchived = params?.includeArchived === true;
+  return queryOptions({
+    queryKey: channelKeys.list(wsId, includeArchived),
+    queryFn: ({ signal }) => api.listChannels({ signal, include_archived: includeArchived }),
     enabled: !!wsId,
     staleTime: Infinity,
   });
+};
 
 export const channelDetailOptions = (
   wsId: string | null,
