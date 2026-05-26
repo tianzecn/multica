@@ -148,6 +148,65 @@ export function useUpdateChatSession() {
   });
 }
 
+function upsertChatSession(old: ChatSession[] | undefined, session: ChatSession) {
+  if (!old) return [session];
+  if (old.some((s) => s.id === session.id)) {
+    return old.map((s) => (s.id === session.id ? session : s));
+  }
+  return [session, ...old];
+}
+
+function useSetChatSessionStatus(status: ChatSession["status"]) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: (sessionId: string) => {
+      logger.info("setChatSessionStatus.start", { sessionId, status });
+      return status === "archived"
+        ? api.archiveChatSession(sessionId)
+        : api.restoreChatSession(sessionId);
+    },
+    onMutate: async (sessionId) => {
+      await qc.cancelQueries({ queryKey: chatKeys.sessions(wsId) });
+      await qc.cancelQueries({ queryKey: chatKeys.session(wsId, sessionId) });
+
+      const prevSessions = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId));
+      const prevSession = qc.getQueryData<ChatSession>(chatKeys.session(wsId, sessionId));
+
+      const patch = (old?: ChatSession[]) =>
+        old?.map((s) => (s.id === sessionId ? { ...s, status } : s));
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), patch);
+      qc.setQueryData<ChatSession>(chatKeys.session(wsId, sessionId), (old) =>
+        old ? { ...old, status } : old,
+      );
+
+      return { prevSessions, prevSession };
+    },
+    onError: (err, sessionId, ctx) => {
+      logger.error("setChatSessionStatus.error.rollback", { sessionId, status, err });
+      if (ctx?.prevSessions) qc.setQueryData(chatKeys.sessions(wsId), ctx.prevSessions);
+      if (ctx?.prevSession) qc.setQueryData(chatKeys.session(wsId, sessionId), ctx.prevSession);
+    },
+    onSuccess: (session) => {
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) => upsertChatSession(old, session));
+      qc.setQueryData<ChatSession>(chatKeys.session(wsId, session.id), session);
+    },
+    onSettled: (_data, _err, sessionId) => {
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+      qc.invalidateQueries({ queryKey: chatKeys.session(wsId, sessionId) });
+    },
+  });
+}
+
+export function useArchiveChatSession() {
+  return useSetChatSessionStatus("archived");
+}
+
+export function useRestoreChatSession() {
+  return useSetChatSessionStatus("active");
+}
+
 /**
  * Hard-deletes a chat session. Optimistically removes the row from the
  * sessions list so the dropdown updates instantly; rolls back on error.

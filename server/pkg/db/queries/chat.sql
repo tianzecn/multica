@@ -43,6 +43,13 @@ SET
 WHERE id = sqlc.arg('id')
 RETURNING *;
 
+-- name: UpdateChatSessionStatus :one
+UPDATE chat_session
+SET status = $1,
+    updated_at = now()
+WHERE id = $2
+RETURNING *;
+
 -- name: UpdateChatSessionSession :exec
 -- Updates the resume pointer for a chat session. Empty/NULL inputs are
 -- ignored via COALESCE so a task that completes without a session_id (e.g.

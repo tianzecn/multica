@@ -51,6 +51,8 @@
     "archived_channels": "Archived Channels",
     "restore_channel": "Restore channel",
     "restore_channel_named": "Restore {{name}}",
+    "archive_conversation": "Archive conversation",
+    "archive_conversation_named": "Archive {{title}}",
     "expand_project": "Expand {{name}}",
     "collapse_project": "Collapse {{name}}",
     "unread_channel": "Unread channel",

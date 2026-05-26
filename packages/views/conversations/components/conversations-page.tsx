@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, MessageSquare, X } from "lucide-react";
+import { Archive, Check, ChevronDown, MessageSquare, RotateCcw, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +16,7 @@ import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { chatKeys, chatMessagesOptions, chatSessionOptions, chatSessionsOptions, pendingChatTaskOptions } from "@multica/core/chat/queries";
 import { useChatStore } from "@multica/core/chat";
-import { useCreateChatSession, useMarkChatSessionRead, useUpdateChatSession } from "@multica/core/chat/mutations";
+import { useArchiveChatSession, useCreateChatSession, useMarkChatSessionRead, useRestoreChatSession, useUpdateChatSession } from "@multica/core/chat/mutations";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -28,6 +28,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { useNavigation } from "../../navigation";
 import { canAssignAgent } from "../../issues/components";
 import { ProjectIcon } from "../../projects/components/project-icon";
+import { Button } from "@multica/ui/components/ui/button";
 import { ChatInput } from "../../chat/components/chat-input";
 import { ChatMessageList, ChatMessageSkeleton } from "../../chat/components/chat-message-list";
 import { NoAgentBanner } from "../../chat/components/no-agent-banner";
@@ -128,6 +129,8 @@ export function ConversationsPage({
 
   const markRead = useMarkChatSessionRead();
   const updateSession = useUpdateChatSession();
+  const archiveSession = useArchiveChatSession();
+  const restoreSession = useRestoreChatSession();
   useEffect(() => {
     if (!currentSession?.id || !currentSession.has_unread) return;
     markRead.mutate(currentSession.id);
@@ -262,6 +265,31 @@ export function ConversationsPage({
             {t(($) => $.conversations.unread)}
           </span>
         )}
+        {currentSession && !isSessionArchived && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => archiveSession.mutate(currentSession.id)}
+            disabled={archiveSession.isPending || !!pendingTaskId}
+            title={pendingTaskId ? t(($) => $.conversations.archive_running_disabled) : t(($) => $.conversations.archive)}
+          >
+            <Archive className="size-4" />
+            <span className="sr-only">{t(($) => $.conversations.archive)}</span>
+          </Button>
+        )}
+        {currentSession && isSessionArchived && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => restoreSession.mutate(currentSession.id)}
+            disabled={restoreSession.isPending}
+          >
+            <RotateCcw className="size-4" />
+            <span>{t(($) => $.conversations.restore)}</span>
+          </Button>
+        )}
       </div>
 
       {!isDraft && sessionId && !currentSession && messagesLoading ? (
@@ -272,6 +300,24 @@ export function ConversationsPage({
         <EmptyConversationState title={t(($) => $.conversations.no_selection_title)} body={t(($) => $.conversations.no_selection_body)} />
       ) : (
         <>
+          {isSessionArchived && (
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/40 px-5 py-2 text-xs text-muted-foreground">
+              <span>{t(($) => $.conversations.archived_banner)}</span>
+              {currentSession && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => restoreSession.mutate(currentSession.id)}
+                  disabled={restoreSession.isPending}
+                >
+                  <RotateCcw className="size-3.5" />
+                  {t(($) => $.conversations.restore)}
+                </Button>
+              )}
+            </div>
+          )}
           {messagesLoading && currentSession ? (
             <ChatMessageSkeleton />
           ) : hasMessages ? (
@@ -301,7 +347,7 @@ export function ConversationsPage({
               <ProjectPickerSlot
                 projects={projects}
                 value={projectIdForContext}
-                disabled={!!pendingTaskId}
+                disabled={!!pendingTaskId || isSessionArchived}
                 onChange={(nextProjectId) => {
                   if (currentSession?.id) {
                     updateSession.mutate({

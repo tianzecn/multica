@@ -878,7 +878,7 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (!id) return;
       const patch = (
-        old?: { id: string; title: string; project_id?: string | null; updated_at: string }[],
+        old?: { id: string; title: string; project_id?: string | null; status?: string; updated_at: string }[],
       ) =>
         old?.map((s) =>
           s.id === payload.chat_session_id
@@ -889,11 +889,32 @@ export function useRealtimeSync(
                   payload.project_id === undefined
                     ? s.project_id ?? null
                     : payload.project_id,
+                status: payload.status ?? s.status,
                 updated_at: payload.updated_at ?? s.updated_at,
               }
             : s,
         );
       qc.setQueryData(chatKeys.sessions(id), patch);
+      qc.setQueryData(chatKeys.session(id, payload.chat_session_id), (old?: {
+        id: string;
+        title: string;
+        project_id?: string | null;
+        status?: string;
+        updated_at: string;
+      }) =>
+        old
+          ? {
+              ...old,
+              title: payload.title ?? old.title,
+              project_id:
+                payload.project_id === undefined
+                  ? old.project_id ?? null
+                  : payload.project_id,
+              status: payload.status ?? old.status,
+              updated_at: payload.updated_at ?? old.updated_at,
+            }
+          : old,
+      );
     });
 
     // chat:session_deleted fires after a hard delete. The originating tab has

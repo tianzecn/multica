@@ -107,6 +107,10 @@
     "agent_line": "Agent: {{agent}}",
     "no_agent": "No agent",
     "unread": "Unread",
+    "archive": "Archive",
+    "archive_running_disabled": "Stop the running task before archiving",
+    "restore": "Restore",
+    "archived_banner": "This conversation is archived. Restore it to continue chatting.",
     "no_project": "No project",
     "project_picker": "Project"
   },

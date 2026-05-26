@@ -125,6 +125,8 @@ const SIDEBAR_LABEL_FALLBACKS = {
     projectIssues: "Issues",
     restoreChannel: "Restore channel",
     restoreChannelNamed: "Restore",
+    archiveConversation: "Archive conversation",
+    archiveConversationNamed: "Archive",
     showFewerConversations: "Show fewer",
     showMoreConversations: "Show more",
     unassignedChannels: "Unassigned channels",
@@ -140,6 +142,8 @@ const SIDEBAR_LABEL_FALLBACKS = {
     projectIssues: "Issue",
     restoreChannel: "恢复频道",
     restoreChannelNamed: "恢复频道",
+    archiveConversation: "归档对话",
+    archiveConversationNamed: "归档",
     showFewerConversations: "收起",
     showMoreConversations: "显示更多",
     unassignedChannels: "未归属频道",
@@ -277,6 +281,9 @@ function ConversationSidebarRow({
   title,
   timeLabel,
   unreadLabel,
+  archiveLabel,
+  archiveTitle,
+  onArchive,
 }: {
   session: ChatSession;
   href: string;
@@ -284,25 +291,47 @@ function ConversationSidebarRow({
   title: string;
   timeLabel: string;
   unreadLabel: string;
+  archiveLabel: string;
+  archiveTitle: string;
+  onArchive: () => void;
 }) {
   return (
-    <SidebarMenuItem>
-      <SidebarMenuButton
-        size="sm"
-        isActive={isNavActive(pathname, href)}
-        render={<AppLink href={href} />}
-        className="h-8 pl-8 pr-2 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-      >
-        <span className={cn("min-w-0 flex-1 truncate", session.has_unread && "font-medium text-foreground")}>
-          {title}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          {session.has_unread && (
-            <span className="size-1.5 rounded-full bg-brand" aria-label={unreadLabel} />
-          )}
-          <span className="text-[11px] text-muted-foreground/80">{timeLabel}</span>
-        </span>
-      </SidebarMenuButton>
+    <SidebarMenuItem className="group/conversation">
+      <div className="relative">
+        <SidebarMenuButton
+          size="sm"
+          isActive={isNavActive(pathname, href)}
+          render={<AppLink href={href} />}
+          className="h-8 pl-8 pr-9 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+        >
+          <span className={cn("min-w-0 flex-1 truncate", session.has_unread && "font-medium text-foreground")}>
+            {title}
+          </span>
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {session.has_unread && (
+              <span className="size-1.5 rounded-full bg-brand" aria-label={unreadLabel} />
+            )}
+            <span className="text-[11px] text-muted-foreground/80 group-hover/conversation:hidden group-focus-within/conversation:hidden">
+              {timeLabel}
+            </span>
+          </span>
+        </SidebarMenuButton>
+        <Tooltip>
+          <TooltipTrigger
+            render={<button type="button" />}
+            className="absolute right-1 top-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/conversation:opacity-100 group-focus-within/conversation:opacity-100"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onArchive();
+            }}
+            aria-label={archiveTitle}
+          >
+            <Archive className="size-3.5" />
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={4}>{archiveLabel}</TooltipContent>
+        </Tooltip>
+      </div>
     </SidebarMenuItem>
   );
 }
@@ -551,6 +580,11 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     "sidebar.show_fewer_conversations",
     sidebarFallbacks.showFewerConversations,
   );
+  const archiveConversationLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.archive_conversation),
+    "sidebar.archive_conversation",
+    sidebarFallbacks.archiveConversation,
+  );
   const unreadChannelLabel = t(($) => $.sidebar.unread_channel);
   const unreadConversationLabel = t(($) => $.sidebar.unread_conversation);
   const { pathname, push } = useNavigation();
@@ -562,6 +596,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const p = useWorkspacePaths();
   const { data: workspaces = EMPTY_WORKSPACES } = useQuery(workspaceListOptions());
   const { data: myInvitations = EMPTY_INVITATIONS } = useQuery(myInvitationListOptions());
+  const queryClient = useQueryClient();
 
   const wsId = workspace?.id;
   const { data: inboxItems = EMPTY_INBOX } = useQuery({
@@ -603,6 +638,16 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const [createChannelProjectId, setCreateChannelProjectId] = useState<string | null>(null);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [expandedConversationSectionIds, setExpandedConversationSectionIds] = useState<Set<string>>(() => new Set());
+  const archiveConversation = useMutation({
+    mutationFn: (sessionId: string) => api.archiveChatSession(sessionId),
+    onSuccess: (session) => {
+      if (!wsId) return;
+      queryClient.setQueryData<ChatSession[]>(chatSessionsOptions(wsId).queryKey, (old) =>
+        old?.map((item) => (item.id === session.id ? session : item)),
+      );
+      queryClient.invalidateQueries({ queryKey: chatSessionsOptions(wsId).queryKey });
+    },
+  });
   const sortedProjects = useMemo(() => sortProjectsByUpdatedAt(projects), [projects]);
   const activeChannels = useMemo(() => channels.filter((channel) => !channel.archived_at), [channels]);
   const archivedChannels = useMemo(() => channels.filter((channel) => channel.archived_at), [channels]);
@@ -709,7 +754,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     [localPinned, reorderPins],
   );
 
-  const queryClient = useQueryClient();
   const acceptInvitationMut = useMutation({
     mutationFn: (id: string) => api.acceptInvitation(id),
     // After accepting an invitation, navigate INTO the newly-joined workspace.
@@ -969,6 +1013,15 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                 title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
                                 timeLabel={timeAgo(session.updated_at)}
                                 unreadLabel={unreadConversationLabel}
+                                archiveLabel={archiveConversationLabel}
+                                archiveTitle={resolveSidebarLabel(
+                                  t(($) => $.sidebar.archive_conversation_named, {
+                                    title: session.title?.trim() || t(($) => $.sidebar.untitled_conversation),
+                                  }),
+                                  "sidebar.archive_conversation_named",
+                                  `${sidebarFallbacks.archiveConversationNamed} ${session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}`,
+                                )}
+                                onArchive={() => archiveConversation.mutate(session.id)}
                               />
                             ))}
                             <ConversationListToggle
@@ -1144,6 +1197,15 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                         title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
                                         timeLabel={timeAgo(session.updated_at)}
                                         unreadLabel={unreadConversationLabel}
+                                        archiveLabel={archiveConversationLabel}
+                                        archiveTitle={resolveSidebarLabel(
+                                          t(($) => $.sidebar.archive_conversation_named, {
+                                            title: session.title?.trim() || t(($) => $.sidebar.untitled_conversation),
+                                          }),
+                                          "sidebar.archive_conversation_named",
+                                          `${sidebarFallbacks.archiveConversationNamed} ${session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}`,
+                                        )}
+                                        onArchive={() => archiveConversation.mutate(session.id)}
                                       />
                                     ))}
                                     <ConversationListToggle

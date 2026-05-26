@@ -444,6 +444,58 @@ func (h *Handler) UpdateChatSession(w http.ResponseWriter, r *http.Request) {
 		ChatSessionID: resolvedSessionID,
 		Title:         updated.Title,
 		ProjectID:     uuidToPtr(updated.ProjectID),
+		Status:        updated.Status,
+		UpdatedAt:     timestampToString(updated.UpdatedAt),
+	})
+
+	writeJSON(w, http.StatusOK, chatSessionToResponse(updated))
+}
+
+func (h *Handler) ArchiveChatSession(w http.ResponseWriter, r *http.Request) {
+	h.updateChatSessionStatus(w, r, "archived")
+}
+
+func (h *Handler) RestoreChatSession(w http.ResponseWriter, r *http.Request) {
+	h.updateChatSessionStatus(w, r, "active")
+}
+
+func (h *Handler) updateChatSessionStatus(w http.ResponseWriter, r *http.Request, status string) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	sessionID := chi.URLParam(r, "sessionId")
+
+	session, ok := h.gateChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	if !ok {
+		return
+	}
+	if status == "archived" {
+		if _, err := h.Queries.GetPendingChatTask(r.Context(), session.ID); err == nil {
+			writeError(w, http.StatusBadRequest, "cannot archive while a chat task is running")
+			return
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "failed to check chat session task state")
+			return
+		}
+	}
+
+	updated, err := h.Queries.UpdateChatSessionStatus(r.Context(), db.UpdateChatSessionStatusParams{
+		Status: status,
+		ID:     session.ID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update chat session status")
+		return
+	}
+
+	resolvedSessionID := uuidToString(updated.ID)
+	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionUpdatedPayload{
+		ChatSessionID: resolvedSessionID,
+		Title:         updated.Title,
+		ProjectID:     uuidToPtr(updated.ProjectID),
+		Status:        updated.Status,
 		UpdatedAt:     timestampToString(updated.UpdatedAt),
 	})
 

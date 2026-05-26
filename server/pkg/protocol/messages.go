@@ -110,6 +110,7 @@ type ChatSessionUpdatedPayload struct {
 	ChatSessionID string  `json:"chat_session_id"`
 	Title         string  `json:"title"`
 	ProjectID     *string `json:"project_id"`
+	Status        string  `json:"status,omitempty"`
 	UpdatedAt     string  `json:"updated_at"`
 }
 

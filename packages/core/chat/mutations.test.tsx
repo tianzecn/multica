@@ -7,12 +7,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import type { ChatSession } from "../types";
 import { chatKeys } from "./queries";
-import { useCreateChatSession, useUpdateChatSession } from "./mutations";
+import { useArchiveChatSession, useCreateChatSession, useRestoreChatSession, useUpdateChatSession } from "./mutations";
 
 vi.mock("../hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("../api", () => ({
   api: {
+    archiveChatSession: vi.fn(),
     createChatSession: vi.fn(),
+    restoreChatSession: vi.fn(),
     updateChatSession: vi.fn(),
   },
 }));
@@ -41,6 +43,8 @@ describe("chat session mutations", () => {
 
   beforeEach(() => {
     vi.mocked(api.createChatSession).mockReset();
+    vi.mocked(api.archiveChatSession).mockReset();
+    vi.mocked(api.restoreChatSession).mockReset();
     vi.mocked(api.updateChatSession).mockReset();
     queryClient = new QueryClient({
       defaultOptions: {
@@ -85,5 +89,39 @@ describe("chat session mutations", () => {
     expect(api.updateChatSession).toHaveBeenCalledWith("session-1", { project_id: "project-1" });
     expect(queryClient.getQueryData<ChatSession[]>(chatKeys.sessions("ws-1"))?.[0]?.project_id).toBe("project-1");
     expect(queryClient.getQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"))?.project_id).toBe("project-1");
+  });
+
+  it("archives a session in list and detail caches", async () => {
+    const archived = { ...baseSession, status: "archived" as const };
+    vi.mocked(api.archiveChatSession).mockResolvedValue(archived);
+    queryClient.setQueryData<ChatSession[]>(chatKeys.sessions("ws-1"), [baseSession]);
+    queryClient.setQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"), baseSession);
+
+    const { result } = renderHook(() => useArchiveChatSession(), { wrapper: createWrapper(queryClient) });
+
+    await act(async () => {
+      await result.current.mutateAsync("session-1");
+    });
+
+    expect(api.archiveChatSession).toHaveBeenCalledWith("session-1");
+    expect(queryClient.getQueryData<ChatSession[]>(chatKeys.sessions("ws-1"))?.[0]?.status).toBe("archived");
+    expect(queryClient.getQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"))?.status).toBe("archived");
+  });
+
+  it("restores a session in list and detail caches", async () => {
+    const archived = { ...baseSession, status: "archived" as const };
+    vi.mocked(api.restoreChatSession).mockResolvedValue(baseSession);
+    queryClient.setQueryData<ChatSession[]>(chatKeys.sessions("ws-1"), [archived]);
+    queryClient.setQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"), archived);
+
+    const { result } = renderHook(() => useRestoreChatSession(), { wrapper: createWrapper(queryClient) });
+
+    await act(async () => {
+      await result.current.mutateAsync("session-1");
+    });
+
+    expect(api.restoreChatSession).toHaveBeenCalledWith("session-1");
+    expect(queryClient.getQueryData<ChatSession[]>(chatKeys.sessions("ws-1"))?.[0]?.status).toBe("active");
+    expect(queryClient.getQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"))?.status).toBe("active");
   });
 });

@@ -704,6 +704,40 @@ func (q *Queries) UpdateChatSession(ctx context.Context, arg UpdateChatSessionPa
 	return i, err
 }
 
+const updateChatSessionStatus = `-- name: UpdateChatSessionStatus :one
+UPDATE chat_session
+SET status = $1,
+    updated_at = now()
+WHERE id = $2
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, project_id
+`
+
+type UpdateChatSessionStatusParams struct {
+	Status string      `json:"status"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateChatSessionStatus(ctx context.Context, arg UpdateChatSessionStatusParams) (ChatSession, error) {
+	row := q.db.QueryRow(ctx, updateChatSessionStatus, arg.Status, arg.ID)
+	var i ChatSession
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.CreatorID,
+		&i.Title,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UnreadSince,
+		&i.RuntimeID,
+		&i.ProjectID,
+	)
+	return i, err
+}
+
 const updateChatSessionSession = `-- name: UpdateChatSessionSession :exec
 UPDATE chat_session
 SET session_id = COALESCE($1, session_id),

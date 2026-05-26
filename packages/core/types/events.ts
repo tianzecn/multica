@@ -324,6 +324,7 @@ export interface ChatSessionUpdatedPayload {
   chat_session_id: string;
   title?: string;
   project_id?: string | null;
+  status?: "active" | "archived";
   updated_at?: string;
 }
 

@@ -679,6 +679,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetChatSession)
 					r.Patch("/", h.UpdateChatSession)
 					r.Delete("/", h.DeleteChatSession)
+					r.Post("/archive", h.ArchiveChatSession)
+					r.Post("/restore", h.RestoreChatSession)
 					r.Post("/messages", h.SendChatMessage)
 					r.Get("/messages", h.ListChatMessages)
 					r.Get("/pending-task", h.GetPendingChatTask)

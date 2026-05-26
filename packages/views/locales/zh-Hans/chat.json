@@ -64,7 +64,7 @@
   "empty_state": {
     "first_time_title": "和你的智能体对话",
     "first_time_intro": "✨ 它们了解你的工作区——",
-    "first_time_pillars": "issue、项目、skill",
+    "first_time_pillars": "任务、项目、技能",
     "first_time_pillars_suffix": "。",
     "first_time_actions": "让它做一份总结、规划你的一天，或交给它一个小任务。",
     "returning_title_named": "你好，我是 {{name}}",
@@ -103,6 +103,10 @@
     "agent_line": "智能体：{{agent}}",
     "no_agent": "暂无智能体",
     "unread": "未读",
+    "archive": "归档",
+    "archive_running_disabled": "请先停止运行中的任务再归档",
+    "restore": "恢复",
+    "archived_banner": "此对话已归档，恢复后可以继续对话。",
     "no_project": "未归属项目",
     "project_picker": "项目"
   },

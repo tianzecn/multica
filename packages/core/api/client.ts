@@ -1461,6 +1461,14 @@ export class ApiClient {
     });
   }
 
+  async archiveChatSession(id: string): Promise<ChatSession> {
+    return this.fetch(`/api/chat/sessions/${id}/archive`, { method: "POST" });
+  }
+
+  async restoreChatSession(id: string): Promise<ChatSession> {
+    return this.fetch(`/api/chat/sessions/${id}/restore`, { method: "POST" });
+  }
+
   async listChatMessages(sessionId: string): Promise<ChatMessage[]> {
     return this.fetch(`/api/chat/sessions/${sessionId}/messages`);
   }

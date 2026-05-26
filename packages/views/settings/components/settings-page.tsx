@@ -11,6 +11,7 @@ import {
   FlaskConical,
   Bell,
   Plug,
+  Archive,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
@@ -26,6 +27,7 @@ import { GitHubTab } from "./github-tab";
 import { IntegrationsTab } from "./integrations-tab";
 import { LabsTab } from "./labs-tab";
 import { NotificationsTab } from "./notifications-tab";
+import { ArchivedConversationsTab } from "./archived-conversations-tab";
 import { useT } from "../../i18n";
 
 const ACCOUNT_TAB_KEYS = ["profile", "preferences", "notifications", "tokens"] as const;
@@ -38,6 +40,7 @@ const ACCOUNT_TAB_ICONS = {
 
 const WORKSPACE_TAB_KEYS = [
   "general",
+  "archivedConversations",
   "repositories",
   "github",
   "integrations",
@@ -46,6 +49,7 @@ const WORKSPACE_TAB_KEYS = [
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
+  archivedConversations: "archivedConversations",
   repositories: "repositories",
   github: "github",
   integrations: "integrations",
@@ -54,6 +58,7 @@ const WORKSPACE_TAB_VALUES = {
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
+  archivedConversations: Archive,
   repositories: FolderGit2,
   github: GitHubMark,
   integrations: Plug,
@@ -63,6 +68,43 @@ const WORKSPACE_TAB_ICONS = {
 
 const DEFAULT_TAB = "profile";
 const TAB_QUERY_KEY = "tab";
+
+const TAB_LABEL_FALLBACKS = {
+  en: {
+    profile: "Profile",
+    preferences: "Preferences",
+    notifications: "Notifications",
+    tokens: "API Tokens",
+    archivedConversations: "Archived Conversations",
+    general: "General",
+    repositories: "Repositories",
+    github: "GitHub",
+    integrations: "Integrations",
+    labs: "Labs",
+    members: "Members",
+  },
+  zh: {
+    profile: "个人资料",
+    preferences: "偏好设置",
+    notifications: "通知",
+    tokens: "API 令牌",
+    archivedConversations: "已归档对话",
+    general: "通用",
+    repositories: "代码仓库",
+    github: "GitHub",
+    integrations: "集成",
+    labs: "实验室",
+    members: "成员",
+  },
+} as const;
+
+function resolveSettingsLabel(value: string, key: string, fallback: string) {
+  return !value || value === key ? fallback : value;
+}
+
+function getTabLabelFallbacks(language?: string) {
+  return language?.startsWith("zh") ? TAB_LABEL_FALLBACKS.zh : TAB_LABEL_FALLBACKS.en;
+}
 
 export interface ExtraSettingsTab {
   value: string;
@@ -77,7 +119,8 @@ interface SettingsPageProps {
 }
 
 export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
-  const { t } = useT("settings");
+  const { t, i18n } = useT("settings");
+  const tabFallbacks = getTabLabelFallbacks(i18n.resolvedLanguage ?? i18n.language);
   const workspaceName = useCurrentWorkspace()?.name;
   const navigation = useNavigation();
 
@@ -126,7 +169,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
             return (
               <TabsTrigger key={key} value={key}>
                 <Icon className="h-4 w-4" />
-                {t(($) => $.page.tabs[key])}
+                {resolveSettingsLabel(t(($) => $.page.tabs[key]), `page.tabs.${key}`, tabFallbacks[key])}
               </TabsTrigger>
             );
           })}
@@ -146,7 +189,11 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
             return (
               <TabsTrigger key={key} value={WORKSPACE_TAB_VALUES[key]}>
                 <Icon className="h-4 w-4" />
-                {t(($) => $.page.tabs[key])}
+                {resolveSettingsLabel(
+                  t(($) => $.page.tabs[key]),
+                  `page.tabs.${key}`,
+                  tabFallbacks[key],
+                )}
               </TabsTrigger>
             );
           })}
@@ -160,6 +207,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="preferences"><PreferencesTab /></TabsContent>
           <TabsContent value="notifications"><NotificationsTab /></TabsContent>
           <TabsContent value="tokens"><TokensTab /></TabsContent>
+          <TabsContent value="archivedConversations"><ArchivedConversationsTab /></TabsContent>
           <TabsContent value="workspace"><WorkspaceTab /></TabsContent>
           <TabsContent value="repositories"><RepositoriesTab /></TabsContent>
           <TabsContent value="github"><GitHubTab /></TabsContent>
