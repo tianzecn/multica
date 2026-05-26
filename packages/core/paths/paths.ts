@@ -24,6 +24,10 @@ function workspaceScoped(slug: string) {
     projects: () => `${ws}/projects`,
     projectDetail: (id: string) => `${ws}/projects/${encode(id)}`,
     projectIssues: (id: string) => `${ws}/projects/${encode(id)}/issues`,
+    conversations: () => `${ws}/conversations`,
+    newConversation: (projectId?: string | null) =>
+      projectId ? `${ws}/conversations/new?project=${encode(projectId)}` : `${ws}/conversations/new`,
+    conversationDetail: (id: string) => `${ws}/conversations/${encode(id)}`,
     channels: () => `${ws}/channels`,
     channelDetail: (id: string) => `${ws}/channels/${encode(id)}`,
     autopilots: () => `${ws}/autopilots`,

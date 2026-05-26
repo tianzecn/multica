@@ -32,7 +32,9 @@ import { canAssignAgent } from "@multica/views/issues/components";
 import { api } from "@multica/core/api";
 import { useAgentPresenceDetail, useWorkspaceAgentAvailability } from "@multica/core/agents";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
+import { projectListOptions } from "@multica/core/projects/queries";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { ProjectIcon } from "../../projects/components/project-icon";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import {
@@ -60,7 +62,7 @@ import {
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatResize } from "./use-chat-resize";
 import { createLogger } from "@multica/core/logger";
-import type { Agent, ChatMessage, ChatPendingTask, ChatSession } from "@multica/core/types";
+import type { Agent, ChatMessage, ChatPendingTask, ChatSession, Project } from "@multica/core/types";
 import { useT } from "../../i18n";
 
 const uiLogger = createLogger("chat.ui");
@@ -719,6 +721,8 @@ function SessionDropdown({
   const { t } = useT("chat");
   const wsId = useWorkspaceId();
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  const projectById = useMemo(() => new Map(projects.map((p: Project) => [p.id, p])), [projects]);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const title = activeSession?.title?.trim() || t(($) => $.window.untitled);
   const triggerAgent = activeSession ? agentById.get(activeSession.agent_id) ?? null : null;
@@ -793,6 +797,7 @@ function SessionDropdown({
   const renderRow = (session: ChatSession) => {
     const isCurrent = session.id === activeSessionId;
     const agent = agentById.get(session.agent_id) ?? null;
+    const project = session.project_id ? projectById.get(session.project_id) ?? null : null;
     const isRunning = inFlightSessionIds.has(session.id);
     const isRenaming = renamingId === session.id;
     return (
@@ -834,7 +839,15 @@ function SessionDropdown({
                 {session.title?.trim() || t(($) => $.window.untitled)}
               </div>
               <div className="truncate text-xs text-muted-foreground/70">
-                {formatTimeAgo(session.updated_at)}
+                {project ? (
+                  <span className="inline-flex max-w-full items-center gap-1">
+                    <ProjectIcon project={project} size="sm" />
+                    <span className="truncate">{project.title}</span>
+                    <span className="shrink-0">· {formatTimeAgo(session.updated_at)}</span>
+                  </span>
+                ) : (
+                  formatTimeAgo(session.updated_at)
+                )}
               </div>
             </>
           )}

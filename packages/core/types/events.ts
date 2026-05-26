@@ -320,6 +320,13 @@ export interface ChatSessionDeletedPayload {
   chat_session_id: string;
 }
 
+export interface ChatSessionUpdatedPayload {
+  chat_session_id: string;
+  title?: string;
+  project_id?: string | null;
+  updated_at?: string;
+}
+
 export interface ProjectCreatedPayload {
   project: Project;
 }
@@ -407,7 +414,7 @@ export interface WSEventPayloadMap {
   "chat:done": ChatDonePayload;
   "chat:session_read": ChatSessionReadPayload;
   "chat:session_deleted": ChatSessionDeletedPayload;
-  "chat:session_updated": unknown;
+  "chat:session_updated": ChatSessionUpdatedPayload;
   "project:created": ProjectCreatedPayload;
   "project:updated": ProjectUpdatedPayload;
   "project:deleted": ProjectDeletedPayload;

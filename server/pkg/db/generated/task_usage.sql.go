@@ -98,7 +98,7 @@ WHERE a.workspace_id = $1
   AND atq.started_at IS NOT NULL
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= $2::timestamptz
-  AND ($3::uuid IS NULL OR i.project_id = $3)
+  AND ($3::uuid IS NULL OR COALESCE(atq.project_id, i.project_id) = $3)
 GROUP BY atq.agent_id
 ORDER BY total_seconds DESC
 `
@@ -167,7 +167,7 @@ WHERE a.workspace_id = $1
   AND atq.started_at IS NOT NULL
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= $3::timestamptz
-  AND ($4::uuid IS NULL OR i.project_id = $4)
+  AND ($4::uuid IS NULL OR COALESCE(atq.project_id, i.project_id) = $4)
 GROUP BY DATE(atq.completed_at AT TIME ZONE $2::text)
 ORDER BY DATE(atq.completed_at AT TIME ZONE $2::text) DESC
 `

@@ -107,9 +107,10 @@ type ChatSessionDeletedPayload struct {
 // patch the session row in their cached list so the dropdown stays in sync
 // without a full refetch.
 type ChatSessionUpdatedPayload struct {
-	ChatSessionID string `json:"chat_session_id"`
-	Title         string `json:"title"`
-	UpdatedAt     string `json:"updated_at"`
+	ChatSessionID string  `json:"chat_session_id"`
+	Title         string  `json:"title"`
+	ProjectID     *string `json:"project_id"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 // DaemonHeartbeatRequestPayload is sent from daemon to server over WebSocket

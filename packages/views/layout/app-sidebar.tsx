@@ -37,6 +37,7 @@ import {
   Lock,
   Archive,
   RotateCcw,
+  MessageSquare,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
@@ -80,12 +81,14 @@ import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions, projectListOptions } from "@multica/core/projects/queries";
 import { useProjectSidebarTreeStore } from "@multica/core/projects";
+import { chatSessionsOptions } from "@multica/core/chat/queries";
 import { channelGroupsOptions, channelListOptions, deriveChannelsSettings, useRestoreChannel } from "@multica/core/channels";
-import type { Channel, ChannelGroup, PinnedItem, Project } from "@multica/core/types";
+import type { Channel, ChannelGroup, ChatSession, PinnedItem, Project } from "@multica/core/types";
 import { useLogout } from "../auth";
 import { ProjectIcon } from "../projects/components/project-icon";
 import { CreateChannelDialog } from "../channels";
 import { useT } from "../i18n";
+import { useTimeAgo } from "../i18n/use-time-ago";
 
 // Top-level nav items stay active when the user is on a child route
 // (e.g. "Projects" stays lit on /:slug/projects/:id). Pinned items keep
@@ -103,6 +106,7 @@ function isNavActive(pathname: string, href: string): boolean {
 const EMPTY_PINS: PinnedItem[] = [];
 const EMPTY_CHANNELS: Channel[] = [];
 const EMPTY_CHANNEL_GROUPS: ChannelGroup[] = [];
+const EMPTY_CHAT_SESSIONS: ChatSession[] = [];
 const EMPTY_PROJECTS: Project[] = [];
 const EMPTY_WORKSPACES: Awaited<ReturnType<typeof api.listWorkspaces>> = [];
 const EMPTY_INVITATIONS: Awaited<ReturnType<typeof api.listMyInvitations>> = [];
@@ -114,6 +118,8 @@ const SIDEBAR_LABEL_FALLBACKS = {
     collapseProject: "Collapse",
     createProjectChannel: "Create project channel",
     createProjectChannelNamed: "Create channel in",
+    createProjectConversation: "New conversation",
+    createProjectConversationNamed: "New conversation in",
     expandProject: "Expand",
     projectIssues: "Issues",
     restoreChannel: "Restore channel",
@@ -125,6 +131,8 @@ const SIDEBAR_LABEL_FALLBACKS = {
     collapseProject: "收起项目",
     createProjectChannel: "新建项目频道",
     createProjectChannelNamed: "在项目中新建频道",
+    createProjectConversation: "新建对话",
+    createProjectConversationNamed: "在项目中新建对话",
     expandProject: "展开项目",
     projectIssues: "Issue",
     restoreChannel: "恢复频道",
@@ -147,6 +155,7 @@ function getSidebarLabelFallbacks(language?: string) {
 type NavKey =
   | "inbox"
   | "myIssues"
+  | "conversations"
   | "issues"
   | "projects"
   | "autopilots"
@@ -161,6 +170,7 @@ type NavKey =
 type NavLabelKey =
   | "inbox"
   | "my_issues"
+  | "conversations"
   | "issues"
   | "projects"
   | "autopilots"
@@ -174,6 +184,7 @@ type NavLabelKey =
 const personalNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
   { key: "inbox", labelKey: "inbox", icon: Inbox },
   { key: "myIssues", labelKey: "my_issues", icon: CircleUser },
+  { key: "conversations", labelKey: "conversations", icon: MessageSquare },
 ];
 
 const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
@@ -205,6 +216,10 @@ function sortChannelsForProjectTree(channels: Channel[]) {
     if (a.position !== b.position) return a.position - b.position;
     return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
   });
+}
+
+function sortConversationsForProjectTree(sessions: ChatSession[]) {
+  return [...sessions].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
 
 function ChannelUnreadDot({ channel, label }: { channel: Channel; label: string }) {
@@ -246,6 +261,43 @@ function ArchivedChannelSidebarRow({ channel, href }: { channel: Channel; href: 
           <TooltipContent side="top" sideOffset={4}>{restoreChannelLabel}</TooltipContent>
         </Tooltip>
       </div>
+    </SidebarMenuItem>
+  );
+}
+
+function ConversationSidebarRow({
+  session,
+  href,
+  pathname,
+  title,
+  timeLabel,
+  unreadLabel,
+}: {
+  session: ChatSession;
+  href: string;
+  pathname: string;
+  title: string;
+  timeLabel: string;
+  unreadLabel: string;
+}) {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        size="sm"
+        isActive={isNavActive(pathname, href)}
+        render={<AppLink href={href} />}
+        className="h-8 pl-8 pr-2 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+      >
+        <span className={cn("min-w-0 flex-1 truncate", session.has_unread && "font-medium text-foreground")}>
+          {title}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          {session.has_unread && (
+            <span className="size-1.5 rounded-full bg-brand" aria-label={unreadLabel} />
+          )}
+          <span className="text-[11px] text-muted-foreground/80">{timeLabel}</span>
+        </span>
+      </SidebarMenuButton>
     </SidebarMenuItem>
   );
 }
@@ -436,11 +488,17 @@ interface AppSidebarProps {
 
 export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }: AppSidebarProps = {}) {
   const { t, i18n } = useT("layout");
+  const timeAgo = useTimeAgo();
   const sidebarFallbacks = getSidebarLabelFallbacks(i18n.resolvedLanguage ?? i18n.language);
   const createProjectChannelLabel = resolveSidebarLabel(
     t(($) => $.sidebar.create_project_channel),
     "sidebar.create_project_channel",
     sidebarFallbacks.createProjectChannel,
+  );
+  const createProjectConversationLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.create_project_conversation),
+    "sidebar.create_project_conversation",
+    sidebarFallbacks.createProjectConversation,
   );
   const projectIssuesLabel = resolveSidebarLabel(
     t(($) => $.sidebar.project_issues),
@@ -458,6 +516,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     sidebarFallbacks.archivedChannels,
   );
   const unreadChannelLabel = t(($) => $.sidebar.unread_channel);
+  const unreadConversationLabel = t(($) => $.sidebar.unread_conversation);
   const { pathname, push } = useNavigation();
   const user = useAuthStore((s) => s.user);
   const userId = useAuthStore((s) => s.user?.id);
@@ -495,6 +554,10 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     ...projectListOptions(wsId ?? ""),
     enabled: !!wsId,
   });
+  const { data: chatSessions = EMPTY_CHAT_SESSIONS } = useQuery({
+    ...chatSessionsOptions(wsId ?? ""),
+    enabled: !!wsId,
+  });
   const expandedProjectIds = useProjectSidebarTreeStore((s) => s.expandedProjectIds);
   const toggleProjectOpen = useProjectSidebarTreeStore((s) => s.toggleProject);
   const archivedChannelsOpen = useProjectSidebarTreeStore((s) => s.archivedChannelsOpen);
@@ -523,6 +586,31 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     () => sortChannelsForProjectTree(activeChannels.filter((channel) => !channel.project_id)),
     [activeChannels],
   );
+  const activeChatSessions = useMemo(
+    () => chatSessions.filter((session) => session.status === "active"),
+    [chatSessions],
+  );
+  const conversationUnreadCount = useMemo(
+    () => activeChatSessions.filter((session) => session.has_unread).length,
+    [activeChatSessions],
+  );
+  const globalConversations = useMemo(
+    () => sortConversationsForProjectTree(activeChatSessions.filter((session) => !session.project_id)),
+    [activeChatSessions],
+  );
+  const conversationsByProjectId = useMemo(() => {
+    const buckets = new Map<string, ChatSession[]>();
+    for (const session of activeChatSessions) {
+      if (!session.project_id) continue;
+      const bucket = buckets.get(session.project_id) ?? [];
+      bucket.push(session);
+      buckets.set(session.project_id, bucket);
+    }
+    for (const [projectId, bucket] of buckets) {
+      buckets.set(projectId, sortConversationsForProjectTree(bucket));
+    }
+    return buckets;
+  }, [activeChatSessions]);
   const openCreateChannel = useCallback((projectId: string | null = null) => {
     setCreateChannelProjectId(projectId);
     setShowCreateChannel(true);
@@ -763,6 +851,15 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                 <kbd className="pointer-events-none ml-auto inline-flex h-5 select-none items-center gap-0.5 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">{t(($) => $.sidebar.new_issue_shortcut)}</kbd>
               </SidebarMenuButton>
             </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                className="text-muted-foreground"
+                onClick={() => push(p.newConversation())}
+              >
+                <MessageSquare />
+                <span>{t(($) => $.sidebar.new_conversation)}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarHeader>
 
@@ -775,21 +872,39 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                   const href = p[item.key]();
                   const isActive = isNavActive(pathname, href);
                   return (
-                    <SidebarMenuItem key={item.key}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        render={<AppLink href={href} />}
-                        className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                      >
-                        <item.icon />
-                        <span>{t(($) => $.nav[item.labelKey])}</span>
-                        {item.key === "inbox" && unreadCount > 0 && (
-                          <span className="ml-auto text-xs">
-                            {unreadCount > 99 ? "99+" : unreadCount}
-                          </span>
-                        )}
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
+                    <React.Fragment key={item.key}>
+                      <SidebarMenuItem>
+                        <SidebarMenuButton
+                          isActive={isActive}
+                          render={<AppLink href={href} />}
+                          className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                        >
+                          <item.icon />
+                          <span>{t(($) => $.nav[item.labelKey])}</span>
+                          {item.key === "inbox" && unreadCount > 0 && (
+                            <span className="ml-auto text-xs">
+                              {unreadCount > 99 ? "99+" : unreadCount}
+                            </span>
+                          )}
+                          {item.key === "conversations" && conversationUnreadCount > 0 && (
+                            <span className="ml-auto text-xs">
+                              {conversationUnreadCount > 99 ? "99+" : conversationUnreadCount}
+                            </span>
+                          )}
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                      {item.key === "conversations" && globalConversations.map((session) => (
+                        <ConversationSidebarRow
+                          key={session.id}
+                          session={session}
+                          href={p.conversationDetail(session.id)}
+                          pathname={pathname}
+                          title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
+                          timeLabel={timeAgo(session.updated_at)}
+                          unreadLabel={unreadConversationLabel}
+                        />
+                      ))}
+                    </React.Fragment>
                   );
                 })}
               </SidebarMenu>
@@ -830,6 +945,8 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                   <SidebarMenu className="gap-0.5">
                     {sortedProjects.map((project) => {
                       const projectChannels = channelsByProjectId.get(project.id) ?? EMPTY_CHANNELS;
+                      const projectConversations = conversationsByProjectId.get(project.id) ?? EMPTY_CHAT_SESSIONS;
+                      const projectHasUnreadConversation = projectConversations.some((session) => session.has_unread);
                       const projectOpen = expandedProjectIds.includes(project.id);
                       const projectHref = p.projectDetail(project.id);
                       const legacyProjectIssuesHref = p.projectIssues(project.id);
@@ -860,6 +977,9 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                 <ProjectIcon project={project} size="sm" />
                                 <span className="truncate">{project.title}</span>
                               </button>
+                              {projectHasUnreadConversation && (
+                                <span className="size-1.5 shrink-0 rounded-full bg-brand" aria-label={unreadConversationLabel} />
+                              )}
                               {channelsEnabled && (
                                 <Tooltip>
                                   <TooltipTrigger
@@ -877,6 +997,24 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                   <TooltipContent side="top" sideOffset={4}>{createProjectChannelLabel}</TooltipContent>
                                 </Tooltip>
                               )}
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={<button type="button" />}
+                                  className="flex size-6 shrink-0 items-center justify-center rounded-sm opacity-0 transition-opacity hover:bg-sidebar-accent group-hover/project-row:opacity-100 focus:opacity-100"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    push(p.newConversation(project.id));
+                                  }}
+                                  aria-label={resolveSidebarLabel(
+                                    t(($) => $.sidebar.create_project_conversation_named, { name: project.title }),
+                                    "sidebar.create_project_conversation_named",
+                                    `${sidebarFallbacks.createProjectConversationNamed} ${project.title}`,
+                                  )}
+                                >
+                                  <MessageSquare className="size-3.5" />
+                                </TooltipTrigger>
+                                <TooltipContent side="top" sideOffset={4}>{createProjectConversationLabel}</TooltipContent>
+                              </Tooltip>
                             </div>
                           </SidebarMenuItem>
                           {projectOpen && (
@@ -910,6 +1048,19 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                       <ChannelUnreadDot channel={channel} label={unreadChannelLabel} />
                                     </SidebarMenuButton>
                                   </SidebarMenuItem>
+                                );
+                              })}
+                              {projectConversations.map((session) => {
+                                return (
+                                  <ConversationSidebarRow
+                                    key={session.id}
+                                    session={session}
+                                    href={p.conversationDetail(session.id)}
+                                    pathname={pathname}
+                                    title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
+                                    timeLabel={timeAgo(session.updated_at)}
+                                    unreadLabel={unreadConversationLabel}
+                                  />
                                 );
                               })}
                             </>

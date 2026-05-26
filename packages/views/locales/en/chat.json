@@ -91,6 +91,25 @@
     "aria_stop": "Stop sharing current page",
     "aria_start": "Share current page with Multica"
   },
+  "conversations": {
+    "list_title": "Conversations",
+    "list_subtitle": "{{count}} active",
+    "new": "New conversation",
+    "empty_list": "No conversations yet",
+    "no_selection_title": "Select a conversation",
+    "no_selection_body": "Pick a conversation from the list, or start a new one.",
+    "draft_title": "Start a new conversation",
+    "draft_body": "Choose a project if this conversation should use project context. Nothing is saved until you send or upload.",
+    "empty_title": "No messages yet",
+    "empty_body": "Send a message to start this conversation.",
+    "not_found_title": "Conversation not found",
+    "not_found_body": "It may have been deleted or you may no longer have access.",
+    "agent_line": "Agent: {{agent}}",
+    "no_agent": "No agent",
+    "unread": "Unread",
+    "no_project": "No project",
+    "project_picker": "Project"
+  },
   "no_agent_banner": "You need an agent to start chatting.",
   "offline_banner": {
     "fallback_name": "the agent",

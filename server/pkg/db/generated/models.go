@@ -96,6 +96,7 @@ type AgentTaskQueue struct {
 	TriggerSummary    pgtype.Text        `json:"trigger_summary"`
 	ForceFreshSession bool               `json:"force_fresh_session"`
 	IsLeaderTask      bool               `json:"is_leader_task"`
+	ProjectID         pgtype.UUID        `json:"project_id"`
 }
 
 type ApprovalRequest struct {
@@ -368,6 +369,7 @@ type ChatSession struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	UnreadSince pgtype.Timestamptz `json:"unread_since"`
 	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
 }
 
 type Comment struct {

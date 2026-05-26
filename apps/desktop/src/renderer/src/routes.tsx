@@ -4,6 +4,8 @@ import {
   Navigate,
   Outlet,
   useMatches,
+  useLocation,
+  useParams,
 } from "react-router-dom";
 import type { RouteObject } from "react-router-dom";
 import { IssueDetailPage } from "./pages/issue-detail-page";
@@ -23,6 +25,7 @@ import { SkillsPage } from "@multica/views/skills";
 import { DesktopRuntimesPage } from "./components/desktop-runtimes-page";
 import { AgentsPage } from "@multica/views/agents";
 import { ChannelDetailPage } from "@multica/views/channels";
+import { ConversationsPage } from "@multica/views/conversations";
 import { SquadsPage, SquadDetailPage as SquadDetailPageView } from "@multica/views/squads/components";
 import { InboxPage } from "@multica/views/inbox";
 import { SettingsPage } from "@multica/views/settings";
@@ -90,6 +93,17 @@ function PageShell() {
   );
 }
 
+function ConversationDetailRoute() {
+  const { id } = useParams<{ id: string }>();
+  return <ConversationsPage sessionId={id} />;
+}
+
+function NewConversationRoute() {
+  const { search } = useLocation();
+  const projectId = new URLSearchParams(search).get("project");
+  return <ConversationsPage draft initialProjectId={projectId} />;
+}
+
 /**
  * Route definitions shared by all tabs.
  *
@@ -155,6 +169,21 @@ export const appRoutes: RouteObject[] = [
             path: "channels/:id",
             element: <ChannelDetailPage />,
             handle: { title: "Channel" },
+          },
+          {
+            path: "conversations",
+            element: <ConversationsPage />,
+            handle: { title: "Conversations" },
+          },
+          {
+            path: "conversations/new",
+            element: <NewConversationRoute />,
+            handle: { title: "New Conversation" },
+          },
+          {
+            path: "conversations/:id",
+            element: <ConversationDetailRoute />,
+            handle: { title: "Conversation" },
           },
           {
             path: "autopilots",

@@ -7,12 +7,15 @@
     "commands": "命令",
     "members": "成员",
     "projects": "项目",
+    "channels": "频道",
+    "conversations": "对话",
     "issues": "issue",
     "recent": "最近"
   },
   "pages": {
     "inbox": "收件箱",
     "my_issues": "我的 issue",
+    "conversations": "对话",
     "issues": "issue",
     "projects": "项目",
     "agents": "智能体",
@@ -24,6 +27,7 @@
     "current_theme_aria": "当前主题",
     "new_issue": "新建 issue",
     "new_project": "新建项目",
+    "new_conversation": "新对话",
     "copy_issue_link": "复制 issue 链接",
     "copy_identifier": "复制标识符 ({{identifier}})",
     "switch_to_light": "切换到浅色主题",

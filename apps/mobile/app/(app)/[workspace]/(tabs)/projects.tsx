@@ -3,7 +3,7 @@ import { FlatList, Pressable, RefreshControl, View } from "react-native";
 import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import type { Channel, Project } from "@multica/core/types";
+import type { Channel, ChatSession, Project } from "@multica/core/types";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/ui/header";
 import { HeaderActions } from "@/components/ui/app-header-actions";
@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Text } from "@/components/ui/text";
 import { projectListOptions } from "@/data/queries/projects";
 import { channelListOptions } from "@/data/queries/channels";
+import { chatSessionsOptions } from "@/data/queries/chat";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { projectPriorityLabel, projectStatusLabel } from "@/lib/project-status";
@@ -43,6 +44,7 @@ export default function ProjectsTab() {
     ...channelListOptions(wsId),
     enabled: !!wsId && channelsEnabled,
   });
+  const { data: chatSessions = [] } = useQuery(chatSessionsOptions(wsId));
 
   const sortedProjects = useMemo(
     () =>
@@ -76,6 +78,27 @@ export default function ProjectsTab() {
     }
     return buckets;
   }, [channels]);
+
+  const conversationsByProject = useMemo(() => {
+    const buckets = new Map<string, ChatSession[]>();
+    for (const session of chatSessions) {
+      if (session.status !== "active" || !session.project_id) continue;
+      const bucket = buckets.get(session.project_id) ?? [];
+      bucket.push(session);
+      buckets.set(session.project_id, bucket);
+    }
+    for (const [projectId, bucket] of buckets) {
+      buckets.set(
+        projectId,
+        [...bucket].sort(
+          (a, b) =>
+            new Date(b.updated_at).getTime() -
+            new Date(a.updated_at).getTime(),
+        ),
+      );
+    }
+    return buckets;
+  }, [chatSessions]);
 
   const toggleExpanded = (projectId: string) => {
     setExpandedIds((current) => {
@@ -133,6 +156,7 @@ export default function ProjectsTab() {
             <ProjectTreeRow
               project={item}
               channels={channelsByProject.get(item.id) ?? []}
+              conversations={conversationsByProject.get(item.id) ?? []}
               expanded={expandedIds.has(item.id)}
               channelsEnabled={channelsEnabled}
               iconColor={iconColor}
@@ -154,11 +178,28 @@ export default function ProjectsTab() {
                   },
                 });
               }}
+              onCreateConversation={() => {
+                if (!wsSlug) return;
+                router.push({
+                  pathname: "/[workspace]/chat",
+                  params: {
+                    workspace: wsSlug,
+                    projectId: item.id,
+                  },
+                });
+              }}
               onOpenChannel={(channel) => {
                 if (!wsSlug) return;
                 router.push({
                   pathname: "/[workspace]/channel/[id]",
                   params: { workspace: wsSlug, id: channel.slug || channel.id },
+                });
+              }}
+              onOpenConversation={(session) => {
+                if (!wsSlug) return;
+                router.push({
+                  pathname: "/[workspace]/chat",
+                  params: { workspace: wsSlug, sessionId: session.id },
                 });
               }}
             />
@@ -173,6 +214,7 @@ export default function ProjectsTab() {
 function ProjectTreeRow({
   project,
   channels,
+  conversations,
   expanded,
   channelsEnabled,
   iconColor,
@@ -180,10 +222,13 @@ function ProjectTreeRow({
   onOpenProject,
   onOpenIssues,
   onCreateChannel,
+  onCreateConversation,
   onOpenChannel,
+  onOpenConversation,
 }: {
   project: Project;
   channels: Channel[];
+  conversations: ChatSession[];
   expanded: boolean;
   channelsEnabled: boolean;
   iconColor: string;
@@ -191,7 +236,9 @@ function ProjectTreeRow({
   onOpenProject: () => void;
   onOpenIssues: () => void;
   onCreateChannel: () => void;
+  onCreateConversation: () => void;
   onOpenChannel: (channel: Channel) => void;
+  onOpenConversation: (session: ChatSession) => void;
 }) {
   const totalIssues = project.issue_count;
 
@@ -255,6 +302,13 @@ function ProjectTreeRow({
             <Ionicons name="add" size={22} color={iconColor} />
           </Pressable>
         ) : null}
+        <Pressable
+          onPress={onCreateConversation}
+          className="w-11 items-center justify-center active:bg-secondary"
+          accessibilityLabel="New project conversation"
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={21} color={iconColor} />
+        </Pressable>
       </View>
 
       {expanded ? (
@@ -279,6 +333,16 @@ function ProjectTreeRow({
                 />
               ))
             : null}
+          {conversations.map((session) => (
+            <ChildRow
+              key={session.id}
+              icon="chatbubble-ellipses-outline"
+              label={session.title?.trim() || "New conversation"}
+              unread={session.has_unread}
+              iconColor={iconColor}
+              onPress={() => onOpenConversation(session)}
+            />
+          ))}
         </View>
       ) : null}
     </View>

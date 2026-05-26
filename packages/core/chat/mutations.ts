@@ -12,12 +12,24 @@ export function useCreateChatSession() {
   const wsId = useWorkspaceId();
 
   return useMutation({
-    mutationFn: (data: { agent_id: string; title?: string }) => {
-      logger.info("createChatSession.start", { agent_id: data.agent_id, titleLength: data.title?.length ?? 0 });
+    mutationFn: (data: { agent_id: string; title?: string; project_id?: string | null }) => {
+      logger.info("createChatSession.start", {
+        agent_id: data.agent_id,
+        titleLength: data.title?.length ?? 0,
+        project_id: data.project_id ?? null,
+      });
       return api.createChatSession(data);
     },
     onSuccess: (session) => {
       logger.info("createChatSession.success", { sessionId: session.id, agentId: session.agent_id });
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) => {
+        if (!old) return [session];
+        if (old.some((s) => s.id === session.id)) {
+          return old.map((s) => (s.id === session.id ? session : s));
+        }
+        return [session, ...old];
+      });
+      qc.setQueryData<ChatSession>(chatKeys.session(wsId, session.id), session);
     },
     onError: (err) => {
       logger.error("createChatSession.error", err);
@@ -75,30 +87,63 @@ export function useUpdateChatSession() {
   const wsId = useWorkspaceId();
 
   return useMutation({
-    mutationFn: (data: { sessionId: string; title: string }) => {
+    mutationFn: (data: { sessionId: string; title?: string; project_id?: string | null }) => {
       logger.info("updateChatSession.start", {
         sessionId: data.sessionId,
-        titleLength: data.title.length,
+        titleLength: data.title?.length ?? 0,
+        hasProject: Object.prototype.hasOwnProperty.call(data, "project_id"),
       });
-      return api.updateChatSession(data.sessionId, { title: data.title });
+      const payload: { title?: string; project_id?: string | null } = {};
+      if (data.title !== undefined) payload.title = data.title;
+      if (Object.prototype.hasOwnProperty.call(data, "project_id")) payload.project_id = data.project_id ?? null;
+      return api.updateChatSession(data.sessionId, payload);
     },
-    onMutate: async ({ sessionId, title }) => {
+    onMutate: async (vars) => {
+      const { sessionId, title, project_id } = vars;
+      const hasProject = Object.prototype.hasOwnProperty.call(vars, "project_id");
       await qc.cancelQueries({ queryKey: chatKeys.sessions(wsId) });
+      await qc.cancelQueries({ queryKey: chatKeys.session(wsId, sessionId) });
 
       const prevSessions = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId));
+      const prevSession = qc.getQueryData<ChatSession>(chatKeys.session(wsId, sessionId));
 
       const patch = (old?: ChatSession[]) =>
-        old?.map((s) => (s.id === sessionId ? { ...s, title } : s));
+        old?.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                ...(title !== undefined ? { title } : {}),
+                ...(hasProject ? { project_id: project_id ?? null } : {}),
+              }
+            : s,
+        );
       qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), patch);
+      qc.setQueryData<ChatSession>(chatKeys.session(wsId, sessionId), (old) =>
+        old
+          ? {
+              ...old,
+              ...(title !== undefined ? { title } : {}),
+              ...(hasProject ? { project_id: project_id ?? null } : {}),
+            }
+          : old,
+      );
 
-      return { prevSessions };
+      return { prevSessions, prevSession };
     },
     onError: (err, vars, ctx) => {
       logger.error("updateChatSession.error.rollback", { sessionId: vars.sessionId, err });
       if (ctx?.prevSessions) qc.setQueryData(chatKeys.sessions(wsId), ctx.prevSessions);
+      if (ctx?.prevSession) qc.setQueryData(chatKeys.session(wsId, vars.sessionId), ctx.prevSession);
     },
-    onSettled: () => {
+    onSuccess: (session) => {
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
+        old?.map((s) => (s.id === session.id ? session : s)),
+      );
+      qc.setQueryData<ChatSession>(chatKeys.session(wsId, session.id), session);
+    },
+    onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+      qc.invalidateQueries({ queryKey: chatKeys.session(wsId, vars.sessionId) });
     },
   });
 }

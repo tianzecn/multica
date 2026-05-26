@@ -29,6 +29,7 @@ import type {
   Project,
   ProjectResource,
   RuntimeDevice,
+  SearchChatSessionsResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   SendChatMessageResponse,
@@ -240,6 +241,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),
+  project_id: z.string().nullable().default(null),
   title: z.string().default(""),
   // Enum drift defense (root CLAUDE.md "Enum drift downgrades, not crashes"):
   // unknown server values fall back to "active" so the row still renders.
@@ -251,7 +253,17 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
 
 export const ChatSessionListSchema = z.array(ChatSessionSchema).default([]);
 
+export const SearchChatSessionsResponseSchema = z.object({
+  sessions: ChatSessionListSchema,
+  total: z.number().default(0),
+}).loose();
+
 export const EMPTY_CHAT_SESSION_LIST: ChatSession[] = [];
+
+export const EMPTY_SEARCH_CHAT_SESSIONS_RESPONSE: SearchChatSessionsResponse = {
+  sessions: [],
+  total: 0,
+};
 
 // `attachments` carried for parity rendering only — v1 doesn't author them on
 // mobile. AttachmentSchema is reused as-is.

@@ -116,7 +116,7 @@ WHERE a.workspace_id = $1
   AND atq.started_at IS NOT NULL
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= sqlc.arg('since')::timestamptz
-  AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (sqlc.narg('project_id')::uuid IS NULL OR COALESCE(atq.project_id, i.project_id) = sqlc.narg('project_id'))
 GROUP BY DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text)
 ORDER BY DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) DESC;
 
@@ -146,6 +146,6 @@ WHERE a.workspace_id = $1
   AND atq.started_at IS NOT NULL
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= @since::timestamptz
-  AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (sqlc.narg('project_id')::uuid IS NULL OR COALESCE(atq.project_id, i.project_id) = sqlc.narg('project_id'))
 GROUP BY atq.agent_id
 ORDER BY total_seconds DESC;

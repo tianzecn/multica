@@ -64,9 +64,10 @@ interface Props {
    *  there generates unintended notifications. Only Issues remain useful
    *  in chat as "reference this ticket for context". */
   mode?: "comment" | "chat";
+  projectId?: string | null;
 }
 
-export function MentionPickerBody({ query, mode = "comment" }: Props) {
+export function MentionPickerBody({ query, mode = "comment", projectId = null }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
@@ -93,7 +94,7 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
     const timer = setTimeout(() => {
       void api
         .searchIssues(
-          { q: trimmed, limit: 8, include_closed: false },
+          { q: trimmed, limit: 8, include_closed: false, project_id: projectId ?? undefined },
           { signal: ac.signal },
         )
         .then((res) => setIssueResults(res.issues))
@@ -103,7 +104,7 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
       ac.abort();
       clearTimeout(timer);
     };
-  }, [query]);
+  }, [projectId, query]);
 
   const isSelectedKey = (type: MentionTargetType, id: string) =>
     selected.some((m) => m.type === type && m.id === id);

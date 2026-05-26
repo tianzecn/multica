@@ -3,6 +3,7 @@ export interface ChatSession {
   workspace_id: string;
   agent_id: string;
   creator_id: string;
+  project_id: string | null;
   title: string;
   status: "active" | "archived";
   /** True when the session has any unread assistant replies. List-only. */

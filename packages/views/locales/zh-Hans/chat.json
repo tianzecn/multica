@@ -87,6 +87,25 @@
     "aria_stop": "停止共享当前页面",
     "aria_start": "把当前页面共享给 Multica"
   },
+  "conversations": {
+    "list_title": "对话",
+    "list_subtitle": "{{count}} 个进行中",
+    "new": "新对话",
+    "empty_list": "还没有对话",
+    "no_selection_title": "选择一个对话",
+    "no_selection_body": "从列表选择一个对话，或开始新的对话。",
+    "draft_title": "开始新对话",
+    "draft_body": "如果这个对话需要项目上下文，可以先选择项目。发送消息或上传附件前不会落库。",
+    "empty_title": "还没有消息",
+    "empty_body": "发送一条消息来开始这个对话。",
+    "not_found_title": "找不到对话",
+    "not_found_body": "它可能已被删除，或你不再有访问权限。",
+    "agent_line": "智能体：{{agent}}",
+    "no_agent": "暂无智能体",
+    "unread": "未读",
+    "no_project": "未归属项目",
+    "project_picker": "项目"
+  },
   "no_agent_banner": "需要先有一个智能体才能开始对话。",
   "offline_banner": {
     "fallback_name": "智能体",

@@ -41,6 +41,7 @@
     "./auth": "./auth/index.ts",
     "./search": "./search/index.ts",
     "./chat": "./chat/index.ts",
+    "./conversations": "./conversations/index.ts",
     "./channels": "./channels/index.ts",
     "./settings": "./settings/index.ts",
     "./invite": "./invite/index.ts",

@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { AppSidebar } from "./app-sidebar";
 
-const { detail, deletePin, navigation, pins, projects, toggleProject, treeState } = vi.hoisted(() => ({
+const { chatSessions, detail, deletePin, navigation, pins, projects, toggleProject, treeState } = vi.hoisted(() => ({
+  chatSessions: { current: [] as unknown[] },
   detail: { current: { isPending: false, isError: false, data: null as unknown, error: null as unknown } },
   deletePin: vi.fn(),
   navigation: { current: { pathname: "/acme/issues" } },
@@ -94,13 +95,23 @@ vi.mock("@multica/core/auth", () => ({
   useAuthStore: (selector: (state: { user: { id: string } }) => unknown) => selector({ user: { id: "user-1" } }),
 }));
 vi.mock("@multica/core/paths", () => ({
-  paths: { workspace: (slug: string) => ({ issues: () => `/${slug}/issues`, projectDetail: (id: string) => `/${slug}/projects/${id}` }) },
+  paths: {
+    workspace: (slug: string) => ({
+      issues: () => `/${slug}/issues`,
+      conversations: () => `/${slug}/conversations`,
+      projectDetail: (id: string) => `/${slug}/projects/${id}`,
+    }),
+  },
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme", slug: "acme", settings: {} }),
   useWorkspacePaths: () => ({
     inbox: () => "/acme/inbox",
     myIssues: () => "/acme/my-issues",
     issues: () => "/acme/issues",
     projects: () => "/acme/projects",
+    conversations: () => "/acme/conversations",
+    newConversation: (projectId?: string) =>
+      projectId ? `/acme/conversations/new?project=${projectId}` : "/acme/conversations/new",
+    conversationDetail: (id: string) => `/acme/conversations/${id}`,
     channels: () => "/acme/channels",
     channelDetail: (id: string) => `/acme/channels/${id}`,
     autopilots: () => "/acme/autopilots",
@@ -160,6 +171,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
     if (queryKey[0] === "pins") return { data: pins.current };
     if (queryKey[0] === "issue") return detail.current;
     if (queryKey[0] === "projects") return { data: projects.current };
+    if (queryKey[0] === "chat" && queryKey[2] === "sessions") return { data: chatSessions.current };
     return { data: [] };
   },
   useQueryClient: () => ({ fetchQuery: vi.fn(), invalidateQueries: vi.fn() }),
@@ -172,6 +184,7 @@ describe("PinRow", () => {
     detail.current = { isPending: false, isError: false, data: null, error: null };
     navigation.current.pathname = "/acme/issues";
     projects.current = [];
+    chatSessions.current = [];
     treeState.current.expandedProjectIds = [];
     treeState.current.archivedChannelsOpen = false;
     treeState.current.unassignedChannelsOpen = false;
@@ -220,5 +233,55 @@ describe("PinRow", () => {
         .getAllByRole("link")
         .some((link) => link.getAttribute("href") === "/acme/projects/project-1/issues"),
     ).toBe(false);
+  });
+
+  it("renders global conversations under Conversations and project conversations under expanded projects", () => {
+    treeState.current.expandedProjectIds = ["project-1"];
+    projects.current = [
+      {
+        id: "project-1",
+        title: "Launch",
+        icon: "🚀",
+        issue_count: 0,
+        updated_at: "2026-05-25T00:00:00Z",
+      },
+    ];
+    chatSessions.current = [
+      {
+        id: "global-chat",
+        workspace_id: "ws-1",
+        agent_id: "agent-1",
+        creator_id: "user-1",
+        project_id: null,
+        title: "Global research",
+        status: "active",
+        has_unread: false,
+        created_at: "2026-05-25T00:00:00Z",
+        updated_at: "2026-05-25T00:00:00Z",
+      },
+      {
+        id: "project-chat",
+        workspace_id: "ws-1",
+        agent_id: "agent-1",
+        creator_id: "user-1",
+        project_id: "project-1",
+        title: "Launch checklist",
+        status: "active",
+        has_unread: true,
+        created_at: "2026-05-25T00:00:00Z",
+        updated_at: "2026-05-25T00:00:00Z",
+      },
+    ];
+
+    render(<AppSidebar />);
+
+    expect(screen.getByText("Global research").closest("a")).toHaveAttribute(
+      "href",
+      "/acme/conversations/global-chat",
+    );
+    expect(screen.getByText("Launch checklist").closest("a")).toHaveAttribute(
+      "href",
+      "/acme/conversations/project-chat",
+    );
   });
 });

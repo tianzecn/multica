@@ -106,7 +106,7 @@ export default function TabsLayout() {
         <Tabs.Screen
           name="chat"
           options={{
-            title: "Chat",
+            title: "对话",
             tabBarBadge: chatBadge,
             tabBarBadgeStyle: BADGE_STYLE,
             tabBarIcon: ({ color, size, focused }) => (

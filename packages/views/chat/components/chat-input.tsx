@@ -44,6 +44,8 @@ interface ChatInputProps {
   /** Rendered inside the rounded container, above the editor — attached
    *  context cards, drafts, etc. */
   topSlot?: ReactNode;
+  /** Optional project scope for @ issue search inside the chat composer. */
+  mentionIssueProjectId?: string | null;
 }
 
 export function ChatInput({
@@ -57,6 +59,7 @@ export function ChatInput({
   leftAdornment,
   rightAdornment,
   topSlot,
+  mentionIssueProjectId,
 }: ChatInputProps) {
   const { t } = useT("chat");
   const editorRef = useRef<ContentEditorRef>(null);
@@ -229,6 +232,7 @@ export function ChatInput({
             }}
             onSubmit={handleSend}
             onUploadFile={uploadEnabled ? handleUpload : undefined}
+            mentionIssueProjectId={mentionIssueProjectId ?? null}
             debounceMs={100}
             // Chat is short-form — the floating formatting toolbar is
             // more distraction than feature here.

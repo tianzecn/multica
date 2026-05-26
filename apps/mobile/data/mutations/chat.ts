@@ -20,7 +20,7 @@ export function useCreateChatSession() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
 
   return useMutation({
-    mutationFn: (data: { agent_id: string; title?: string }) =>
+    mutationFn: (data: { agent_id: string; title?: string; project_id?: string | null }) =>
       api.createChatSession(data),
     onSettled: () => {
       // Optimistic prepend isn't done here — the chat screen seeds caches

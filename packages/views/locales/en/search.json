@@ -7,12 +7,15 @@
     "commands": "Commands",
     "members": "Members",
     "projects": "Projects",
+    "channels": "Channels",
+    "conversations": "Conversations",
     "issues": "Issues",
     "recent": "Recent"
   },
   "pages": {
     "inbox": "Inbox",
     "my_issues": "My Issues",
+    "conversations": "Conversations",
     "issues": "Issues",
     "projects": "Projects",
     "agents": "Agents",
@@ -24,6 +27,7 @@
     "current_theme_aria": "Current theme",
     "new_issue": "New Issue",
     "new_project": "New Project",
+    "new_conversation": "New Conversation",
     "copy_issue_link": "Copy Issue Link",
     "copy_identifier": "Copy Identifier ({{identifier}})",
     "switch_to_light": "Switch to Light Theme",

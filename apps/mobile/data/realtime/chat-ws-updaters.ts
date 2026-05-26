@@ -42,6 +42,7 @@ export function patchSessionListAfterRename(
   payload: {
     chat_session_id: string;
     title?: string;
+    project_id?: string | null;
     updated_at?: string;
   },
 ) {
@@ -51,6 +52,10 @@ export function patchSessionListAfterRename(
         ? {
             ...s,
             title: payload.title ?? s.title,
+            project_id:
+              payload.project_id === undefined
+                ? s.project_id
+                : payload.project_id,
             updated_at: payload.updated_at ?? s.updated_at,
           }
         : s,

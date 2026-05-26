@@ -5,6 +5,7 @@ import type {
   GroupedIssuesResponse,
   ListIssuesResponse,
   SearchIssuesResponse,
+  SearchChatSessionsResponse,
   SearchChannelsResponse,
   SearchProjectsResponse,
   UpdateMeRequest,
@@ -1436,7 +1437,13 @@ export class ApiClient {
     return this.fetch(`/api/chat/sessions/${id}`);
   }
 
-  async createChatSession(data: { agent_id: string; title?: string }): Promise<ChatSession> {
+  async searchChatSessions(params: { q: string; limit?: number; signal?: AbortSignal }): Promise<SearchChatSessionsResponse> {
+    const search = new URLSearchParams({ q: params.q });
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    return this.fetch(`/api/chat/sessions/search?${search}`, params.signal ? { signal: params.signal } : undefined);
+  }
+
+  async createChatSession(data: { agent_id: string; title?: string; project_id?: string | null }): Promise<ChatSession> {
     return this.fetch("/api/chat/sessions", {
       method: "POST",
       body: JSON.stringify(data),
@@ -1447,7 +1454,7 @@ export class ApiClient {
     await this.fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
   }
 
-  async updateChatSession(id: string, data: { title: string }): Promise<ChatSession> {
+  async updateChatSession(id: string, data: { title?: string; project_id?: string | null }): Promise<ChatSession> {
     return this.fetch(`/api/chat/sessions/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),

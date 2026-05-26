@@ -2,6 +2,7 @@ import type { Issue, IssueMetadata, IssueStatus, IssuePriority, IssueAssigneeTyp
 import type { MemberRole } from "./workspace";
 import type { Project } from "./project";
 import type { Channel } from "./channel";
+import type { ChatSession } from "./chat";
 
 // Issue API
 export interface CreateIssueRequest {
@@ -156,6 +157,11 @@ export interface SearchProjectsResponse {
 
 export interface SearchChannelsResponse {
   channels: Channel[];
+  total: number;
+}
+
+export interface SearchChatSessionsResponse {
+  sessions: ChatSession[];
   total: number;
 }
 

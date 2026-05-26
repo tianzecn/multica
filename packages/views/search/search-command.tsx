@@ -31,6 +31,7 @@ import { toast } from "sonner";
 import type {
   MemberWithUser,
   Channel,
+  ChatSession,
   SearchIssueResult,
   SearchProjectResult,
 } from "@multica/core/types";
@@ -45,7 +46,8 @@ import { useWorkspaceId } from "@multica/core";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { WorkspacePaths } from "@multica/core/paths";
 import { useModalStore } from "@multica/core/modals";
-import { memberListOptions } from "@multica/core/workspace/queries";
+import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
+import { projectListOptions } from "@multica/core/projects/queries";
 import { StatusIcon } from "../issues/components";
 import { ProjectIcon } from "../projects/components/project-icon";
 import { STATUS_CONFIG } from "@multica/core/issues/config";
@@ -116,6 +118,7 @@ function HighlightText({ text, query }: { text: string; query: string }) {
 type NavKey =
   | "inbox"
   | "myIssues"
+  | "conversations"
   | "issues"
   | "projects"
   | "agents"
@@ -163,6 +166,7 @@ interface SearchResults {
   issues: SearchIssueResult[];
   projects: SearchProjectResult[];
   channels: Channel[];
+  sessions: ChatSession[];
 }
 
 export function SearchCommand() {
@@ -171,6 +175,7 @@ export function SearchCommand() {
     () => [
       { key: "inbox", label: t(($) => $.pages.inbox), icon: Inbox, keywords: ["inbox", "notifications", "收件箱"] },
       { key: "myIssues", label: t(($) => $.pages.my_issues), icon: CircleUser, keywords: ["my", "issues", "assigned", "我的"] },
+      { key: "conversations", label: t(($) => $.pages.conversations), icon: MessageSquare, keywords: ["chat", "conversation", "对话"] },
       { key: "issues", label: t(($) => $.pages.issues), icon: ListTodo, keywords: ["issues", "tasks", "bugs"] },
       { key: "projects", label: t(($) => $.pages.projects), icon: FolderKanban, keywords: ["projects", "kanban", "项目"] },
       { key: "agents", label: t(($) => $.pages.agents), icon: Bot, keywords: ["agents", "bots", "ai"] },
@@ -188,6 +193,10 @@ export function SearchCommand() {
   const p: WorkspacePaths = useWorkspacePaths();
   const { theme, setTheme } = useTheme();
   const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
 
   // Resolve each recent issue via its cached detail entry. Recent items are
   // typically already in the detail cache because the user has opened them;
@@ -203,7 +212,7 @@ export function SearchCommand() {
   );
 
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResults>({ issues: [], projects: [], channels: [] });
+  const [results, setResults] = useState<SearchResults>({ issues: [], projects: [], channels: [], sessions: [] });
   const [isLoading, setIsLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -257,6 +266,16 @@ export function SearchCommand() {
         keywords: ["new", "project", "create", "add"],
         onSelect: () => {
           useModalStore.getState().open("create-project");
+          setOpen(false);
+        },
+      },
+      {
+        key: "new-conversation",
+        label: t(($) => $.commands.new_conversation),
+        icon: MessageSquare,
+        keywords: ["new", "conversation", "chat", "create", "对话"],
+        onSelect: () => {
+          push(p.newConversation());
           setOpen(false);
         },
       },
@@ -327,7 +346,7 @@ export function SearchCommand() {
     );
 
     return items;
-  }, [currentIssue, getShareableUrl, pathname, setOpen, setTheme, theme, t]);
+  }, [currentIssue, getShareableUrl, p, pathname, push, setOpen, setTheme, theme, t]);
 
   const filteredCommands = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -360,6 +379,7 @@ export function SearchCommand() {
     results.issues.length > 0 ||
     results.projects.length > 0 ||
     results.channels.length > 0 ||
+    results.sessions.length > 0 ||
     filteredMembers.length > 0;
 
   // Global Cmd+K / Ctrl+K shortcut
@@ -400,7 +420,7 @@ export function SearchCommand() {
   useEffect(() => {
     if (!open) {
       setQuery("");
-      setResults({ issues: [], projects: [], channels: [] });
+      setResults({ issues: [], projects: [], channels: [], sessions: [] });
       setIsLoading(false);
     }
   }, [open]);
@@ -410,7 +430,7 @@ export function SearchCommand() {
     if (abortRef.current) abortRef.current.abort();
 
     if (!q.trim()) {
-      setResults({ issues: [], projects: [], channels: [] });
+      setResults({ issues: [], projects: [], channels: [], sessions: [] });
       setIsLoading(false);
       return;
     }
@@ -420,7 +440,7 @@ export function SearchCommand() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        const [issueRes, projectRes, channelRes] = await Promise.all([
+        const [issueRes, projectRes, channelRes, chatRes] = await Promise.all([
           api.searchIssues({
             q: q.trim(),
             limit: 20,
@@ -438,12 +458,18 @@ export function SearchCommand() {
             limit: 10,
             signal: controller.signal,
           }),
+          api.searchChatSessions({
+            q: q.trim(),
+            limit: 10,
+            signal: controller.signal,
+          }),
         ]);
         if (!controller.signal.aborted) {
           setResults({
             issues: issueRes.issues,
             projects: projectRes.projects,
             channels: channelRes.channels,
+            sessions: chatRes.sessions,
           });
           setIsLoading(false);
         }
@@ -471,6 +497,8 @@ export function SearchCommand() {
         push(p.projectDetail(value.slice(8)));
       } else if (value.startsWith("channel:")) {
         push(p.channelDetail(value.slice(8)));
+      } else if (value.startsWith("conversation:")) {
+        push(p.conversationDetail(value.slice(13)));
       } else {
         push(p.issueDetail(value));
       }
@@ -660,7 +688,7 @@ export function SearchCommand() {
 
             {!isLoading && results.channels.length > 0 && (
               <CommandPrimitive.Group
-                heading="Channels"
+                heading={t(($) => $.groups.channels)}
                 className="p-2 [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground"
               >
                 {results.channels.map((channel) => (
@@ -681,6 +709,40 @@ export function SearchCommand() {
                     <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">#{channel.slug}</span>
                   </CommandPrimitive.Item>
                 ))}
+              </CommandPrimitive.Group>
+            )}
+
+            {!isLoading && results.sessions.length > 0 && (
+              <CommandPrimitive.Group
+                heading={t(($) => $.groups.conversations)}
+                className="p-2 [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground"
+              >
+                {results.sessions.map((session) => {
+                  const agent = agentById.get(session.agent_id);
+                  const project = session.project_id ? projectById.get(session.project_id) : null;
+                  const subtitle = [project?.title, agent?.name].filter(Boolean).join(" · ");
+                  return (
+                    <CommandPrimitive.Item
+                      key={`conversation:${session.id}`}
+                      value={`conversation:${session.id}`}
+                      onSelect={handleSelect}
+                      className="flex cursor-default select-none items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-selected:bg-accent"
+                    >
+                      <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate">
+                          <HighlightText text={session.title?.trim() || t(($) => $.commands.new_conversation)} query={query} />
+                        </div>
+                        {subtitle && (
+                          <div className="truncate text-xs text-muted-foreground">
+                            {subtitle}
+                          </div>
+                        )}
+                      </div>
+                      {session.has_unread && <span className="size-1.5 shrink-0 rounded-full bg-brand" />}
+                    </CommandPrimitive.Item>
+                  );
+                })}
               </CommandPrimitive.Group>
             )}
 

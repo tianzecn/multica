@@ -1,6 +1,6 @@
 -- name: CreateChatSession :one
-INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, runtime_id)
-VALUES ($1, $2, $3, $4, (SELECT runtime_id FROM agent WHERE id = $2))
+INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, project_id, runtime_id)
+VALUES ($1, $2, $3, $4, sqlc.narg('project_id'), (SELECT runtime_id FROM agent WHERE id = $2))
 RETURNING *;
 
 -- name: GetChatSession :one
@@ -28,9 +28,19 @@ FROM chat_session cs
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
 ORDER BY cs.updated_at DESC;
 
--- name: UpdateChatSessionTitle :one
-UPDATE chat_session SET title = $2, updated_at = now()
-WHERE id = $1
+-- name: UpdateChatSession :one
+UPDATE chat_session
+SET
+    title = CASE
+        WHEN sqlc.arg('title_set')::boolean THEN sqlc.arg('title')::text
+        ELSE title
+    END,
+    project_id = CASE
+        WHEN sqlc.arg('project_id_set')::boolean THEN sqlc.narg('project_id')
+        ELSE project_id
+    END,
+    updated_at = now()
+WHERE id = sqlc.arg('id')
 RETURNING *;
 
 -- name: UpdateChatSessionSession :exec
@@ -88,8 +98,8 @@ SELECT * FROM chat_message
 WHERE id = $1;
 
 -- name: CreateChatTask :one
-INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, chat_session_id)
-VALUES ($1, $2, NULL, 'queued', $3, $4)
+INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, chat_session_id, project_id)
+VALUES ($1, $2, NULL, 'queued', $3, $4, sqlc.narg('project_id'))
 RETURNING *;
 
 -- name: GetLastChatTaskSession :one
@@ -148,3 +158,20 @@ WHERE id = $1;
 -- unread boundary stable across multiple incoming replies.
 UPDATE chat_session SET unread_since = now()
 WHERE id = $1 AND unread_since IS NULL;
+
+-- name: SearchChatSessionsByCreator :many
+SELECT cs.*,
+       (cs.unread_since IS NOT NULL)::bool AS has_unread
+FROM chat_session cs
+JOIN agent a ON a.id = cs.agent_id
+LEFT JOIN project p ON p.id = cs.project_id
+WHERE cs.workspace_id = $1
+  AND cs.creator_id = $2
+  AND cs.status = 'active'
+  AND (
+    cs.title ILIKE '%' || sqlc.arg('query')::text || '%'
+    OR a.name ILIKE '%' || sqlc.arg('query')::text || '%'
+    OR p.title ILIKE '%' || sqlc.arg('query')::text || '%'
+  )
+ORDER BY cs.updated_at DESC
+LIMIT $3;

@@ -33,12 +33,11 @@ export function useChatSessionsRealtime() {
         // chat:session_read clears the unread flag (could be triggered from
         // web/desktop on the same account).
         ws.on("chat:session_read", invalidateSessions),
-        // chat:session_updated has no formal payload type yet — server
-        // emits {chat_session_id, title?, updated_at?}. Narrow inline.
         ws.on("chat:session_updated", (p) => {
           const payload = p as {
             chat_session_id: string;
             title?: string;
+            project_id?: string | null;
             updated_at?: string;
           };
           patchSessionListAfterRename(qc, wsId, payload);

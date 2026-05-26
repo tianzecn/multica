@@ -55,6 +55,7 @@ import type {
   ReorderPinsRequest,
   RuntimeDevice,
   SearchChannelsResponse,
+  SearchChatSessionsResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   SendChatMessageResponse,
@@ -111,6 +112,7 @@ import {
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
+  SearchChatSessionsResponseSchema,
   EMPTY_ACTIVE_TASKS_RESPONSE,
   EMPTY_AGENT_LIST,
   EMPTY_AGENT_TASK_LIST,
@@ -118,6 +120,7 @@ import {
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
+  EMPTY_SEARCH_CHAT_SESSIONS_RESPONSE,
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_ISSUE_FALLBACK,
@@ -1266,7 +1269,7 @@ class ApiClient {
   }
 
   async createChatSession(
-    data: { agent_id: string; title?: string },
+    data: { agent_id: string; title?: string; project_id?: string | null },
   ): Promise<ChatSession> {
     // Strict parse — a malformed create response derails the optimistic
     // burst (we need the new session id to seed caches). Fallback would
@@ -1283,6 +1286,27 @@ class ApiClient {
       throw new ApiError("Create chat session response invalid", 0, raw);
     }
     return parsed.data;
+  }
+
+  async searchChatSessions(
+    params: { q: string; limit?: number },
+    opts?: { signal?: AbortSignal },
+  ): Promise<SearchChatSessionsResponse> {
+    const search = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v == null) continue;
+      search.set(k, String(v));
+    }
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/search?${search.toString()}`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(
+      raw,
+      SearchChatSessionsResponseSchema,
+      EMPTY_SEARCH_CHAT_SESSIONS_RESPONSE,
+      { endpoint: "GET /api/chat/sessions/search" },
+    );
   }
 
   async deleteChatSession(id: string): Promise<void> {

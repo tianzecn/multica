@@ -157,6 +157,15 @@ func buildChatPrompt(task Task) string {
 	var b strings.Builder
 	b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
 	b.WriteString("A user is chatting with you directly. Respond to their message.\n\n")
+	if task.ProjectID != "" {
+		if task.ProjectTitle != "" {
+			fmt.Fprintf(&b, "This chat is scoped to project %q (%s). Use the project resources available in your working directory as the authoritative project context.\n", task.ProjectTitle, task.ProjectID)
+		} else {
+			fmt.Fprintf(&b, "This chat is scoped to project %s. Use the project resources available in your working directory as the authoritative project context.\n", task.ProjectID)
+		}
+		b.WriteString("If you create a Multica issue from this conversation, pass ")
+		fmt.Fprintf(&b, "`--project %q` so the issue lands in this project unless the user explicitly asks for a different project.\n\n", task.ProjectID)
+	}
 	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
 	// List attachments by id + filename so the agent can fetch them via
 	// the CLI. We deliberately do NOT inline the URL: chat attachments

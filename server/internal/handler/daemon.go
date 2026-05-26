@@ -1292,7 +1292,44 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		if cs, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID); err == nil {
 			resp.WorkspaceID = uuidToString(cs.WorkspaceID)
 			resp.ChatSessionID = uuidToString(cs.ID)
-			if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
+			var projectRepos []RepoData
+			if cs.ProjectID.Valid {
+				resp.ProjectID = uuidToString(cs.ProjectID)
+				if proj, err := h.Queries.GetProject(r.Context(), cs.ProjectID); err == nil {
+					resp.ProjectTitle = proj.Title
+				}
+				if rows := h.listProjectResourcesForProject(r.Context(), cs.ProjectID); len(rows) > 0 {
+					out := make([]ProjectResourceData, 0, len(rows))
+					for _, row := range rows {
+						label := ""
+						if row.Label.Valid {
+							label = row.Label.String
+						}
+						ref := json.RawMessage(row.ResourceRef)
+						if len(ref) == 0 {
+							ref = json.RawMessage("{}")
+						}
+						out = append(out, ProjectResourceData{
+							ID:           uuidToString(row.ID),
+							ResourceType: row.ResourceType,
+							ResourceRef:  ref,
+							Label:        label,
+						})
+						if row.ResourceType == "github_repo" {
+							var payload struct {
+								URL string `json:"url"`
+							}
+							if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
+								projectRepos = append(projectRepos, RepoData{URL: payload.URL})
+							}
+						}
+					}
+					resp.ProjectResources = out
+				}
+			}
+			if len(projectRepos) > 0 {
+				resp.Repos = projectRepos
+			} else if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
 				var repos []RepoData
 				if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
 					resp.Repos = repos

@@ -37,19 +37,21 @@ import {
   Platform,
   View,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
   ChatMessage,
   ChatPendingTask,
+  Project,
 } from "@multica/core/types";
 import { api } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentListOptions } from "@/data/queries/agents";
 import { memberListOptions } from "@/data/queries/members";
+import { projectListOptions } from "@/data/queries/projects";
 import {
   chatKeys,
   chatMessagesOptions,
@@ -86,9 +88,11 @@ export default function ChatTab() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
+  const params = useLocalSearchParams<{ sessionId?: string; projectId?: string }>();
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
 
   // Bridge to the chat-sessions formSheet route. Mirror local
@@ -108,6 +112,20 @@ export default function ChatTab() {
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+
+  useEffect(() => {
+    if (params.sessionId) {
+      setSelectedAgentId(null);
+      setActiveSessionId(String(params.sessionId));
+      setDraftProjectId(null);
+      return;
+    }
+    if (params.projectId) {
+      setActiveSessionId(null);
+      setDraftProjectId(String(params.projectId));
+    }
+  }, [params.projectId, params.sessionId]);
 
   // ── Auto-hydrate active session on first Chat tab entry ────────────────
   // Mobile-only deviation from web: web's chat-window opens to an empty
@@ -116,7 +134,7 @@ export default function ChatTab() {
   // Hydration is one-shot per workspace.
   const hydratedWsRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!wsId) return;
+    if (!wsId || params.projectId || params.sessionId) return;
     if (hydratedWsRef.current === wsId) return;
     if (sessions.length === 0) {
       hydratedWsRef.current = wsId;
@@ -124,7 +142,7 @@ export default function ChatTab() {
     }
     hydratedWsRef.current = wsId;
     setActiveSessionId(sessions[0].id);
-  }, [wsId, sessions]);
+  }, [params.projectId, params.sessionId, wsId, sessions]);
   const { data: messages = [], isLoading: messagesLoading } = useQuery(
     chatMessagesOptions(activeSessionId),
   );
@@ -159,6 +177,16 @@ export default function ChatTab() {
     [sessions, activeSessionId],
   );
 
+  const projectById = useMemo(
+    () => new Map(projects.map((project: Project) => [project.id, project])),
+    [projects],
+  );
+  const projectLeadAgent = useMemo(() => {
+    const project = draftProjectId ? projectById.get(draftProjectId) : null;
+    if (project?.lead_type !== "agent" || !project.lead_id) return null;
+    return availableAgents.find((agent) => agent.id === project.lead_id) ?? null;
+  }, [availableAgents, draftProjectId, projectById]);
+
   // Active agent: explicit selection wins; otherwise inherit from the
   // active session; otherwise pick the first available agent.
   const currentAgent: Agent | null = useMemo(() => {
@@ -168,8 +196,8 @@ export default function ChatTab() {
     if (activeSession) {
       return agents.find((a) => a.id === activeSession.agent_id) ?? null;
     }
-    return availableAgents[0] ?? null;
-  }, [selectedAgentId, availableAgents, activeSession, agents]);
+    return projectLeadAgent ?? availableAgents[0] ?? null;
+  }, [selectedAgentId, availableAgents, activeSession, agents, projectLeadAgent]);
 
   const availability = useWorkspaceAgentAvailability();
   const presenceDetail = useAgentPresence(wsId, currentAgent?.id);
@@ -177,6 +205,7 @@ export default function ChatTab() {
     presenceDetail === "loading" ? undefined : presenceDetail.availability;
   const isArchived = activeSession?.status === "archived";
   const sending = !!pendingTask?.task_id;
+  const projectIdForContext = activeSession?.project_id ?? draftProjectId;
 
   // ── Drafts ─────────────────────────────────────────────────────────────
   const draftKey = activeSessionId ?? DRAFT_NEW_SESSION;
@@ -226,6 +255,7 @@ export default function ChatTab() {
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
             title: titleSeed.slice(0, 50),
+            project_id: draftProjectId,
           });
           return session.id;
         } finally {
@@ -235,7 +265,7 @@ export default function ChatTab() {
       sessionPromiseRef.current = promise;
       return promise;
     },
-    [activeSessionId, currentAgent, createSession],
+    [activeSessionId, currentAgent, createSession, draftProjectId],
   );
 
   const handleSend = useCallback(
@@ -266,6 +296,7 @@ export default function ChatTab() {
       if (isNewSession) {
         promoteNewDraft(sessionId);
         setActiveSessionId(sessionId);
+        setDraftProjectId(null);
       }
 
       try {
@@ -413,6 +444,7 @@ export default function ChatTab() {
           sending={sending}
           disabled={disabled}
           disabledReason={disabledReason}
+          mentionIssueProjectId={projectIdForContext}
         />
       </KeyboardAvoidingView>
 

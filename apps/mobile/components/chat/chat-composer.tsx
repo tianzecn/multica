@@ -29,7 +29,6 @@
 import { useCallback } from "react";
 import { Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
-import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { MessageComposer } from "@/components/composer/message-composer";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -55,6 +54,8 @@ interface Props {
   disabled?: boolean;
   /** When `disabled`, replaces the pill label with the reason. */
   disabledReason?: string;
+  /** Optional project scope for chat-mode @ issue search. */
+  mentionIssueProjectId?: string | null;
 }
 
 const IS_IOS = process.env.EXPO_OS === "ios";
@@ -67,6 +68,7 @@ export function ChatComposer({
   sending,
   disabled = false,
   disabledReason,
+  mentionIssueProjectId,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
@@ -99,7 +101,11 @@ export function ChatComposer({
       onSubmit={onSubmit}
       mentionPickerPath={{
         pathname: "/[workspace]/mention-picker",
-        params: { workspace: wsSlug ?? "", mode: "chat" },
+        params: {
+          workspace: wsSlug ?? "",
+          mode: "chat",
+          ...(mentionIssueProjectId ? { projectId: mentionIssueProjectId } : {}),
+        },
       }}
       placeholder={sending ? "Agent is working…" : "Message…"}
       pillLabel={

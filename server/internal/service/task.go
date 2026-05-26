@@ -633,6 +633,7 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 		RuntimeID:     agent.RuntimeID,
 		Priority:      2, // medium priority for chat
 		ChatSessionID: chatSession.ID,
+		ProjectID:     chatSession.ProjectID,
 	})
 	if err != nil {
 		slog.Error("chat task enqueue failed", "chat_session_id", util.UUIDToString(chatSession.ID), "error", err)

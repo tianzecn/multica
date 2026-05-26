@@ -29,6 +29,7 @@ const {
   mockSearchIssues,
   mockSearchProjects,
   mockSearchChannels,
+  mockSearchChatSessions,
   mockRecentItems,
   mockAllIssues,
   mockSetTheme,
@@ -36,6 +37,8 @@ const {
   mockPathname,
   mockGetShareableUrl,
   mockMembers,
+  mockAgents,
+  mockProjects,
   mockOpenModal,
   mockToastSuccess,
   mockClipboardWrite,
@@ -44,6 +47,7 @@ const {
   mockSearchIssues: vi.fn(),
   mockSearchProjects: vi.fn(),
   mockSearchChannels: vi.fn(),
+  mockSearchChatSessions: vi.fn(),
   mockRecentItems: { current: [] as Array<{ id: string; visitedAt: number }> },
   mockAllIssues: { current: [] as Array<Record<string, unknown>> },
   mockSetTheme: vi.fn(),
@@ -62,6 +66,8 @@ const {
       avatar_url: string | null;
     }>,
   },
+  mockAgents: { current: [] as Array<Record<string, unknown>> },
+  mockProjects: { current: [] as Array<Record<string, unknown>> },
   mockOpenModal: vi.fn(),
   mockToastSuccess: vi.fn(),
   mockClipboardWrite: vi.fn(() => Promise.resolve()),
@@ -72,6 +78,7 @@ vi.mock("@multica/core/api", () => ({
     searchIssues: mockSearchIssues,
     searchProjects: mockSearchProjects,
     searchChannels: mockSearchChannels,
+    searchChatSessions: mockSearchChatSessions,
   },
 }));
 
@@ -105,6 +112,9 @@ vi.mock("@multica/core/paths", () => ({
     myIssues: () => "/ws-test/my-issues",
     issues: () => "/ws-test/issues",
     projects: () => "/ws-test/projects",
+    conversations: () => "/ws-test/conversations",
+    newConversation: (projectId?: string) =>
+      projectId ? `/ws-test/conversations/new?project=${projectId}` : "/ws-test/conversations/new",
     agents: () => "/ws-test/agents",
     runtimes: () => "/ws-test/runtimes",
     skills: () => "/ws-test/skills",
@@ -113,6 +123,7 @@ vi.mock("@multica/core/paths", () => ({
     memberDetail: (id: string) => `/ws-test/members/${id}`,
     projectDetail: (id: string) => `/ws-test/projects/${id}`,
     projectIssues: (id: string) => `/ws-test/projects/${id}/issues`,
+    conversationDetail: (id: string) => `/ws-test/conversations/${id}`,
     channelDetail: (id: string) => `/ws-test/channels/${id}`,
   }),
 }));
@@ -124,7 +135,12 @@ vi.mock("@multica/core/issues/queries", () => ({
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
+  agentListOptions: () => ({ queryKey: ["workspaces", "ws-test", "agents"] }),
   memberListOptions: () => ({ queryKey: ["workspaces", "ws-test", "members"] }),
+}));
+
+vi.mock("@multica/core/projects/queries", () => ({
+  projectListOptions: () => ({ queryKey: ["projects", "ws-test", "list"] }),
 }));
 
 vi.mock("@multica/core/modals", () => ({
@@ -147,6 +163,12 @@ vi.mock("@tanstack/react-query", () => ({
     const key = opts.queryKey;
     if (key[0] === "workspaces" && key[2] === "members") {
       return { data: mockMembers.current };
+    }
+    if (key[0] === "workspaces" && key[2] === "agents") {
+      return { data: mockAgents.current };
+    }
+    if (key[0] === "projects" && key[2] === "list") {
+      return { data: mockProjects.current };
     }
     if (opts.enabled === false) return { data: undefined };
     return { data: resolveIssue(key) };
@@ -177,6 +199,7 @@ describe("SearchCommand", () => {
     mockSearchIssues.mockReset().mockResolvedValue({ issues: [] });
     mockSearchProjects.mockReset().mockResolvedValue({ projects: [] });
     mockSearchChannels.mockReset().mockResolvedValue({ channels: [] });
+    mockSearchChatSessions.mockReset().mockResolvedValue({ sessions: [] });
     mockRecentItems.current = [];
     mockAllIssues.current = [];
     mockSetTheme.mockReset();
@@ -184,6 +207,8 @@ describe("SearchCommand", () => {
     mockPathname.current = "/ws-test/issues";
     mockGetShareableUrl.mockReset().mockImplementation((p: string) => `https://app.multica/${p}`);
     mockMembers.current = [];
+    mockAgents.current = [];
+    mockProjects.current = [];
     mockOpenModal.mockReset();
     mockToastSuccess.mockReset();
     mockClipboardWrite.mockReset().mockResolvedValue(undefined);

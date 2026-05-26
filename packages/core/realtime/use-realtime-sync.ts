@@ -67,6 +67,7 @@ import type {
   TaskFailedPayload,
   TaskCancelledPayload,
   ChatDonePayload,
+  ChatSessionUpdatedPayload,
   ChatMessage,
   ChatPendingTask,
   InvitationCreatedPayload,
@@ -872,22 +873,22 @@ export function useRealtimeSync(
     // any tab/device. Patch the cached row inline so the dropdown reflects
     // the new title without a full sessions-list refetch.
     const unsubChatSessionUpdated = ws.on("chat:session_updated", (p) => {
-      const payload = p as {
-        chat_session_id: string;
-        title?: string;
-        updated_at?: string;
-      };
+      const payload = p as ChatSessionUpdatedPayload;
       chatWsLogger.info("chat:session_updated (global)", payload);
       const id = getCurrentWsId();
       if (!id) return;
       const patch = (
-        old?: { id: string; title: string; updated_at: string }[],
+        old?: { id: string; title: string; project_id?: string | null; updated_at: string }[],
       ) =>
         old?.map((s) =>
           s.id === payload.chat_session_id
             ? {
                 ...s,
                 title: payload.title ?? s.title,
+                project_id:
+                  payload.project_id === undefined
+                    ? s.project_id ?? null
+                    : payload.project_id,
                 updated_at: payload.updated_at ?? s.updated_at,
               }
             : s,
