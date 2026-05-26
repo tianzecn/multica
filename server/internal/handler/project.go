@@ -225,6 +225,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	// Pre-validate every resource payload before opening a transaction so an
 	// invalid ref produces a clean 400 with no DB work.
 	normalizedRefs := make([]json.RawMessage, len(req.Resources))
+	githubRepoRefs := make([]json.RawMessage, 0, len(req.Resources))
 	for i, res := range req.Resources {
 		res.ResourceType = strings.TrimSpace(res.ResourceType)
 		if res.ResourceType == "" {
@@ -237,6 +238,17 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		normalizedRefs[i] = ref
+		if res.ResourceType == "github_repo" {
+			githubRepoRefs = append(githubRepoRefs, ref)
+		}
+	}
+	if err := validateGithubRepoResourceBatch(githubRepoRefs); err != nil {
+		if strings.Contains(err.Error(), "already") {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	createParams := db.CreateProjectParams{

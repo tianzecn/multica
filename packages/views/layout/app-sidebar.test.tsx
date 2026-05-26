@@ -55,8 +55,18 @@ vi.mock("@multica/ui/components/ui/sidebar", () => ({
   SidebarGroupLabel: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarHeader: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SidebarMenuButton: ({ children, render }: { children: React.ReactNode; render?: React.ReactElement<{ children?: React.ReactNode }> }) =>
-    React.isValidElement(render) ? React.cloneElement(render, {}, children) : <button type="button">{children}</button>,
+  SidebarMenuButton: ({
+    children,
+    render,
+    ...props
+  }: {
+    children: React.ReactNode;
+    render?: React.ReactElement<{ children?: React.ReactNode }>;
+    [key: string]: unknown;
+  }) =>
+    React.isValidElement(render)
+      ? React.cloneElement(render, {}, children)
+      : <button type="button" {...props}>{children}</button>,
   SidebarMenuItem: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarRail: () => null,
 }));
@@ -224,7 +234,7 @@ describe("PinRow", () => {
     render(<AppSidebar />);
 
     expect(screen.getByText("Launch").closest("a")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+    fireEvent.click(screen.getByRole("button", { name: /Launch/ }));
     expect(toggleProject).toHaveBeenCalledWith("project-1");
     const projectSurfaceLinks = screen.getAllByRole("link").filter((link) => link.getAttribute("href") === "/acme/projects/project-1");
     expect(projectSurfaceLinks).toHaveLength(1);
@@ -283,5 +293,39 @@ describe("PinRow", () => {
       "href",
       "/acme/conversations/project-chat",
     );
+  });
+
+  it("limits conversation groups to five rows until expanded", () => {
+    treeState.current.expandedProjectIds = ["project-1"];
+    projects.current = [
+      {
+        id: "project-1",
+        title: "Launch",
+        icon: "🚀",
+        issue_count: 0,
+        updated_at: "2026-05-25T00:00:00Z",
+      },
+    ];
+    chatSessions.current = Array.from({ length: 6 }, (_, index) => ({
+      id: `project-chat-${index + 1}`,
+      workspace_id: "ws-1",
+      agent_id: "agent-1",
+      creator_id: "user-1",
+      project_id: "project-1",
+      title: `Project chat ${index + 1}`,
+      status: "active",
+      has_unread: false,
+      created_at: `2026-05-25T00:0${index}:00Z`,
+      updated_at: `2026-05-25T00:0${index}:00Z`,
+    }));
+
+    render(<AppSidebar />);
+
+    expect(screen.getByText("Project chat 6")).toBeInTheDocument();
+    expect(screen.queryByText("Project chat 1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /显示 1 条更多|Show 1 more|Show more 1/ }));
+    expect(screen.getByText("Project chat 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /收起|Show fewer/ }));
+    expect(screen.queryByText("Project chat 1")).not.toBeInTheDocument();
   });
 });

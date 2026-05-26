@@ -55,6 +55,8 @@
     "collapse_project": "收起 {{name}}",
     "unread_channel": "未读频道",
     "unread_conversation": "未读对话",
+    "show_more_conversations": "显示 {{count}} 条更多",
+    "show_fewer_conversations": "收起",
     "workspace_group": "工作区",
     "configure_group": "配置",
     "unread_overflow": "99+"

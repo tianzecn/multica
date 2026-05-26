@@ -55,6 +55,8 @@
     "collapse_project": "Collapse {{name}}",
     "unread_channel": "Unread channel",
     "unread_conversation": "Unread conversation",
+    "show_more_conversations": "Show {{count}} more",
+    "show_fewer_conversations": "Show fewer",
     "workspace_group": "Workspace",
     "configure_group": "Configure",
     "unread_overflow": "99+"

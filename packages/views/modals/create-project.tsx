@@ -132,9 +132,10 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   // Repos selected to attach as github_repo resources after the project is
-  // created. Stored as URLs (not full ProjectResource rows) — they're not
-  // persisted until handleSubmit fires the createProjectResource calls.
-  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
+  // created. The main repo is the default checkout target; related repos are
+  // reference context only.
+  const [mainRepoUrl, setMainRepoUrl] = useState<string | undefined>();
+  const [relatedRepoUrls, setRelatedRepoUrls] = useState<string[]>([]);
   const [repoPopoverOpen, setRepoPopoverOpen] = useState(false);
   const [repoSearch, setRepoSearch] = useState("");
   const [customRepoUrl, setCustomRepoUrl] = useState("");
@@ -143,6 +144,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   const filteredWorkspaceRepos = workspaceRepos.filter((repo) =>
     repo.url.toLowerCase().includes(repoQuery),
   );
+  const selectedRepoCount = (mainRepoUrl ? 1 : 0) + relatedRepoUrls.length;
 
   // Sync field changes to draft store
   const updateTitle = (v: string) => { setTitle(v); setDraft({ title: v }); };
@@ -182,11 +184,19 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
         lead_id: leadId,
         // Server attaches these in the same transaction as the project.
         resources:
-          selectedRepos.length > 0
-            ? selectedRepos.map((url) => ({
-                resource_type: "github_repo" as const,
-                resource_ref: { url },
-              }))
+          selectedRepoCount > 0
+            ? [
+                ...(mainRepoUrl
+                  ? [{
+                      resource_type: "github_repo" as const,
+                      resource_ref: { url: mainRepoUrl, role: "primary" as const },
+                    }]
+                  : []),
+                ...relatedRepoUrls.map((url) => ({
+                  resource_type: "github_repo" as const,
+                  resource_ref: { url, role: "related" as const },
+                })),
+              ]
             : undefined,
       });
       clearDraft();
@@ -204,8 +214,14 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const toggleRepo = (url: string) => {
-    setSelectedRepos((prev) =>
+  const setMainRepo = (url: string) => {
+    setMainRepoUrl((prev) => (prev === url ? undefined : url));
+    setRelatedRepoUrls((prev) => prev.filter((u) => u !== url));
+  };
+
+  const toggleRelatedRepo = (url: string) => {
+    if (url === mainRepoUrl) return;
+    setRelatedRepoUrls((prev) =>
       prev.includes(url) ? prev.filter((u) => u !== url) : [...prev, url],
     );
   };
@@ -213,7 +229,11 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   const addCustomRepo = () => {
     const url = customRepoUrl.trim();
     if (!url) return;
-    setSelectedRepos((prev) => (prev.includes(url) ? prev : [...prev, url]));
+    if (!mainRepoUrl) {
+      setMainRepoUrl(url);
+    } else if (url !== mainRepoUrl) {
+      setRelatedRepoUrls((prev) => (prev.includes(url) ? prev : [...prev, url]));
+    }
     setCustomRepoUrl("");
   };
 
@@ -468,9 +488,9 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                 <PillButton>
                   <GithubIcon className="size-3" />
                   <span>
-                    {selectedRepos.length === 0
+                    {selectedRepoCount === 0
                       ? t(($) => $.create_project.repos_pill)
-                      : t(($) => $.create_project.repos_pill_count, { count: selectedRepos.length })}
+                      : t(($) => $.create_project.repos_pill_count, { count: selectedRepoCount })}
                   </span>
                 </PillButton>
               }
@@ -499,26 +519,38 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                       </p>
                     )}
                     {filteredWorkspaceRepos.map((repo) => {
-                      const checked = selectedRepos.includes(repo.url);
+                      const isMain = mainRepoUrl === repo.url;
+                      const isRelated = relatedRepoUrls.includes(repo.url);
                       return (
-                        <button
-                          type="button"
+                        <div
                           key={repo.url}
-                          onClick={() => toggleRepo(repo.url)}
-                          className={cn(
-                            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-accent transition-colors",
-                            checked && "bg-accent",
-                          )}
+                          className="rounded-md px-2 py-1.5 text-xs hover:bg-accent transition-colors"
                         >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            readOnly
-                            className="size-3.5"
-                          />
-                          <GithubIcon className="size-3.5" />
-                          <RepoUrlText url={repo.url} />
-                        </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setMainRepo(repo.url)}
+                              aria-label={t(($) => $.create_project.repos_primary_badge)}
+                              aria-pressed={isMain}
+                              className={cn(
+                                "size-3.5 rounded-full border border-muted-foreground/50",
+                                isMain && "border-primary bg-primary",
+                              )}
+                            />
+                            <GithubIcon className="size-3.5" />
+                            <RepoUrlText url={repo.url} />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => toggleRelatedRepo(repo.url)}
+                            disabled={isMain}
+                            className="mt-1 ml-5 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:hover:text-muted-foreground"
+                          >
+                            {isRelated
+                              ? t(($) => $.create_project.repos_mark_unrelated)
+                              : t(($) => $.create_project.repos_mark_related)}
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -552,21 +584,40 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                   {t(($) => $.create_project.repos_add)}
                 </Button>
               </form>
-              {selectedRepos.length > 0 && (
+              {selectedRepoCount > 0 && (
                 <div className="space-y-1 pt-1 border-t">
                   <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
                     {t(($) => $.create_project.repos_selected)}
                   </div>
-                  {selectedRepos.map((url) => (
+                  {mainRepoUrl && (
                     <div
-                      key={url}
+                      key={mainRepoUrl}
                       className="flex items-center gap-2 text-xs"
                     >
                       <GithubIcon className="size-3 text-muted-foreground" />
+                      <span className="text-[10px] rounded-sm bg-primary/10 px-1 text-primary">
+                        {t(($) => $.create_project.repos_primary_badge)}
+                      </span>
+                      <RepoUrlText url={mainRepoUrl} />
+                      <button
+                        type="button"
+                        onClick={() => setMainRepoUrl(undefined)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    </div>
+                  )}
+                  {relatedRepoUrls.map((url) => (
+                    <div key={url} className="flex items-center gap-2 text-xs">
+                      <GithubIcon className="size-3 text-muted-foreground" />
+                      <span className="text-[10px] rounded-sm bg-muted px-1 text-muted-foreground">
+                        {t(($) => $.create_project.repos_related_badge)}
+                      </span>
                       <RepoUrlText url={url} />
                       <button
                         type="button"
-                        onClick={() => toggleRepo(url)}
+                        onClick={() => toggleRelatedRepo(url)}
                         className="text-muted-foreground hover:text-foreground"
                       >
                         <XIcon className="size-3" />

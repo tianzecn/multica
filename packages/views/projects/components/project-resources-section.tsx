@@ -52,6 +52,11 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
       .filter((r) => r.resource_type === "github_repo")
       .map((r) => (r.resource_ref as GithubRepoResourceRef).url),
   );
+  const primaryRepo = resources.find(
+    (r) =>
+      r.resource_type === "github_repo" &&
+      ((r.resource_ref as GithubRepoResourceRef).role ?? "primary") === "primary",
+  );
 
   const repoQuery = repoSearch.trim().toLowerCase();
   const filteredRepos =
@@ -61,7 +66,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
     try {
       await createResource.mutateAsync({
         resource_type: "github_repo",
-        resource_ref: { url },
+        resource_ref: { url, role: primaryRepo ? "related" : "primary" },
       });
       toast.success(t(($) => $.resources.toast_attached));
     } catch (err) {
@@ -216,9 +221,15 @@ function ResourceRow({
   const { t } = useT("projects");
   if (resource.resource_type === "github_repo") {
     const ref = resource.resource_ref as GithubRepoResourceRef;
+    const role = ref.role ?? "primary";
     return (
       <div className="flex items-center gap-2 text-xs group">
         <FolderGit className="size-3.5 text-muted-foreground shrink-0" />
+        <span className="shrink-0 rounded-sm bg-muted px-1 text-[10px] text-muted-foreground">
+          {role === "primary"
+            ? t(($) => $.resources.primary_badge)
+            : t(($) => $.resources.related_badge)}
+        </span>
         <Tooltip>
           <TooltipTrigger
             render={

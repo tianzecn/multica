@@ -71,6 +71,8 @@
     "empty": "No resources attached.",
     "add_button": "Add resource",
     "popover_title": "Attach a GitHub repo",
+    "primary_badge": "Main",
+    "related_badge": "Related",
     "repos_search_placeholder": "Search repositories...",
     "repos_search_empty": "No repositories match your search.",
     "attached_badge": "attached",

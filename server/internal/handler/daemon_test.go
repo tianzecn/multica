@@ -1714,10 +1714,10 @@ func TestStartTask_AutopilotRunOnlyTask_ResolvesWorkspace(t *testing.T) {
 	}
 }
 
-// ClaimTaskByRuntime must surface the issue's project github_repo resources
-// as resp.Repos and hide the workspace-bound repos. Without this the agent
-// would see two repo lists in the meta-skill and have no signal about which
-// belongs to the current issue.
+// ClaimTaskByRuntime must surface the issue's project primary github_repo as
+// resp.Repos and hide both workspace-bound repos and related repos. Related
+// repos remain in ProjectResources as context, but they are not default
+// checkout targets for "this project".
 func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -1742,11 +1742,17 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
 
 	const projectRepoURL = "https://github.com/example/project-only-repo"
+	const relatedRepoURL = "https://github.com/example/project-related-repo"
 	if _, err := testPool.Exec(ctx, `
 		INSERT INTO project_resource (
 			project_id, workspace_id, resource_type, resource_ref, position
-		) VALUES ($1, $2, 'github_repo', $3::jsonb, 0)
-	`, projectID, testWorkspaceID, `{"url":"`+projectRepoURL+`"}`); err != nil {
+		) VALUES
+			($1, $2, 'github_repo', $3::jsonb, 0),
+			($1, $2, 'github_repo', $4::jsonb, 1)
+	`, projectID, testWorkspaceID,
+		`{"url":"`+projectRepoURL+`","role":"primary"}`,
+		`{"url":"`+relatedRepoURL+`","role":"related"}`,
+	); err != nil {
 		t.Fatalf("create project_resource: %v", err)
 	}
 
@@ -1806,15 +1812,15 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 		t.Errorf("project_id = %q, want %q", resp.Task.ProjectID, projectID)
 	}
 	if len(resp.Task.Repos) != 1 || resp.Task.Repos[0].URL != projectRepoURL {
-		t.Fatalf("expected resp.Repos to contain only the project repo URL, got %+v", resp.Task.Repos)
+		t.Fatalf("expected resp.Repos to contain only the primary project repo URL, got %+v", resp.Task.Repos)
 	}
 	for _, r := range resp.Task.Repos {
 		if strings.HasSuffix(r.URL, "workspace-repo-a") || strings.HasSuffix(r.URL, "workspace-repo-b") {
 			t.Errorf("workspace repo %q leaked into resp.Repos despite project override", r.URL)
 		}
 	}
-	if len(resp.Task.ProjectResources) != 1 {
-		t.Errorf("expected 1 project_resources entry, got %d", len(resp.Task.ProjectResources))
+	if len(resp.Task.ProjectResources) != 2 {
+		t.Errorf("expected 2 project_resources entries, got %d", len(resp.Task.ProjectResources))
 	}
 }
 

@@ -103,13 +103,17 @@
     "repos_pill": "Repos",
     "repos_pill_count_one": "{{count}} repo",
     "repos_pill_count_other": "{{count}} repos",
-    "repos_heading": "Attach GitHub repos to this project",
+    "repos_heading": "Choose the main repository for this project",
     "repos_empty": "No workspace-level repos yet. Paste a URL below to attach one ad-hoc.",
     "repos_search_placeholder": "Search repositories...",
     "repos_search_empty": "No repositories match your search.",
     "repos_url_placeholder": "https://github.com/owner/repo or git@github.com:owner/repo.git",
     "repos_add": "Add",
-    "repos_selected": "Selected"
+    "repos_selected": "Selected",
+    "repos_primary_badge": "Main",
+    "repos_related_badge": "Related",
+    "repos_mark_related": "Use as related repository",
+    "repos_mark_unrelated": "Remove related repository"
   },
   "create_issue": {
     "sr_manual": "New Issue",

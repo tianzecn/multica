@@ -161,16 +161,17 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 	cases := []struct {
 		name string
 		url  string
+		role string
 	}{
-		{"scp-like", "git@github.com:multica-ai/multica.git"},
-		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica.git"},
+		{"scp-like", "git@github.com:multica-ai/multica.git", "primary"},
+		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica.git", "related"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			req := newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
 				"resource_type": "github_repo",
-				"resource_ref":  map[string]any{"url": tc.url},
+				"resource_ref":  map[string]any{"url": tc.url, "role": tc.role},
 			})
 			req = withURLParam(req, "id", project.ID)
 			testHandler.CreateProjectResource(w, req)
@@ -215,9 +216,9 @@ func TestIsValidGitRepoURL(t *testing.T) {
 		"ftp://example.com/repo",        // unsupported scheme
 		"file:///tmp/repo",              // unsupported scheme
 		"some random text with spaces",
-		"github.com:org/repo@branch",    // '@' after ':' belongs to the path, not user
-		"foo:bar@baz",                   // '@' after ':' with no scheme
-		":foo/bar",                      // leading ':' with no host
+		"github.com:org/repo@branch", // '@' after ':' belongs to the path, not user
+		"foo:bar@baz",                // '@' after ':' with no scheme
+		":foo/bar",                   // leading ':' with no host
 	}
 	for _, s := range good {
 		if !isValidGitRepoURL(s) {
@@ -261,6 +262,80 @@ func TestCreateProjectAttachesResources(t *testing.T) {
 
 	if len(resp.Resources) != 1 || resp.Resources[0].ResourceType != "github_repo" {
 		t.Fatalf("response resources mismatch: %+v", resp.Resources)
+	}
+}
+
+func TestProjectResourceAllowsOnlyOnePrimaryRepo(t *testing.T) {
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Project with one primary repo",
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
+	}
+	var project ProjectResponse
+	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
+		t.Fatalf("decode CreateProject: %v", err)
+	}
+	defer func() {
+		r := newRequest("DELETE", "/api/projects/"+project.ID, nil)
+		r = withURLParam(r, "id", project.ID)
+		testHandler.DeleteProject(httptest.NewRecorder(), r)
+	}()
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/web", "role": "primary"},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create primary: %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/api", "role": "primary"},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("second primary: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/api", "role": "related"},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("related after primary: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateProjectRejectsMultiplePrimaryRepos(t *testing.T) {
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Project with too many primary repos",
+		"resources": []map[string]any{
+			{
+				"resource_type": "github_repo",
+				"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/web", "role": "primary"},
+			},
+			{
+				"resource_type": "github_repo",
+				"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/api", "role": "primary"},
+			},
+		},
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("CreateProject with two primary repos: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -437,4 +512,3 @@ func TestCreateProjectRollsBackOnInvalidResource(t *testing.T) {
 		}
 	}
 }
-

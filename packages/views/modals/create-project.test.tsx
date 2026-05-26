@@ -179,15 +179,9 @@ describe("CreateProjectModal", () => {
 
     await user.type(repoSearchInput, "api");
 
-    expect(
-      screen.getByRole("button", { name: (name) => name.includes(apiRepoUrl) }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: (name) => name.includes(webRepoUrl) }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: (name) => name.includes(longRepoUrl) }),
-    ).not.toBeInTheDocument();
+    expect(screen.getAllByTitle(apiRepoUrl).length).toBeGreaterThan(0);
+    expect(screen.queryByTitle(webRepoUrl)).not.toBeInTheDocument();
+    expect(screen.queryByTitle(longRepoUrl)).not.toBeInTheDocument();
 
     await user.clear(repoSearchInput);
     await user.type(repoSearchInput, "no-match");

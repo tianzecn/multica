@@ -71,9 +71,15 @@ func validateAndNormalizeResourceRef(resourceType string, ref json.RawMessage) (
 }
 
 type githubRepoRef struct {
-	URL                string `json:"url"`
-	DefaultBranchHint  string `json:"default_branch_hint,omitempty"`
+	URL               string `json:"url"`
+	DefaultBranchHint string `json:"default_branch_hint,omitempty"`
+	Role              string `json:"role,omitempty"`
 }
+
+const (
+	githubRepoRolePrimary = "primary"
+	githubRepoRoleRelated = "related"
+)
 
 func validateGithubRepoRef(ref json.RawMessage) (json.RawMessage, error) {
 	var payload githubRepoRef
@@ -88,11 +94,77 @@ func validateGithubRepoRef(ref json.RawMessage) (json.RawMessage, error) {
 		return nil, errors.New("github_repo: url must be a valid http(s) or ssh git URL")
 	}
 	payload.DefaultBranchHint = strings.TrimSpace(payload.DefaultBranchHint)
+	payload.Role = strings.TrimSpace(payload.Role)
+	if payload.Role == "" {
+		payload.Role = githubRepoRolePrimary
+	}
+	if payload.Role != githubRepoRolePrimary && payload.Role != githubRepoRoleRelated {
+		return nil, errors.New("github_repo: role must be primary or related")
+	}
 	out, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func parseGithubRepoRef(ref json.RawMessage) (githubRepoRef, bool) {
+	var payload githubRepoRef
+	if err := json.Unmarshal(ref, &payload); err != nil {
+		return githubRepoRef{}, false
+	}
+	payload.URL = strings.TrimSpace(payload.URL)
+	payload.Role = strings.TrimSpace(payload.Role)
+	if payload.Role == "" {
+		payload.Role = githubRepoRolePrimary
+	}
+	return payload, payload.URL != ""
+}
+
+func (h *Handler) validateGithubRepoResourceCreate(ctx context.Context, projectID pgtype.UUID, normalizedRef json.RawMessage) error {
+	incoming, ok := parseGithubRepoRef(normalizedRef)
+	if !ok {
+		return errors.New("github_repo: url is required")
+	}
+	rows := h.listProjectResourcesForProject(ctx, projectID)
+	for _, row := range rows {
+		if row.ResourceType != "github_repo" {
+			continue
+		}
+		existing, ok := parseGithubRepoRef(row.ResourceRef)
+		if !ok {
+			continue
+		}
+		if existing.URL == incoming.URL {
+			return errors.New("this repository is already attached to the project")
+		}
+		if incoming.Role == githubRepoRolePrimary && existing.Role == githubRepoRolePrimary {
+			return errors.New("project already has a primary repository")
+		}
+	}
+	return nil
+}
+
+func validateGithubRepoResourceBatch(refs []json.RawMessage) error {
+	seenURLs := map[string]struct{}{}
+	hasPrimary := false
+	for i, ref := range refs {
+		payload, ok := parseGithubRepoRef(ref)
+		if !ok {
+			return fmt.Errorf("resources[%d]: github_repo: url is required", i)
+		}
+		if _, exists := seenURLs[payload.URL]; exists {
+			return fmt.Errorf("resources[%d]: this repository is already attached to the project", i)
+		}
+		seenURLs[payload.URL] = struct{}{}
+		if payload.Role == githubRepoRolePrimary {
+			if hasPrimary {
+				return fmt.Errorf("resources[%d]: project already has a primary repository", i)
+			}
+			hasPrimary = true
+		}
+	}
+	return nil
 }
 
 // isValidGitRepoURL accepts the three forms a user can paste from GitHub's
@@ -201,6 +273,16 @@ func (h *Handler) CreateProjectResource(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.ResourceType == "github_repo" {
+		if err := h.validateGithubRepoResourceCreate(r.Context(), project.ID, normalizedRef); err != nil {
+			if strings.Contains(err.Error(), "already") {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	var label pgtype.Text
@@ -323,4 +405,36 @@ func (h *Handler) listProjectResourcesForProject(ctx context.Context, projectID 
 		return nil
 	}
 	return rows
+}
+
+func projectResourcesForClaim(rows []db.ProjectResource) ([]ProjectResourceData, []RepoData) {
+	out := make([]ProjectResourceData, 0, len(rows))
+	var primaryRepo *RepoData
+	for _, row := range rows {
+		label := ""
+		if row.Label.Valid {
+			label = row.Label.String
+		}
+		ref := json.RawMessage(row.ResourceRef)
+		if len(ref) == 0 {
+			ref = json.RawMessage("{}")
+		}
+		out = append(out, ProjectResourceData{
+			ID:           uuidToString(row.ID),
+			ResourceType: row.ResourceType,
+			ResourceRef:  ref,
+			Label:        label,
+		})
+		if row.ResourceType != "github_repo" || primaryRepo != nil {
+			continue
+		}
+		payload, ok := parseGithubRepoRef(row.ResourceRef)
+		if ok && payload.Role == githubRepoRolePrimary {
+			primaryRepo = &RepoData{URL: payload.URL}
+		}
+	}
+	if primaryRepo == nil {
+		return out, nil
+	}
+	return out, []RepoData{*primaryRepo}
 }

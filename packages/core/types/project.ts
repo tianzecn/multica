@@ -57,6 +57,7 @@ export type ProjectResourceType = "github_repo";
 export interface GithubRepoResourceRef {
   url: string;
   default_branch_hint?: string;
+  role?: "primary" | "related";
 }
 
 export interface ProjectResource {

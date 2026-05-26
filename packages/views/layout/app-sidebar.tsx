@@ -111,6 +111,7 @@ const EMPTY_PROJECTS: Project[] = [];
 const EMPTY_WORKSPACES: Awaited<ReturnType<typeof api.listWorkspaces>> = [];
 const EMPTY_INVITATIONS: Awaited<ReturnType<typeof api.listMyInvitations>> = [];
 const EMPTY_INBOX: Awaited<ReturnType<typeof api.listInbox>> = [];
+const CONVERSATION_LIST_PREVIEW_LIMIT = 5;
 
 const SIDEBAR_LABEL_FALLBACKS = {
   en: {
@@ -124,6 +125,8 @@ const SIDEBAR_LABEL_FALLBACKS = {
     projectIssues: "Issues",
     restoreChannel: "Restore channel",
     restoreChannelNamed: "Restore",
+    showFewerConversations: "Show fewer",
+    showMoreConversations: "Show more",
     unassignedChannels: "Unassigned channels",
   },
   zh: {
@@ -137,12 +140,14 @@ const SIDEBAR_LABEL_FALLBACKS = {
     projectIssues: "Issue",
     restoreChannel: "恢复频道",
     restoreChannelNamed: "恢复频道",
+    showFewerConversations: "收起",
+    showMoreConversations: "显示更多",
     unassignedChannels: "未归属频道",
   },
 } as const;
 
 function resolveSidebarLabel(value: string, key: string, fallback: string) {
-  return value === key ? fallback : value;
+  return !value || value === key ? fallback : value;
 }
 
 function getSidebarLabelFallbacks(language?: string) {
@@ -297,6 +302,32 @@ function ConversationSidebarRow({
           )}
           <span className="text-[11px] text-muted-foreground/80">{timeLabel}</span>
         </span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+function ConversationListToggle({
+  expanded,
+  hiddenCount,
+  label,
+  onToggle,
+}: {
+  expanded: boolean;
+  hiddenCount: number;
+  label: string;
+  onToggle: () => void;
+}) {
+  if (hiddenCount <= 0) return null;
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        size="sm"
+        onClick={onToggle}
+        className="h-7 pl-8 pr-2 text-xs text-muted-foreground hover:not-data-active:bg-sidebar-accent/70"
+      >
+        <ChevronRight className={cn("size-3 transition-transform", expanded && "rotate-90")} />
+        <span>{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
   );
@@ -515,6 +546,11 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     "sidebar.archived_channels",
     sidebarFallbacks.archivedChannels,
   );
+  const showFewerConversationsLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.show_fewer_conversations),
+    "sidebar.show_fewer_conversations",
+    sidebarFallbacks.showFewerConversations,
+  );
   const unreadChannelLabel = t(($) => $.sidebar.unread_channel);
   const unreadConversationLabel = t(($) => $.sidebar.unread_conversation);
   const { pathname, push } = useNavigation();
@@ -566,6 +602,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const setUnassignedChannelsOpen = useProjectSidebarTreeStore((s) => s.setUnassignedChannelsOpen);
   const [createChannelProjectId, setCreateChannelProjectId] = useState<string | null>(null);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [expandedConversationSectionIds, setExpandedConversationSectionIds] = useState<Set<string>>(() => new Set());
   const sortedProjects = useMemo(() => sortProjectsByUpdatedAt(projects), [projects]);
   const activeChannels = useMemo(() => channels.filter((channel) => !channel.archived_at), [channels]);
   const archivedChannels = useMemo(() => channels.filter((channel) => channel.archived_at), [channels]);
@@ -611,6 +648,27 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     }
     return buckets;
   }, [activeChatSessions]);
+  const isConversationSectionExpanded = useCallback(
+    (sectionId: string) => expandedConversationSectionIds.has(sectionId),
+    [expandedConversationSectionIds],
+  );
+  const toggleConversationSection = useCallback((sectionId: string) => {
+    setExpandedConversationSectionIds((current) => {
+      const next = new Set(current);
+      if (next.has(sectionId)) next.delete(sectionId);
+      else next.add(sectionId);
+      return next;
+    });
+  }, []);
+  const getShowMoreConversationsLabel = useCallback(
+    (count: number) =>
+      resolveSidebarLabel(
+        t(($) => $.sidebar.show_more_conversations, { count }),
+        "sidebar.show_more_conversations",
+        `${sidebarFallbacks.showMoreConversations} ${count}`,
+      ),
+    [sidebarFallbacks.showMoreConversations, t],
+  );
   const openCreateChannel = useCallback((projectId: string | null = null) => {
     setCreateChannelProjectId(projectId);
     setShowCreateChannel(true);
@@ -893,17 +951,35 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                           )}
                         </SidebarMenuButton>
                       </SidebarMenuItem>
-                      {item.key === "conversations" && globalConversations.map((session) => (
-                        <ConversationSidebarRow
-                          key={session.id}
-                          session={session}
-                          href={p.conversationDetail(session.id)}
-                          pathname={pathname}
-                          title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
-                          timeLabel={timeAgo(session.updated_at)}
-                          unreadLabel={unreadConversationLabel}
-                        />
-                      ))}
+                      {item.key === "conversations" && (() => {
+                        const sectionId = "global";
+                        const expanded = isConversationSectionExpanded(sectionId);
+                        const visibleConversations = expanded
+                          ? globalConversations
+                          : globalConversations.slice(0, CONVERSATION_LIST_PREVIEW_LIMIT);
+                        const hiddenCount = globalConversations.length - CONVERSATION_LIST_PREVIEW_LIMIT;
+                        return (
+                          <>
+                            {visibleConversations.map((session) => (
+                              <ConversationSidebarRow
+                                key={session.id}
+                                session={session}
+                                href={p.conversationDetail(session.id)}
+                                pathname={pathname}
+                                title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
+                                timeLabel={timeAgo(session.updated_at)}
+                                unreadLabel={unreadConversationLabel}
+                              />
+                            ))}
+                            <ConversationListToggle
+                              expanded={expanded}
+                              hiddenCount={hiddenCount}
+                              label={expanded ? showFewerConversationsLabel : getShowMoreConversationsLabel(hiddenCount)}
+                              onToggle={() => toggleConversationSection(sectionId)}
+                            />
+                          </>
+                        );
+                      })()}
                     </React.Fragment>
                   );
                 })}
@@ -1050,19 +1126,35 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                   </SidebarMenuItem>
                                 );
                               })}
-                              {projectConversations.map((session) => {
+                              {(() => {
+                                const sectionId = `project:${project.id}`;
+                                const expanded = isConversationSectionExpanded(sectionId);
+                                const visibleConversations = expanded
+                                  ? projectConversations
+                                  : projectConversations.slice(0, CONVERSATION_LIST_PREVIEW_LIMIT);
+                                const hiddenCount = projectConversations.length - CONVERSATION_LIST_PREVIEW_LIMIT;
                                 return (
-                                  <ConversationSidebarRow
-                                    key={session.id}
-                                    session={session}
-                                    href={p.conversationDetail(session.id)}
-                                    pathname={pathname}
-                                    title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
-                                    timeLabel={timeAgo(session.updated_at)}
-                                    unreadLabel={unreadConversationLabel}
-                                  />
+                                  <>
+                                    {visibleConversations.map((session) => (
+                                      <ConversationSidebarRow
+                                        key={session.id}
+                                        session={session}
+                                        href={p.conversationDetail(session.id)}
+                                        pathname={pathname}
+                                        title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
+                                        timeLabel={timeAgo(session.updated_at)}
+                                        unreadLabel={unreadConversationLabel}
+                                      />
+                                    ))}
+                                    <ConversationListToggle
+                                      expanded={expanded}
+                                      hiddenCount={hiddenCount}
+                                      label={expanded ? showFewerConversationsLabel : getShowMoreConversationsLabel(hiddenCount)}
+                                      onToggle={() => toggleConversationSection(sectionId)}
+                                    />
+                                  </>
                                 );
-                              })}
+                              })()}
                             </>
                           )}
                         </React.Fragment>

@@ -71,6 +71,8 @@
     "empty": "还没有关联资源。",
     "add_button": "添加资源",
     "popover_title": "关联 GitHub 仓库",
+    "primary_badge": "主仓库",
+    "related_badge": "相关",
     "repos_search_placeholder": "搜索仓库...",
     "repos_search_empty": "没有匹配的仓库。",
     "attached_badge": "已关联",
