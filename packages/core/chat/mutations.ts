@@ -76,6 +76,43 @@ export function useMarkChatSessionRead() {
   });
 }
 
+export function useMarkChatSessionUnread() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: (sessionId: string) => {
+      logger.info("markChatSessionUnread.start", { sessionId });
+      return api.markChatSessionUnread(sessionId);
+    },
+    onMutate: async (sessionId) => {
+      await qc.cancelQueries({ queryKey: chatKeys.sessions(wsId) });
+      await qc.cancelQueries({ queryKey: chatKeys.session(wsId, sessionId) });
+
+      const prevSessions = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId));
+      const prevSession = qc.getQueryData<ChatSession>(chatKeys.session(wsId, sessionId));
+
+      const mark = (old?: ChatSession[]) =>
+        old?.map((s) => (s.id === sessionId ? { ...s, has_unread: true } : s));
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), mark);
+      qc.setQueryData<ChatSession>(chatKeys.session(wsId, sessionId), (old) =>
+        old ? { ...old, has_unread: true } : old,
+      );
+
+      return { prevSessions, prevSession };
+    },
+    onError: (err, sessionId, ctx) => {
+      logger.error("markChatSessionUnread.error.rollback", { sessionId, err });
+      if (ctx?.prevSessions) qc.setQueryData(chatKeys.sessions(wsId), ctx.prevSessions);
+      if (ctx?.prevSession) qc.setQueryData(chatKeys.session(wsId, sessionId), ctx.prevSession);
+    },
+    onSettled: (_data, _err, sessionId) => {
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+      qc.invalidateQueries({ queryKey: chatKeys.session(wsId, sessionId) });
+    },
+  });
+}
+
 /**
  * Renames a chat session. Optimistically swaps the title in the cached
  * list so the dropdown reflects the new label immediately; rolls back on

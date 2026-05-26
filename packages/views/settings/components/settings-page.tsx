@@ -12,6 +12,7 @@ import {
   Bell,
   Plug,
   Archive,
+  Hash,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
@@ -27,6 +28,7 @@ import { GitHubTab } from "./github-tab";
 import { IntegrationsTab } from "./integrations-tab";
 import { LabsTab } from "./labs-tab";
 import { NotificationsTab } from "./notifications-tab";
+import { ArchivedChannelsTab } from "./archived-channels-tab";
 import { ArchivedConversationsTab } from "./archived-conversations-tab";
 import { useT } from "../../i18n";
 
@@ -41,6 +43,7 @@ const ACCOUNT_TAB_ICONS = {
 const WORKSPACE_TAB_KEYS = [
   "general",
   "archivedConversations",
+  "archivedChannels",
   "repositories",
   "github",
   "integrations",
@@ -50,6 +53,7 @@ const WORKSPACE_TAB_KEYS = [
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
   archivedConversations: "archivedConversations",
+  archivedChannels: "archivedChannels",
   repositories: "repositories",
   github: "github",
   integrations: "integrations",
@@ -59,6 +63,7 @@ const WORKSPACE_TAB_VALUES = {
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
   archivedConversations: Archive,
+  archivedChannels: Hash,
   repositories: FolderGit2,
   github: GitHubMark,
   integrations: Plug,
@@ -76,6 +81,7 @@ const TAB_LABEL_FALLBACKS = {
     notifications: "Notifications",
     tokens: "API Tokens",
     archivedConversations: "Archived Conversations",
+    archivedChannels: "Archived Channels",
     general: "General",
     repositories: "Repositories",
     github: "GitHub",
@@ -89,6 +95,7 @@ const TAB_LABEL_FALLBACKS = {
     notifications: "通知",
     tokens: "API 令牌",
     archivedConversations: "已归档对话",
+    archivedChannels: "已归档频道",
     general: "通用",
     repositories: "代码仓库",
     github: "GitHub",
@@ -208,6 +215,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="notifications"><NotificationsTab /></TabsContent>
           <TabsContent value="tokens"><TokensTab /></TabsContent>
           <TabsContent value="archivedConversations"><ArchivedConversationsTab /></TabsContent>
+          <TabsContent value="archivedChannels"><ArchivedChannelsTab /></TabsContent>
           <TabsContent value="workspace"><WorkspaceTab /></TabsContent>
           <TabsContent value="repositories"><RepositoriesTab /></TabsContent>
           <TabsContent value="github"><GitHubTab /></TabsContent>

@@ -1500,6 +1500,10 @@ export class ApiClient {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
   }
 
+  async markChatSessionUnread(sessionId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/unread`, { method: "POST" });
+  }
+
   async cancelTaskById(taskId: string): Promise<void> {
     await this.fetch(`/api/tasks/${taskId}/cancel`, { method: "POST" });
   }
@@ -1635,6 +1639,10 @@ export class ApiClient {
     return parseWithFallback(raw, ChannelSchema, EMPTY_CHANNEL, {
       endpoint: "POST /api/channels/:id/restore",
     });
+  }
+
+  async deleteArchivedChannel(channelId: string): Promise<void> {
+    await this.fetch(`/api/channels/${channelId}/permanent`, { method: "DELETE" });
   }
 
   async markChannelRead(channelId: string): Promise<Channel> {

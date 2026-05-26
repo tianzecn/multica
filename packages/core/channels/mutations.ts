@@ -104,6 +104,31 @@ export function useRestoreChannel(channelId: string) {
   });
 }
 
+export function useDeleteArchivedChannel(channelId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: () => api.deleteArchivedChannel(channelId),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: channelKeys.all(wsId) });
+      const previousActive = qc.getQueryData<Channel[]>(channelKeys.list(wsId));
+      const previousWithArchived = qc.getQueryData<Channel[]>(channelKeys.list(wsId, true));
+      const remove = (old?: Channel[]) => old?.filter((item) => item.id !== channelId);
+      qc.setQueryData<Channel[]>(channelKeys.list(wsId), remove);
+      qc.setQueryData<Channel[]>(channelKeys.list(wsId, true), remove);
+      return { previousActive, previousWithArchived };
+    },
+    onError: (_error, _vars, context) => {
+      if (context?.previousActive) qc.setQueryData(channelKeys.list(wsId), context.previousActive);
+      if (context?.previousWithArchived) qc.setQueryData(channelKeys.list(wsId, true), context.previousWithArchived);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: channelKeys.all(wsId) });
+      qc.removeQueries({ queryKey: channelKeys.detail(wsId, channelId) });
+    },
+  });
+}
+
 export function useMarkChannelRead(channelId: string) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();

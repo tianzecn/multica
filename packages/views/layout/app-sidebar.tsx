@@ -36,7 +36,8 @@ import {
   Hash,
   Lock,
   Archive,
-  RotateCcw,
+  Mail,
+  Pencil,
   MessageSquare,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
@@ -68,6 +69,23 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@multica/ui/components/ui/context-menu";
+import { Button } from "@multica/ui/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@multica/ui/components/ui/dialog";
+import { Input } from "@multica/ui/components/ui/input";
 import { useAuthStore } from "@multica/core/auth";
 import { useCurrentWorkspace, useWorkspacePaths, paths } from "@multica/core/paths";
 import { workspaceListOptions, myInvitationListOptions, workspaceKeys } from "@multica/core/workspace/queries";
@@ -81,8 +99,8 @@ import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions, projectListOptions } from "@multica/core/projects/queries";
 import { useProjectSidebarTreeStore } from "@multica/core/projects";
-import { chatSessionsOptions } from "@multica/core/chat/queries";
-import { channelGroupsOptions, channelListOptions, deriveChannelsSettings, useRestoreChannel } from "@multica/core/channels";
+import { chatKeys, chatSessionsOptions } from "@multica/core/chat/queries";
+import { channelGroupsOptions, channelListOptions, deriveChannelsSettings, useArchiveChannel, useUpdateChannel } from "@multica/core/channels";
 import type { Channel, ChannelGroup, ChatSession, PinnedItem, Project } from "@multica/core/types";
 import { useLogout } from "../auth";
 import { ProjectIcon } from "../projects/components/project-icon";
@@ -115,35 +133,59 @@ const CONVERSATION_LIST_PREVIEW_LIMIT = 5;
 
 const SIDEBAR_LABEL_FALLBACKS = {
   en: {
-    archivedChannels: "Archived channels",
+    archiveChannel: "Archive channel",
+    archiveChannelNamed: "Archive",
     collapseProject: "Collapse",
     createProjectChannel: "Create project channel",
     createProjectChannelNamed: "Create channel in",
     createProjectConversation: "New conversation",
     createProjectConversationNamed: "New conversation in",
     expandProject: "Expand",
+    renameChannel: "Rename channel",
+    renameChannelCancel: "Cancel",
+    renameChannelDescription: "Change the name shown in the sidebar and channel header.",
+    renameChannelPlaceholder: "Channel name",
+    renameChannelSave: "Save",
+    renameChannelTitle: "Rename channel",
     projectIssues: "Issues",
-    restoreChannel: "Restore channel",
-    restoreChannelNamed: "Restore",
     archiveConversation: "Archive conversation",
     archiveConversationNamed: "Archive",
+    markConversationUnread: "Mark as unread",
+    renameConversation: "Rename conversation",
+    renameConversationCancel: "Cancel",
+    renameConversationDescription: "Change the title shown in the sidebar and conversation list.",
+    renameConversationPlaceholder: "Conversation title",
+    renameConversationSave: "Save",
+    renameConversationTitle: "Rename conversation",
     showFewerConversations: "Show fewer",
     showMoreConversations: "Show more",
     unassignedChannels: "Unassigned channels",
   },
   zh: {
-    archivedChannels: "已归档频道",
+    archiveChannel: "归档频道",
+    archiveChannelNamed: "归档",
     collapseProject: "收起项目",
     createProjectChannel: "新建项目频道",
     createProjectChannelNamed: "在项目中新建频道",
     createProjectConversation: "新建对话",
     createProjectConversationNamed: "在项目中新建对话",
     expandProject: "展开项目",
+    renameChannel: "重命名频道",
+    renameChannelCancel: "取消",
+    renameChannelDescription: "修改侧边栏和频道标题中显示的名称。",
+    renameChannelPlaceholder: "频道名称",
+    renameChannelSave: "保存",
+    renameChannelTitle: "重命名频道",
     projectIssues: "Issue",
-    restoreChannel: "恢复频道",
-    restoreChannelNamed: "恢复频道",
     archiveConversation: "归档对话",
     archiveConversationNamed: "归档",
+    markConversationUnread: "标记为未读",
+    renameConversation: "重命名对话",
+    renameConversationCancel: "取消",
+    renameConversationDescription: "修改侧边栏和对话列表中显示的标题。",
+    renameConversationPlaceholder: "对话标题",
+    renameConversationSave: "保存",
+    renameConversationTitle: "重命名对话",
     showFewerConversations: "收起",
     showMoreConversations: "显示更多",
     unassignedChannels: "未归属频道",
@@ -236,40 +278,165 @@ function ChannelUnreadDot({ channel, label }: { channel: Channel; label: string 
   return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-brand" aria-label={label} />;
 }
 
-function ArchivedChannelSidebarRow({ channel, href }: { channel: Channel; href: string }) {
-  const { t, i18n } = useT("layout");
-  const sidebarFallbacks = getSidebarLabelFallbacks(i18n.resolvedLanguage ?? i18n.language);
-  const restoreChannelLabel = resolveSidebarLabel(
-    t(($) => $.sidebar.restore_channel),
-    "sidebar.restore_channel",
-    sidebarFallbacks.restoreChannel,
-  );
-  const restoreChannelNamedLabel = resolveSidebarLabel(
-    t(($) => $.sidebar.restore_channel_named, { name: channel.name }),
-    "sidebar.restore_channel_named",
-    `${sidebarFallbacks.restoreChannelNamed} ${channel.name}`,
-  );
-  const restoreChannel = useRestoreChannel(channel.id);
+function SidebarRenameDialog({
+  open,
+  title,
+  labels,
+  onOpenChange,
+  onSubmit,
+}: {
+  open: boolean;
+  title: string;
+  labels: {
+    cancel: string;
+    description: string;
+    placeholder: string;
+    save: string;
+    title: string;
+  };
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (title: string) => void;
+}) {
+  const [value, setValue] = useState(title);
+
+  useEffect(() => {
+    if (open) setValue(title);
+  }, [open, title]);
+
+  const trimmed = value.trim();
+
   return (
-    <SidebarMenuItem>
-      <div className="group/archived-channel flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-sm text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground">
-        <AppLink href={href} className="flex min-w-0 flex-1 items-center gap-2">
-          {channel.visibility === "private" ? <Lock className="size-3.5 shrink-0" /> : <Hash className="size-3.5 shrink-0" />}
-          <span className="truncate">{channel.name}</span>
-        </AppLink>
-        <Tooltip>
-          <TooltipTrigger
-            render={<button type="button" />}
-            className="flex size-6 shrink-0 items-center justify-center rounded-sm opacity-0 transition-opacity hover:bg-sidebar-accent group-hover/archived-channel:opacity-100 focus:opacity-100"
-            onClick={() => restoreChannel.mutate()}
-            disabled={restoreChannel.isPending}
-            aria-label={restoreChannelNamedLabel}
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{labels.title}</DialogTitle>
+          <DialogDescription>{labels.description}</DialogDescription>
+        </DialogHeader>
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!trimmed) return;
+            onSubmit(trimmed);
+          }}
+        >
+          <Input
+            autoFocus
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder={labels.placeholder}
+          />
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              {labels.cancel}
+            </Button>
+            <Button type="submit" disabled={!trimmed}>
+              {labels.save}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ChannelSidebarRow({
+  channel,
+  href,
+  pathname,
+  unreadLabel,
+  archiveLabel,
+  archiveTitle,
+  renameLabel,
+  renameDialogLabels,
+  onArchivedActiveChannel,
+}: {
+  channel: Channel;
+  href: string;
+  pathname: string;
+  unreadLabel: string;
+  archiveLabel: string;
+  archiveTitle: string;
+  renameLabel: string;
+  renameDialogLabels: {
+    cancel: string;
+    description: string;
+    placeholder: string;
+    save: string;
+    title: string;
+  };
+  onArchivedActiveChannel: () => void;
+}) {
+  const [renameOpen, setRenameOpen] = useState(false);
+  const updateChannel = useUpdateChannel(channel.id);
+  const archiveChannel = useArchiveChannel(channel.id);
+  const isActive = isNavActive(pathname, href);
+
+  return (
+    <SidebarMenuItem className="group/channel">
+      <ContextMenu>
+        <ContextMenuTrigger render={<div className="relative" />}>
+          <SidebarMenuButton
+            size="sm"
+            isActive={isActive}
+            render={<AppLink href={href} />}
+            className="pl-8 pr-9 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
           >
-            <RotateCcw className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipContent side="top" sideOffset={4}>{restoreChannelLabel}</TooltipContent>
-        </Tooltip>
-      </div>
+            {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
+            <span className="truncate">{channel.name}</span>
+            <ChannelUnreadDot channel={channel} label={unreadLabel} />
+          </SidebarMenuButton>
+          <Tooltip>
+            <TooltipTrigger
+              render={<button type="button" />}
+              className="absolute right-1 top-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/channel:opacity-100 group-focus-within/channel:opacity-100"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                archiveChannel.mutate(undefined, {
+                  onSuccess: () => {
+                    if (isActive) onArchivedActiveChannel();
+                  },
+                });
+              }}
+              disabled={archiveChannel.isPending}
+              aria-label={archiveTitle}
+            >
+              <Archive className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={4}>{archiveLabel}</TooltipContent>
+          </Tooltip>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-36 p-1">
+          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" onClick={() => setRenameOpen(true)}>
+            <Pencil className="size-3.5" />
+            <span>{renameLabel}</span>
+          </ContextMenuItem>
+          <ContextMenuItem
+            className="h-7 gap-2 px-2 text-xs"
+            onClick={() =>
+              archiveChannel.mutate(undefined, {
+                onSuccess: () => {
+                  if (isActive) onArchivedActiveChannel();
+                },
+              })
+            }
+          >
+            <Archive className="size-3.5" />
+            <span>{archiveLabel}</span>
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      <SidebarRenameDialog
+        open={renameOpen}
+        title={channel.name}
+        labels={renameDialogLabels}
+        onOpenChange={setRenameOpen}
+        onSubmit={(name) => {
+          updateChannel.mutate({ name });
+          setRenameOpen(false);
+        }}
+      />
     </SidebarMenuItem>
   );
 }
@@ -283,7 +450,12 @@ function ConversationSidebarRow({
   unreadLabel,
   archiveLabel,
   archiveTitle,
+  markUnreadDisabled,
+  markUnreadLabel,
+  renameLabel,
   onArchive,
+  onMarkUnread,
+  onRename,
 }: {
   session: ChatSession;
   href: string;
@@ -293,56 +465,76 @@ function ConversationSidebarRow({
   unreadLabel: string;
   archiveLabel: string;
   archiveTitle: string;
+  markUnreadDisabled: boolean;
+  markUnreadLabel: string;
+  renameLabel: string;
   onArchive: () => void;
+  onMarkUnread: () => void;
+  onRename: () => void;
 }) {
   return (
     <SidebarMenuItem className="group/conversation">
-      <div className="relative">
-        <SidebarMenuButton
-          size="sm"
-          isActive={isNavActive(pathname, href)}
-          render={<AppLink href={href} />}
-          className="h-8 pl-8 pr-9 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-        >
-          <span className={cn("min-w-0 flex-1 truncate", session.has_unread && "font-medium text-foreground")}>
-            {title}
-          </span>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            {session.has_unread && (
-              <span className="size-1.5 rounded-full bg-brand" aria-label={unreadLabel} />
-            )}
-            <span className="text-[11px] text-muted-foreground/80 group-hover/conversation:hidden group-focus-within/conversation:hidden">
-              {timeLabel}
-            </span>
-          </span>
-        </SidebarMenuButton>
-        <Tooltip>
-          <TooltipTrigger
-            render={<button type="button" />}
-            className="absolute right-1 top-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/conversation:opacity-100 group-focus-within/conversation:opacity-100"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onArchive();
-            }}
-            aria-label={archiveTitle}
+      <ContextMenu>
+        <ContextMenuTrigger render={<div className="relative" />}>
+          <SidebarMenuButton
+            size="sm"
+            isActive={isNavActive(pathname, href)}
+            render={<AppLink href={href} />}
+            className="h-8 pl-8 pr-9 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
           >
+            <span className={cn("min-w-0 flex-1 truncate", session.has_unread && "font-medium text-foreground")}>
+              {title}
+            </span>
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {session.has_unread && (
+                <span className="size-1.5 rounded-full bg-brand" aria-label={unreadLabel} />
+              )}
+              <span className="text-[11px] text-muted-foreground/80 group-hover/conversation:hidden group-focus-within/conversation:hidden">
+                {timeLabel}
+              </span>
+            </span>
+          </SidebarMenuButton>
+          <Tooltip>
+            <TooltipTrigger
+              render={<button type="button" />}
+              className="absolute right-1 top-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/conversation:opacity-100 group-focus-within/conversation:opacity-100"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onArchive();
+              }}
+              aria-label={archiveTitle}
+            >
+              <Archive className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={4}>{archiveLabel}</TooltipContent>
+          </Tooltip>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-36 p-1">
+          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" onClick={onRename}>
+            <Pencil className="size-3.5" />
+            <span>{renameLabel}</span>
+          </ContextMenuItem>
+          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" onClick={onArchive}>
             <Archive className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipContent side="top" sideOffset={4}>{archiveLabel}</TooltipContent>
-        </Tooltip>
-      </div>
+            <span>{archiveLabel}</span>
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" disabled={markUnreadDisabled} onClick={onMarkUnread}>
+            <Mail className="size-3.5" />
+            <span>{markUnreadLabel}</span>
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </SidebarMenuItem>
   );
 }
 
 function ConversationListToggle({
-  expanded,
   hiddenCount,
   label,
   onToggle,
 }: {
-  expanded: boolean;
   hiddenCount: number;
   label: string;
   onToggle: () => void;
@@ -355,7 +547,6 @@ function ConversationListToggle({
         onClick={onToggle}
         className="h-7 pl-8 pr-2 text-xs text-muted-foreground hover:not-data-active:bg-sidebar-accent/70"
       >
-        <ChevronRight className={cn("size-3 transition-transform", expanded && "rotate-90")} />
         <span>{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
@@ -570,11 +761,43 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     "sidebar.unassigned_channels",
     sidebarFallbacks.unassignedChannels,
   );
-  const archivedChannelsLabel = resolveSidebarLabel(
-    t(($) => $.sidebar.archived_channels),
-    "sidebar.archived_channels",
-    sidebarFallbacks.archivedChannels,
+  const archiveChannelLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.archive_channel),
+    "sidebar.archive_channel",
+    sidebarFallbacks.archiveChannel,
   );
+  const renameChannelLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.rename_channel),
+    "sidebar.rename_channel",
+    sidebarFallbacks.renameChannel,
+  );
+  const renameChannelDialogLabels = {
+    cancel: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_channel_cancel),
+      "sidebar.rename_channel_cancel",
+      sidebarFallbacks.renameChannelCancel,
+    ),
+    description: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_channel_description),
+      "sidebar.rename_channel_description",
+      sidebarFallbacks.renameChannelDescription,
+    ),
+    placeholder: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_channel_placeholder),
+      "sidebar.rename_channel_placeholder",
+      sidebarFallbacks.renameChannelPlaceholder,
+    ),
+    save: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_channel_save),
+      "sidebar.rename_channel_save",
+      sidebarFallbacks.renameChannelSave,
+    ),
+    title: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_channel_title),
+      "sidebar.rename_channel_title",
+      sidebarFallbacks.renameChannelTitle,
+    ),
+  };
   const showFewerConversationsLabel = resolveSidebarLabel(
     t(($) => $.sidebar.show_fewer_conversations),
     "sidebar.show_fewer_conversations",
@@ -585,6 +808,43 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     "sidebar.archive_conversation",
     sidebarFallbacks.archiveConversation,
   );
+  const renameConversationLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.rename_conversation),
+    "sidebar.rename_conversation",
+    sidebarFallbacks.renameConversation,
+  );
+  const markConversationUnreadLabel = resolveSidebarLabel(
+    t(($) => $.sidebar.mark_conversation_unread),
+    "sidebar.mark_conversation_unread",
+    sidebarFallbacks.markConversationUnread,
+  );
+  const renameConversationDialogLabels = {
+    cancel: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_conversation_cancel),
+      "sidebar.rename_conversation_cancel",
+      sidebarFallbacks.renameConversationCancel,
+    ),
+    description: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_conversation_description),
+      "sidebar.rename_conversation_description",
+      sidebarFallbacks.renameConversationDescription,
+    ),
+    placeholder: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_conversation_placeholder),
+      "sidebar.rename_conversation_placeholder",
+      sidebarFallbacks.renameConversationPlaceholder,
+    ),
+    save: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_conversation_save),
+      "sidebar.rename_conversation_save",
+      sidebarFallbacks.renameConversationSave,
+    ),
+    title: resolveSidebarLabel(
+      t(($) => $.sidebar.rename_conversation_title),
+      "sidebar.rename_conversation_title",
+      sidebarFallbacks.renameConversationTitle,
+    ),
+  };
   const unreadChannelLabel = t(($) => $.sidebar.unread_channel);
   const unreadConversationLabel = t(($) => $.sidebar.unread_conversation);
   const { pathname, push } = useNavigation();
@@ -614,7 +874,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     enabled: !!wsId && !!userId,
   });
   const { data: channels = EMPTY_CHANNELS } = useQuery({
-    ...channelListOptions(wsId ?? "", { includeArchived: true }),
+    ...channelListOptions(wsId ?? ""),
     enabled: !!wsId && channelsEnabled,
   });
   const { data: channelGroups = EMPTY_CHANNEL_GROUPS } = useQuery({
@@ -631,13 +891,47 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   });
   const expandedProjectIds = useProjectSidebarTreeStore((s) => s.expandedProjectIds);
   const toggleProjectOpen = useProjectSidebarTreeStore((s) => s.toggleProject);
-  const archivedChannelsOpen = useProjectSidebarTreeStore((s) => s.archivedChannelsOpen);
-  const setArchivedChannelsOpen = useProjectSidebarTreeStore((s) => s.setArchivedChannelsOpen);
   const unassignedChannelsOpen = useProjectSidebarTreeStore((s) => s.unassignedChannelsOpen);
   const setUnassignedChannelsOpen = useProjectSidebarTreeStore((s) => s.setUnassignedChannelsOpen);
   const [createChannelProjectId, setCreateChannelProjectId] = useState<string | null>(null);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [expandedConversationSectionIds, setExpandedConversationSectionIds] = useState<Set<string>>(() => new Set());
+  const [renamingConversation, setRenamingConversation] = useState<ChatSession | null>(null);
+  const updateConversation = useMutation({
+    mutationFn: (data: { sessionId: string; title: string }) =>
+      api.updateChatSession(data.sessionId, { title: data.title }),
+    onMutate: async ({ sessionId, title }) => {
+      if (!wsId) return {};
+      await queryClient.cancelQueries({ queryKey: chatSessionsOptions(wsId).queryKey });
+      await queryClient.cancelQueries({ queryKey: chatKeys.session(wsId, sessionId) });
+      const prevSessions = queryClient.getQueryData<ChatSession[]>(chatSessionsOptions(wsId).queryKey);
+      const prevSession = queryClient.getQueryData<ChatSession>(chatKeys.session(wsId, sessionId));
+      queryClient.setQueryData<ChatSession[]>(chatSessionsOptions(wsId).queryKey, (old) =>
+        old?.map((item) => (item.id === sessionId ? { ...item, title } : item)),
+      );
+      queryClient.setQueryData<ChatSession>(chatKeys.session(wsId, sessionId), (old) =>
+        old ? { ...old, title } : old,
+      );
+      return { prevSession, prevSessions };
+    },
+    onError: (_error, vars, ctx) => {
+      if (!wsId) return;
+      if (ctx?.prevSessions) queryClient.setQueryData(chatSessionsOptions(wsId).queryKey, ctx.prevSessions);
+      if (ctx?.prevSession) queryClient.setQueryData(chatKeys.session(wsId, vars.sessionId), ctx.prevSession);
+    },
+    onSuccess: (session) => {
+      if (!wsId) return;
+      queryClient.setQueryData<ChatSession[]>(chatSessionsOptions(wsId).queryKey, (old) =>
+        old?.map((item) => (item.id === session.id ? session : item)),
+      );
+      queryClient.setQueryData<ChatSession>(chatKeys.session(wsId, session.id), session);
+    },
+    onSettled: (_data, _error, vars) => {
+      if (!wsId) return;
+      queryClient.invalidateQueries({ queryKey: chatSessionsOptions(wsId).queryKey });
+      queryClient.invalidateQueries({ queryKey: chatKeys.session(wsId, vars.sessionId) });
+    },
+  });
   const archiveConversation = useMutation({
     mutationFn: (sessionId: string) => api.archiveChatSession(sessionId),
     onSuccess: (session) => {
@@ -648,9 +942,35 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
       queryClient.invalidateQueries({ queryKey: chatSessionsOptions(wsId).queryKey });
     },
   });
+  const markConversationUnread = useMutation({
+    mutationFn: (sessionId: string) => api.markChatSessionUnread(sessionId),
+    onMutate: async (sessionId) => {
+      if (!wsId) return {};
+      await queryClient.cancelQueries({ queryKey: chatSessionsOptions(wsId).queryKey });
+      await queryClient.cancelQueries({ queryKey: chatKeys.session(wsId, sessionId) });
+      const prevSessions = queryClient.getQueryData<ChatSession[]>(chatSessionsOptions(wsId).queryKey);
+      const prevSession = queryClient.getQueryData<ChatSession>(chatKeys.session(wsId, sessionId));
+      queryClient.setQueryData<ChatSession[]>(chatSessionsOptions(wsId).queryKey, (old) =>
+        old?.map((item) => (item.id === sessionId ? { ...item, has_unread: true } : item)),
+      );
+      queryClient.setQueryData<ChatSession>(chatKeys.session(wsId, sessionId), (old) =>
+        old ? { ...old, has_unread: true } : old,
+      );
+      return { prevSession, prevSessions };
+    },
+    onError: (_error, sessionId, ctx) => {
+      if (!wsId) return;
+      if (ctx?.prevSessions) queryClient.setQueryData(chatSessionsOptions(wsId).queryKey, ctx.prevSessions);
+      if (ctx?.prevSession) queryClient.setQueryData(chatKeys.session(wsId, sessionId), ctx.prevSession);
+    },
+    onSettled: (_data, _error, sessionId) => {
+      if (!wsId) return;
+      queryClient.invalidateQueries({ queryKey: chatSessionsOptions(wsId).queryKey });
+      queryClient.invalidateQueries({ queryKey: chatKeys.session(wsId, sessionId) });
+    },
+  });
   const sortedProjects = useMemo(() => sortProjectsByUpdatedAt(projects), [projects]);
   const activeChannels = useMemo(() => channels.filter((channel) => !channel.archived_at), [channels]);
-  const archivedChannels = useMemo(() => channels.filter((channel) => channel.archived_at), [channels]);
   const channelsByProjectId = useMemo(() => {
     const buckets = new Map<string, Channel[]>();
     for (const channel of activeChannels) {
@@ -1021,11 +1341,15 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                   "sidebar.archive_conversation_named",
                                   `${sidebarFallbacks.archiveConversationNamed} ${session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}`,
                                 )}
+                                markUnreadDisabled={session.has_unread || isNavActive(pathname, p.conversationDetail(session.id))}
+                                markUnreadLabel={markConversationUnreadLabel}
+                                renameLabel={renameConversationLabel}
                                 onArchive={() => archiveConversation.mutate(session.id)}
+                                onMarkUnread={() => markConversationUnread.mutate(session.id)}
+                                onRename={() => setRenamingConversation(session)}
                               />
                             ))}
                             <ConversationListToggle
-                              expanded={expanded}
                               hiddenCount={hiddenCount}
                               label={expanded ? showFewerConversationsLabel : getShowMoreConversationsLabel(hiddenCount)}
                               onToggle={() => toggleConversationSection(sectionId)}
@@ -1165,18 +1489,22 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                               {channelsEnabled && projectChannels.map((channel) => {
                                 const href = p.channelDetail(channel.slug);
                                 return (
-                                  <SidebarMenuItem key={channel.id}>
-                                    <SidebarMenuButton
-                                      size="sm"
-                                      isActive={isNavActive(pathname, href)}
-                                      render={<AppLink href={href} />}
-                                      className="pl-8 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                                    >
-                                      {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
-                                      <span className="truncate">{channel.name}</span>
-                                      <ChannelUnreadDot channel={channel} label={unreadChannelLabel} />
-                                    </SidebarMenuButton>
-                                  </SidebarMenuItem>
+                                  <ChannelSidebarRow
+                                    key={channel.id}
+                                    channel={channel}
+                                    href={href}
+                                    pathname={pathname}
+                                    unreadLabel={unreadChannelLabel}
+                                    archiveLabel={archiveChannelLabel}
+                                    archiveTitle={resolveSidebarLabel(
+                                      t(($) => $.sidebar.archive_channel_named, { name: channel.name }),
+                                      "sidebar.archive_channel_named",
+                                      `${sidebarFallbacks.archiveChannelNamed} ${channel.name}`,
+                                    )}
+                                    renameLabel={renameChannelLabel}
+                                    renameDialogLabels={renameChannelDialogLabels}
+                                    onArchivedActiveChannel={() => push(projectHref)}
+                                  />
                                 );
                               })}
                               {(() => {
@@ -1205,11 +1533,15 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                           "sidebar.archive_conversation_named",
                                           `${sidebarFallbacks.archiveConversationNamed} ${session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}`,
                                         )}
+                                        markUnreadDisabled={session.has_unread || isNavActive(pathname, p.conversationDetail(session.id))}
+                                        markUnreadLabel={markConversationUnreadLabel}
+                                        renameLabel={renameConversationLabel}
                                         onArchive={() => archiveConversation.mutate(session.id)}
+                                        onMarkUnread={() => markConversationUnread.mutate(session.id)}
+                                        onRename={() => setRenamingConversation(session)}
                                       />
                                     ))}
                                     <ConversationListToggle
-                                      expanded={expanded}
                                       hiddenCount={hiddenCount}
                                       label={expanded ? showFewerConversationsLabel : getShowMoreConversationsLabel(hiddenCount)}
                                       onToggle={() => toggleConversationSection(sectionId)}
@@ -1240,41 +1572,24 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                           {unassignedChannels.map((channel) => {
                             const href = p.channelDetail(channel.slug);
                             return (
-                              <SidebarMenuItem key={channel.id}>
-                                <SidebarMenuButton
-                                  size="sm"
-                                  isActive={isNavActive(pathname, href)}
-                                  render={<AppLink href={href} />}
-                                  className="pl-8 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                                >
-                                  {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
-                                  <span className="truncate">{channel.name}</span>
-                                  <ChannelUnreadDot channel={channel} label={unreadChannelLabel} />
-                                </SidebarMenuButton>
-                              </SidebarMenuItem>
+                              <ChannelSidebarRow
+                                key={channel.id}
+                                channel={channel}
+                                href={href}
+                                pathname={pathname}
+                                unreadLabel={unreadChannelLabel}
+                                archiveLabel={archiveChannelLabel}
+                                archiveTitle={resolveSidebarLabel(
+                                  t(($) => $.sidebar.archive_channel_named, { name: channel.name }),
+                                  "sidebar.archive_channel_named",
+                                  `${sidebarFallbacks.archiveChannelNamed} ${channel.name}`,
+                                )}
+                                renameLabel={renameChannelLabel}
+                                renameDialogLabels={renameChannelDialogLabels}
+                                onArchivedActiveChannel={() => push(p.projects())}
+                              />
                             );
                           })}
-                        </CollapsibleContent>
-                      </Collapsible>
-                    )}
-                    {channelsEnabled && archivedChannels.length > 0 && (
-                      <Collapsible open={archivedChannelsOpen} onOpenChange={setArchivedChannelsOpen}>
-                        <SidebarMenuItem>
-                          <SidebarMenuButton
-                            size="sm"
-                            render={<CollapsibleTrigger />}
-                            className="group/archived text-muted-foreground hover:not-data-active:bg-sidebar-accent/70"
-                          >
-                            <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/archived:rotate-90" />
-                            <Archive className="size-3.5" />
-                            <span>{archivedChannelsLabel}</span>
-                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">{archivedChannels.length}</span>
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                        <CollapsibleContent>
-                          {sortChannelsForProjectTree(archivedChannels).map((channel) => (
-                            <ArchivedChannelSidebarRow key={channel.id} channel={channel} href={p.channelDetail(channel.slug)} />
-                          ))}
                         </CollapsibleContent>
                       </Collapsible>
                     )}
@@ -1387,6 +1702,19 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             lockedProjectId={createChannelProjectId}
           />
         )}
+        <SidebarRenameDialog
+          open={!!renamingConversation}
+          title={renamingConversation?.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
+          labels={renameConversationDialogLabels}
+          onOpenChange={(open) => {
+            if (!open) setRenamingConversation(null);
+          }}
+          onSubmit={(nextTitle) => {
+            if (!renamingConversation) return;
+            updateConversation.mutate({ sessionId: renamingConversation.id, title: nextTitle });
+            setRenamingConversation(null);
+          }}
+        />
       </Sidebar>
   );
 }

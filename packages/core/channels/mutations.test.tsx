@@ -7,12 +7,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Channel } from "../types";
 import { api } from "../api";
 import { channelKeys } from "./queries";
-import { useCreateChannel, useUpdateChannel } from "./mutations";
+import { useCreateChannel, useDeleteArchivedChannel, useUpdateChannel } from "./mutations";
 
 vi.mock("../hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("../api", () => ({
   api: {
     createChannel: vi.fn(),
+    deleteArchivedChannel: vi.fn(),
     updateChannel: vi.fn(),
   },
 }));
@@ -52,6 +53,7 @@ describe("channel mutations", () => {
 
   beforeEach(() => {
     vi.mocked(api.createChannel).mockReset();
+    vi.mocked(api.deleteArchivedChannel).mockReset();
     vi.mocked(api.updateChannel).mockReset();
     queryClient = new QueryClient({
       defaultOptions: {
@@ -91,5 +93,21 @@ describe("channel mutations", () => {
 
     expect(queryClient.getQueryData<Channel[]>(channelKeys.list("ws-1"))?.[0]?.project_id).toBe("project-1");
     expect(queryClient.getQueryData<Channel[]>(channelKeys.list("ws-1", true))?.[0]?.project_id).toBe("project-1");
+  });
+
+  it("removes an archived channel from cached lists after permanent delete", async () => {
+    vi.mocked(api.deleteArchivedChannel).mockResolvedValue();
+    const archived = { ...baseChannel, archived_at: "2026-05-26T00:00:00Z" };
+    queryClient.setQueryData<Channel[]>(channelKeys.list("ws-1"), []);
+    queryClient.setQueryData<Channel[]>(channelKeys.list("ws-1", true), [archived]);
+
+    const { result } = renderHook(() => useDeleteArchivedChannel("channel-1"), { wrapper: createWrapper(queryClient) });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    expect(api.deleteArchivedChannel).toHaveBeenCalledWith("channel-1");
+    expect(queryClient.getQueryData<Channel[]>(channelKeys.list("ws-1", true))).toEqual([]);
   });
 });

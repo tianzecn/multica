@@ -878,7 +878,7 @@ export function useRealtimeSync(
       const id = getCurrentWsId();
       if (!id) return;
       const patch = (
-        old?: { id: string; title: string; project_id?: string | null; status?: string; updated_at: string }[],
+        old?: { id: string; title: string; project_id?: string | null; status?: string; has_unread?: boolean; updated_at: string }[],
       ) =>
         old?.map((s) =>
           s.id === payload.chat_session_id
@@ -890,6 +890,7 @@ export function useRealtimeSync(
                     ? s.project_id ?? null
                     : payload.project_id,
                 status: payload.status ?? s.status,
+                has_unread: payload.has_unread ?? s.has_unread,
                 updated_at: payload.updated_at ?? s.updated_at,
               }
             : s,
@@ -900,6 +901,7 @@ export function useRealtimeSync(
         title: string;
         project_id?: string | null;
         status?: string;
+        has_unread?: boolean;
         updated_at: string;
       }) =>
         old
@@ -911,6 +913,7 @@ export function useRealtimeSync(
                   ? old.project_id ?? null
                   : payload.project_id,
               status: payload.status ?? old.status,
+              has_unread: payload.has_unread ?? old.has_unread,
               updated_at: payload.updated_at ?? old.updated_at,
             }
           : old,

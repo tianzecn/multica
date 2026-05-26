@@ -23,6 +23,7 @@ export {
   useCreateChannelGroup,
   useCreateChannelMessage,
   useCreateChannelSession,
+  useDeleteArchivedChannel,
   useJoinChannel,
   useMarkChannelRead,
   useLinkIssueToChannel,

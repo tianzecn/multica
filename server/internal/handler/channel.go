@@ -1278,6 +1278,38 @@ func (h *Handler) RestoreChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) DeleteArchivedChannel(w http.ResponseWriter, r *http.Request) {
+	channel, member, workspaceID, ok := h.loadChannelInWorkspaceAnyStatus(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageChannel(r, channel, member) {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return
+	}
+	if !channel.ArchivedAt.Valid {
+		writeError(w, http.StatusBadRequest, "channel must be archived before deletion")
+		return
+	}
+	rows, err := h.Queries.DeleteArchivedChannel(r.Context(), db.DeleteArchivedChannelParams{
+		ID:          channel.ID,
+		WorkspaceID: channel.WorkspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete channel")
+		return
+	}
+	if rows == 0 {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	h.publish(protocol.EventChannelUpdated, workspaceID, "member", uuidToString(member.UserID), map[string]any{
+		"channel_id": uuidToString(channel.ID),
+		"deleted":    true,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) MarkChannelRead(w http.ResponseWriter, r *http.Request) {
 	channel, member, workspaceID, ok := h.loadChannelInWorkspace(w, r, chi.URLParam(r, "id"))
 	if !ok {

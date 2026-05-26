@@ -300,6 +300,45 @@ func TestMarkChannelReadClearsUnread(t *testing.T) {
 	}
 }
 
+func TestDeleteArchivedChannelDeletesChannel(t *testing.T) {
+	channel := createChannelForTest(t, "delete-archived-channel", nil)
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE channel SET archived_at = now() WHERE id = $1
+	`, channel.ID); err != nil {
+		t.Fatalf("archive fixture channel: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("DELETE", "/api/channels/"+channel.ID+"/permanent", nil)
+	req = withURLParams(req, "id", channel.ID, "workspaceId", testWorkspaceID)
+	testHandler.DeleteArchivedChannel(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteArchivedChannel: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM channel WHERE id = $1
+	`, channel.ID).Scan(&count); err != nil {
+		t.Fatalf("count deleted channel: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("channel count = %d, want 0", count)
+	}
+}
+
+func TestDeleteArchivedChannelRejectsActiveChannel(t *testing.T) {
+	channel := createChannelForTest(t, "delete-active-channel", nil)
+
+	w := httptest.NewRecorder()
+	req := newRequest("DELETE", "/api/channels/"+channel.ID+"/permanent", nil)
+	req = withURLParams(req, "id", channel.ID, "workspaceId", testWorkspaceID)
+	testHandler.DeleteArchivedChannel(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("DeleteArchivedChannel active: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestSearchIssuesCanScopeToProject(t *testing.T) {
 	projectA := createChannelTestProject(t, "Search issues project A")
 	projectB := createChannelTestProject(t, "Search issues project B")

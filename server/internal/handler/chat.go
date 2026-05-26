@@ -778,6 +778,41 @@ func (h *Handler) MarkChatSessionRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// MarkChatSessionUnread sets unread_since when the owner wants to come back to
+// the conversation later. It publishes a session update so sidebar badges sync
+// immediately across tabs/devices.
+func (h *Handler) MarkChatSessionUnread(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	sessionID := chi.URLParam(r, "sessionId")
+
+	session, ok := h.gateChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	if !ok {
+		return
+	}
+
+	if err := h.Queries.SetUnreadSinceIfNull(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to mark session unread")
+		return
+	}
+
+	resolvedSessionID := uuidToString(session.ID)
+	hasUnread := true
+	h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionUpdatedPayload{
+		ChatSessionID: resolvedSessionID,
+		Title:         session.Title,
+		ProjectID:     uuidToPtr(session.ProjectID),
+		Status:        session.Status,
+		HasUnread:     &hasUnread,
+		UpdatedAt:     timestampToString(session.UpdatedAt),
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // PendingChatTasksResponse is the aggregate view consumed by the FAB.
 type PendingChatTasksResponse struct {
 	Tasks []PendingChatTaskItem `json:"tasks"`

@@ -679,6 +679,26 @@ func (q *Queries) CreateChannelMessage(ctx context.Context, arg CreateChannelMes
 	return i, err
 }
 
+const deleteArchivedChannel = `-- name: DeleteArchivedChannel :execrows
+DELETE FROM channel
+WHERE id = $1
+  AND workspace_id = $2
+  AND archived_at IS NOT NULL
+`
+
+type DeleteArchivedChannelParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteArchivedChannel(ctx context.Context, arg DeleteArchivedChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteArchivedChannel, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createChannelSession = `-- name: CreateChannelSession :one
 INSERT INTO channel_session (channel_id, title, summary, status, created_by_type, created_by_id)
 VALUES ($1, $2, $3, $4, $5, $6)

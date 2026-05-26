@@ -124,6 +124,12 @@ SET archived_at = NULL, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;
 
+-- name: DeleteArchivedChannel :execrows
+DELETE FROM channel
+WHERE id = $1
+  AND workspace_id = $2
+  AND archived_at IS NOT NULL;
+
 -- name: AddChannelMember :one
 INSERT INTO channel_member (channel_id, member_type, member_id, role)
 VALUES ($1, $2, $3, $4)

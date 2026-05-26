@@ -103,3 +103,31 @@ func TestRestoreChatSessionSetsStatus(t *testing.T) {
 		t.Fatalf("response status = %q, want active", restored.Status)
 	}
 }
+
+func TestMarkChatSessionUnreadSetsUnreadSince(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	agentID := createHandlerTestAgent(t, "chat-unread-agent-"+t.Name(), nil)
+	sessionID := createHandlerTestChatSession(t, agentID)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/chat/sessions/"+sessionID+"/unread", nil)
+	req = withURLParam(req, "sessionId", sessionID)
+	req = withChatTestWorkspaceCtx(t, req)
+	testHandler.MarkChatSessionUnread(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("MarkChatSessionUnread: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var hasUnread bool
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT unread_since IS NOT NULL FROM chat_session WHERE id = $1
+	`, sessionID).Scan(&hasUnread); err != nil {
+		t.Fatalf("load stored chat session unread state: %v", err)
+	}
+	if !hasUnread {
+		t.Fatal("unread_since is NULL, want non-NULL")
+	}
+}

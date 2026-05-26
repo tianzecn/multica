@@ -7,13 +7,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import type { ChatSession } from "../types";
 import { chatKeys } from "./queries";
-import { useArchiveChatSession, useCreateChatSession, useRestoreChatSession, useUpdateChatSession } from "./mutations";
+import {
+  useArchiveChatSession,
+  useCreateChatSession,
+  useMarkChatSessionUnread,
+  useRestoreChatSession,
+  useUpdateChatSession,
+} from "./mutations";
 
 vi.mock("../hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("../api", () => ({
   api: {
     archiveChatSession: vi.fn(),
     createChatSession: vi.fn(),
+    markChatSessionUnread: vi.fn(),
     restoreChatSession: vi.fn(),
     updateChatSession: vi.fn(),
   },
@@ -44,6 +51,7 @@ describe("chat session mutations", () => {
   beforeEach(() => {
     vi.mocked(api.createChatSession).mockReset();
     vi.mocked(api.archiveChatSession).mockReset();
+    vi.mocked(api.markChatSessionUnread).mockReset();
     vi.mocked(api.restoreChatSession).mockReset();
     vi.mocked(api.updateChatSession).mockReset();
     queryClient = new QueryClient({
@@ -123,5 +131,21 @@ describe("chat session mutations", () => {
     expect(api.restoreChatSession).toHaveBeenCalledWith("session-1");
     expect(queryClient.getQueryData<ChatSession[]>(chatKeys.sessions("ws-1"))?.[0]?.status).toBe("active");
     expect(queryClient.getQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"))?.status).toBe("active");
+  });
+
+  it("marks a session unread in list and detail caches", async () => {
+    vi.mocked(api.markChatSessionUnread).mockResolvedValue();
+    queryClient.setQueryData<ChatSession[]>(chatKeys.sessions("ws-1"), [baseSession]);
+    queryClient.setQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"), baseSession);
+
+    const { result } = renderHook(() => useMarkChatSessionUnread(), { wrapper: createWrapper(queryClient) });
+
+    await act(async () => {
+      await result.current.mutateAsync("session-1");
+    });
+
+    expect(api.markChatSessionUnread).toHaveBeenCalledWith("session-1");
+    expect(queryClient.getQueryData<ChatSession[]>(chatKeys.sessions("ws-1"))?.[0]?.has_unread).toBe(true);
+    expect(queryClient.getQueryData<ChatSession>(chatKeys.session("ws-1", "session-1"))?.has_unread).toBe(true);
   });
 });
