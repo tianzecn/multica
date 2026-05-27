@@ -1,1 +1,10 @@
-export { DashboardPage as default } from "@multica/views/dashboard";
+import { redirect } from "next/navigation";
+
+export default async function UsageRoute({
+  params,
+}: {
+  params: Promise<{ workspaceSlug: string }>;
+}) {
+  const { workspaceSlug } = await params;
+  redirect(`/${encodeURIComponent(workspaceSlug)}/settings?tab=usage`);
+}

@@ -116,6 +116,7 @@ vi.mock("@multica/core/paths", () => ({
     newConversation: (projectId?: string) =>
       projectId ? `/ws-test/conversations/new?project=${projectId}` : "/ws-test/conversations/new",
     agents: () => "/ws-test/agents",
+    usage: () => "/ws-test/usage",
     runtimes: () => "/ws-test/runtimes",
     skills: () => "/ws-test/skills",
     settings: () => "/ws-test/settings",
@@ -280,6 +281,34 @@ describe("SearchCommand", () => {
     await user.click(settingsItem);
 
     expect(mockPush).toHaveBeenCalledWith("/ws-test/settings");
+    expect(useSearchStore.getState().open).toBe(false);
+  });
+
+  it("routes runtimes search result to the Settings runtimes tab", async () => {
+    const user = userEvent.setup();
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "runtimes");
+
+    const runtimesItem = await screen.findByText("Runtimes");
+    await user.click(runtimesItem);
+
+    expect(mockPush).toHaveBeenCalledWith("/ws-test/settings?tab=runtimes");
+    expect(useSearchStore.getState().open).toBe(false);
+  });
+
+  it("routes usage search result to the Settings usage tab", async () => {
+    const user = userEvent.setup();
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "usage");
+
+    const usageItem = await screen.findByText("Usage");
+    await user.click(usageItem);
+
+    expect(mockPush).toHaveBeenCalledWith("/ws-test/settings?tab=usage");
     expect(useSearchStore.getState().open).toBe(false);
   });
 

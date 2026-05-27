@@ -49,7 +49,7 @@ vi.mock("@dnd-kit/utilities", () => ({ CSS: { Transform: { toString: () => undef
 vi.mock("@multica/ui/components/ui/sidebar", () => ({
   Sidebar: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SidebarFooter: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SidebarFooter: ({ children }: { children: React.ReactNode }) => <footer data-testid="sidebar-footer">{children}</footer>,
   SidebarGroup: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarGroupContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SidebarGroupLabel: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -218,6 +218,46 @@ describe("PinRow", () => {
     expect(await screen.findByText("MUL-123 Keep this pin")).toBeInTheDocument();
   });
 
+  it("places primary header actions and promoted nav items in the requested order", () => {
+    render(<AppSidebar searchSlot={<span>Search entry</span>} />);
+
+    const newConversation = document.querySelector("button .lucide-message-square")?.closest("button");
+    const newIssue = document.querySelector("button .lucide-square-pen")?.closest("button");
+    const searchEntry = screen.getByText("Search entry");
+    expect(newConversation).toBeTruthy();
+    expect(newIssue).toBeTruthy();
+    expect(newConversation!.compareDocumentPosition(newIssue!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(newIssue!.compareDocumentPosition(searchEntry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    const links = screen.getAllByRole("link");
+    const inboxLink = links.find((link) => link.getAttribute("href") === "/acme/inbox");
+    const agentsLink = links.find((link) => link.getAttribute("href") === "/acme/agents");
+    const skillsLink = links.find((link) => link.getAttribute("href") === "/acme/skills");
+    const autopilotsLink = links.find((link) => link.getAttribute("href") === "/acme/autopilots");
+    const squadsLink = links.find((link) => link.getAttribute("href") === "/acme/squads");
+    const myIssuesLink = links.find((link) => link.getAttribute("href") === "/acme/my-issues");
+    expect(inboxLink).toBeTruthy();
+    expect(myIssuesLink).toBeTruthy();
+    expect(agentsLink).toBeTruthy();
+    expect(skillsLink).toBeTruthy();
+    expect(autopilotsLink).toBeTruthy();
+    expect(squadsLink).toBeTruthy();
+    expect(inboxLink!.compareDocumentPosition(myIssuesLink!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(myIssuesLink!.compareDocumentPosition(agentsLink!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(agentsLink!.compareDocumentPosition(skillsLink!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(skillsLink!.compareDocumentPosition(autopilotsLink!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(autopilotsLink!.compareDocumentPosition(squadsLink!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("places Settings in the sidebar footer", () => {
+    render(<AppSidebar />);
+
+    const footer = screen.getByTestId("sidebar-footer");
+    expect(footer.querySelector('a[href="/acme/settings"]')).toBeTruthy();
+    expect(screen.getAllByRole("link").some((link) => link.getAttribute("href") === "/acme/usage")).toBe(false);
+    expect(screen.getAllByRole("link").some((link) => link.getAttribute("href") === "/acme/runtimes")).toBe(false);
+  });
+
   it("keeps the project Issues tree entry on the project detail surface", async () => {
     navigation.current.pathname = "/acme/projects/project-1";
     treeState.current.expandedProjectIds = ["project-1"];
@@ -246,6 +286,7 @@ describe("PinRow", () => {
   });
 
   it("renders global conversations under Conversations and project conversations under expanded projects", () => {
+    detail.current = { isPending: false, isError: false, data: { identifier: "MUL-123", title: "Pinned issue", status: "todo" }, error: null };
     treeState.current.expandedProjectIds = ["project-1"];
     projects.current = [
       {
@@ -285,6 +326,15 @@ describe("PinRow", () => {
 
     render(<AppSidebar />);
 
+    const links = screen.getAllByRole("link");
+    const pinnedLink = links.find((link) => link.getAttribute("href") === "/acme/issues/issue-1");
+    const projectsLink = links.find((link) => link.getAttribute("href") === "/acme/projects");
+    const conversationsLink = links.find((link) => link.getAttribute("href") === "/acme/conversations");
+    expect(pinnedLink).toBeTruthy();
+    expect(projectsLink).toBeTruthy();
+    expect(conversationsLink).toBeTruthy();
+    expect(pinnedLink!.compareDocumentPosition(projectsLink!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(projectsLink!.compareDocumentPosition(conversationsLink!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("Global research").closest("a")).toHaveAttribute(
       "href",
       "/acme/conversations/global-chat",

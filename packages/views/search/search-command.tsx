@@ -16,6 +16,7 @@ import {
   ListTodo,
   FolderKanban,
   Bot,
+  BarChart3,
   Monitor,
   Moon,
   Sun,
@@ -122,6 +123,7 @@ type NavKey =
   | "issues"
   | "projects"
   | "agents"
+  | "usage"
   | "runtimes"
   | "skills"
   | "settings";
@@ -179,6 +181,7 @@ export function SearchCommand() {
       { key: "issues", label: t(($) => $.pages.issues), icon: ListTodo, keywords: ["issues", "tasks", "bugs"] },
       { key: "projects", label: t(($) => $.pages.projects), icon: FolderKanban, keywords: ["projects", "kanban", "项目"] },
       { key: "agents", label: t(($) => $.pages.agents), icon: Bot, keywords: ["agents", "bots", "ai"] },
+      { key: "usage", label: t(($) => $.pages.usage), icon: BarChart3, keywords: ["usage", "dashboard", "cost", "tokens", "用量"] },
       { key: "runtimes", label: t(($) => $.pages.runtimes), icon: Monitor, keywords: ["runtimes", "environments"] },
       { key: "skills", label: t(($) => $.pages.skills), icon: BookOpenText, keywords: ["skills", "library"] },
       { key: "settings", label: t(($) => $.pages.settings), icon: Settings, keywords: ["settings", "config", "preferences", "设置"] },
@@ -509,6 +512,14 @@ export function SearchCommand() {
   const handlePageSelect = useCallback(
     (key: NavKey) => {
       setOpen(false);
+      if (key === "usage") {
+        push(`${p.settings()}?tab=usage`);
+        return;
+      }
+      if (key === "runtimes") {
+        push(`${p.settings()}?tab=runtimes`);
+        return;
+      }
       push(p[key]());
     },
     [push, setOpen, p],

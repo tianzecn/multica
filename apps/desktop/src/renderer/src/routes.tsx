@@ -18,7 +18,6 @@ import { RuntimeDetailPage } from "./pages/runtime-detail-page";
 import { AttachmentPreviewRoute } from "./pages/attachment-preview-page";
 import { IssuesPage } from "@multica/views/issues/components";
 import { ProjectsPage } from "@multica/views/projects/components";
-import { DashboardPage } from "@multica/views/dashboard";
 import { AutopilotsPage } from "@multica/views/autopilots/components";
 import { MyIssuesPage } from "@multica/views/my-issues";
 import { SkillsPage } from "@multica/views/skills";
@@ -45,6 +44,7 @@ function DesktopSettingsRoute() {
   const { t } = useT("settings");
   return (
     <SettingsPage
+      runtimesContent={<DesktopRuntimesPage />}
       extraAccountTabs={[
         {
           value: "daemon",
@@ -202,7 +202,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: "runtimes",
-            element: <DesktopRuntimesPage />,
+            element: <Navigate to="../settings?tab=runtimes" replace />,
             handle: { title: "Runtimes" },
           },
           {
@@ -241,7 +241,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: "usage",
-            element: <DashboardPage />,
+            element: <Navigate to="../settings?tab=usage" replace />,
             handle: { title: "Usage" },
           },
           {

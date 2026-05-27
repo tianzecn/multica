@@ -6,6 +6,8 @@ import {
   SlidersHorizontal,
   Key,
   Settings,
+  Monitor,
+  BarChart3,
   Users,
   FolderGit2,
   FlaskConical,
@@ -30,7 +32,10 @@ import { LabsTab } from "./labs-tab";
 import { NotificationsTab } from "./notifications-tab";
 import { ArchivedChannelsTab } from "./archived-channels-tab";
 import { ArchivedConversationsTab } from "./archived-conversations-tab";
+import { RuntimesPage } from "../../runtimes";
+import { DashboardPage } from "../../dashboard";
 import { useT } from "../../i18n";
+import { cn } from "@multica/ui/lib/utils";
 
 const ACCOUNT_TAB_KEYS = ["profile", "preferences", "notifications", "tokens"] as const;
 const ACCOUNT_TAB_ICONS = {
@@ -42,6 +47,8 @@ const ACCOUNT_TAB_ICONS = {
 
 const WORKSPACE_TAB_KEYS = [
   "general",
+  "usage",
+  "runtimes",
   "archivedConversations",
   "archivedChannels",
   "repositories",
@@ -52,6 +59,8 @@ const WORKSPACE_TAB_KEYS = [
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
+  usage: "usage",
+  runtimes: "runtimes",
   archivedConversations: "archivedConversations",
   archivedChannels: "archivedChannels",
   repositories: "repositories",
@@ -62,6 +71,8 @@ const WORKSPACE_TAB_VALUES = {
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
+  usage: BarChart3,
+  runtimes: Monitor,
   archivedConversations: Archive,
   archivedChannels: Hash,
   repositories: FolderGit2,
@@ -83,6 +94,8 @@ const TAB_LABEL_FALLBACKS = {
     archivedConversations: "Archived Conversations",
     archivedChannels: "Archived Channels",
     general: "General",
+    usage: "Usage",
+    runtimes: "Runtimes",
     repositories: "Repositories",
     github: "GitHub",
     integrations: "Integrations",
@@ -97,6 +110,8 @@ const TAB_LABEL_FALLBACKS = {
     archivedConversations: "已归档对话",
     archivedChannels: "已归档频道",
     general: "通用",
+    usage: "用量",
+    runtimes: "运行时",
     repositories: "代码仓库",
     github: "GitHub",
     integrations: "集成",
@@ -123,9 +138,17 @@ export interface ExtraSettingsTab {
 interface SettingsPageProps {
   /** Additional tabs injected by platform (e.g. desktop daemon settings) */
   extraAccountTabs?: ExtraSettingsTab[];
+  /** Platform-specific runtime page, used by desktop to preserve daemon controls. */
+  runtimesContent?: React.ReactNode;
+  /** Serializable props for the default shared runtime page. */
+  runtimesPageProps?: React.ComponentProps<typeof RuntimesPage>;
 }
 
-export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
+export function SettingsPage({
+  extraAccountTabs,
+  runtimesContent,
+  runtimesPageProps,
+}: SettingsPageProps = {}) {
   const { t, i18n } = useT("settings");
   const tabFallbacks = getTabLabelFallbacks(i18n.resolvedLanguage ?? i18n.language);
   const workspaceName = useCurrentWorkspace()?.name;
@@ -147,6 +170,9 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
   const tabFromUrl = navigation.searchParams.get(TAB_QUERY_KEY);
   const activeTab =
     tabFromUrl && validTabs.has(tabFromUrl) ? tabFromUrl : DEFAULT_TAB;
+  const isFullBleedTab =
+    activeTab === WORKSPACE_TAB_VALUES.usage ||
+    activeTab === WORKSPACE_TAB_VALUES.runtimes;
 
   // replace (not push) so settings tab switches don't pollute browser history.
   // Preserve any other query params the page may carry.
@@ -208,8 +234,13 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
       </div>
 
       {/* Right content */}
-      <div className="flex-1 min-w-0 md:overflow-y-auto">
-        <div className="w-full max-w-3xl mx-auto p-4 md:p-6">
+      <div className={cn("flex-1 min-w-0", isFullBleedTab ? "min-h-0 overflow-hidden" : "md:overflow-y-auto")}>
+        <div
+          className={cn(
+            "w-full mx-auto",
+            isFullBleedTab ? "flex h-full min-h-[520px] flex-col" : "max-w-3xl p-4 md:p-6",
+          )}
+        >
           <TabsContent value="profile"><AccountTab /></TabsContent>
           <TabsContent value="preferences"><PreferencesTab /></TabsContent>
           <TabsContent value="notifications"><NotificationsTab /></TabsContent>
@@ -217,6 +248,12 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="archivedConversations"><ArchivedConversationsTab /></TabsContent>
           <TabsContent value="archivedChannels"><ArchivedChannelsTab /></TabsContent>
           <TabsContent value="workspace"><WorkspaceTab /></TabsContent>
+          <TabsContent value="usage" className="flex min-h-0 flex-col">
+            <DashboardPage />
+          </TabsContent>
+          <TabsContent value="runtimes" className="flex min-h-0 flex-col">
+            {runtimesContent ?? <RuntimesPage {...runtimesPageProps} />}
+          </TabsContent>
           <TabsContent value="repositories"><RepositoriesTab /></TabsContent>
           <TabsContent value="github"><GitHubTab /></TabsContent>
           <TabsContent value="integrations"><IntegrationsTab /></TabsContent>

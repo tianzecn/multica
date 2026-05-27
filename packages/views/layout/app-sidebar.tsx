@@ -19,7 +19,6 @@ import {
   Inbox,
   ListTodo,
   Bot,
-  Monitor,
   ChevronDown,
   ChevronRight,
   Settings,
@@ -29,7 +28,6 @@ import {
   BookOpenText,
   SquarePen,
   CircleUser,
-  BarChart3,
   X,
   Zap,
   Users,
@@ -93,7 +91,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { inboxKeys, deduplicateInboxItems } from "@multica/core/inbox/queries";
 import { api, ApiError } from "@multica/core/api";
 import { useModalStore } from "@multica/core/modals";
-import { useMyRuntimesNeedUpdate } from "@multica/core/runtimes/hooks";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import { issueDetailOptions } from "@multica/core/issues/queries";
@@ -212,8 +209,6 @@ type NavKey =
   | "autopilots"
   | "agents"
   | "squads"
-  | "usage"
-  | "runtimes"
   | "skills"
   | "settings";
 
@@ -227,29 +222,20 @@ type NavLabelKey =
   | "autopilots"
   | "agents"
   | "squads"
-  | "usage"
-  | "runtimes"
   | "skills"
   | "settings";
 
-const personalNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
+const headerNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
   { key: "inbox", labelKey: "inbox", icon: Inbox },
   { key: "myIssues", labelKey: "my_issues", icon: CircleUser },
-  { key: "conversations", labelKey: "conversations", icon: MessageSquare },
+  { key: "agents", labelKey: "agents", icon: Bot },
+  { key: "skills", labelKey: "skills", icon: BookOpenText },
+  { key: "autopilots", labelKey: "autopilots", icon: Zap },
+  { key: "squads", labelKey: "squads", icon: Users },
 ];
 
 const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
   { key: "issues", labelKey: "issues", icon: ListTodo },
-  { key: "autopilots", labelKey: "autopilots", icon: Zap },
-  { key: "agents", labelKey: "agents", icon: Bot },
-  { key: "squads", labelKey: "squads", icon: Users },
-  { key: "usage", labelKey: "usage", icon: BarChart3 },
-];
-
-const configureNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "runtimes", labelKey: "runtimes", icon: Monitor },
-  { key: "skills", labelKey: "skills", icon: BookOpenText },
-  { key: "settings", labelKey: "settings", icon: Settings },
 ];
 
 function DraftDot() {
@@ -380,7 +366,7 @@ function ChannelSidebarRow({
             size="sm"
             isActive={isActive}
             render={<AppLink href={href} />}
-            className="pl-8 pr-9 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+            className="pl-8 pr-10 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
           >
             {channel.visibility === "private" ? <Lock className="size-3.5" /> : <Hash className="size-3.5" />}
             <span className="truncate">{channel.name}</span>
@@ -389,7 +375,7 @@ function ChannelSidebarRow({
           <Tooltip>
             <TooltipTrigger
               render={<button type="button" />}
-              className="absolute right-1 top-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/channel:opacity-100 group-focus-within/channel:opacity-100"
+              className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[opacity,background-color,color] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/channel:opacity-100 group-focus-within/channel:opacity-100"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -480,16 +466,16 @@ function ConversationSidebarRow({
             size="sm"
             isActive={isNavActive(pathname, href)}
             render={<AppLink href={href} />}
-            className="h-8 pl-8 pr-9 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+            className="relative h-8 pl-8 pr-16 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
           >
             <span className={cn("min-w-0 flex-1 truncate", session.has_unread && "font-medium text-foreground")}>
               {title}
             </span>
-            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            <span className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
               {session.has_unread && (
                 <span className="size-1.5 rounded-full bg-brand" aria-label={unreadLabel} />
               )}
-              <span className="text-[11px] text-muted-foreground/80 group-hover/conversation:hidden group-focus-within/conversation:hidden">
+              <span className="text-[11px] text-muted-foreground/80 transition-opacity group-hover/conversation:opacity-0 group-focus-within/conversation:opacity-0">
                 {timeLabel}
               </span>
             </span>
@@ -497,7 +483,7 @@ function ConversationSidebarRow({
           <Tooltip>
             <TooltipTrigger
               render={<button type="button" />}
-              className="absolute right-1 top-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover/conversation:opacity-100 group-focus-within/conversation:opacity-100"
+              className="absolute right-2 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[opacity,background-color,color] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/conversation:opacity-100 group-focus-within/conversation:opacity-100"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -868,7 +854,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     () => deduplicateInboxItems(inboxItems).filter((i) => !i.read).length,
     [inboxItems],
   );
-  const hasRuntimeUpdates = useMyRuntimesNeedUpdate(wsId);
   const { data: pinnedItems = EMPTY_PINS } = useQuery({
     ...pinListOptions(wsId ?? "", userId ?? ""),
     enabled: !!wsId && !!userId,
@@ -1255,11 +1240,15 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             </SidebarMenuItem>
           </SidebarMenu>
           <SidebarMenu>
-            {searchSlot && (
-              <SidebarMenuItem>
-                {searchSlot}
-              </SidebarMenuItem>
-            )}
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                className="text-muted-foreground"
+                onClick={() => push(p.newConversation())}
+              >
+                <MessageSquare />
+                <span>{t(($) => $.sidebar.new_conversation)}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton
                 className="text-muted-foreground"
@@ -1273,96 +1262,82 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                 <kbd className="pointer-events-none ml-auto inline-flex h-5 select-none items-center gap-0.5 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">{t(($) => $.sidebar.new_issue_shortcut)}</kbd>
               </SidebarMenuButton>
             </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                className="text-muted-foreground"
-                onClick={() => push(p.newConversation())}
-              >
-                <MessageSquare />
-                <span>{t(($) => $.sidebar.new_conversation)}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            {searchSlot && (
+              <SidebarMenuItem>
+                {searchSlot}
+              </SidebarMenuItem>
+            )}
+          </SidebarMenu>
+          <SidebarMenu className="grid grid-cols-6 gap-1">
+            {headerNav.map((item) => {
+              const href = p[item.key]();
+              const isActive = isNavActive(pathname, href);
+              const label = t(($) => $.nav[item.labelKey]);
+              const isInbox = item.key === "inbox";
+              return (
+                <SidebarMenuItem key={item.key}>
+                  <SidebarMenuButton
+                    size="sm"
+                    isActive={isActive}
+                    render={<AppLink href={href} aria-label={label} title={label} />}
+                    className={cn(
+                      "relative justify-center overflow-visible px-0 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground",
+                      isInbox && [
+                        "bg-brand/10 text-brand ring-1 ring-brand/20",
+                        "hover:not-data-active:bg-brand/15 hover:not-data-active:text-brand",
+                      ],
+                    )}
+                  >
+                    <item.icon className={cn("size-4", isInbox && "stroke-[2.4]")} />
+                    {isInbox && unreadCount > 0 && (
+                      <span className="absolute right-0.5 top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-brand px-0.5 text-[8px] font-semibold leading-none text-primary-foreground shadow-sm ring-1 ring-sidebar tabular-nums">
+                        {unreadCount > 9 ? "9+" : unreadCount}
+                      </span>
+                    )}
+                    <span className="sr-only">{label}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
           </SidebarMenu>
         </SidebarHeader>
 
         {/* Navigation */}
         <SidebarContent ref={sidebarScrollRef} style={sidebarFadeStyle}>
-          <SidebarGroup>
-            <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5">
-                {personalNav.map((item) => {
-                  const href = p[item.key]();
-                  const isActive = isNavActive(pathname, href);
-                  return (
-                    <React.Fragment key={item.key}>
-                      <SidebarMenuItem>
-                        <SidebarMenuButton
-                          isActive={isActive}
-                          render={<AppLink href={href} />}
-                          className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                        >
-                          <item.icon />
-                          <span>{t(($) => $.nav[item.labelKey])}</span>
-                          {item.key === "inbox" && unreadCount > 0 && (
-                            <span className="ml-auto text-xs">
-                              {unreadCount > 99 ? "99+" : unreadCount}
-                            </span>
-                          )}
-                          {item.key === "conversations" && conversationUnreadCount > 0 && (
-                            <span className="ml-auto text-xs">
-                              {conversationUnreadCount > 99 ? "99+" : conversationUnreadCount}
-                            </span>
-                          )}
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                      {item.key === "conversations" && (() => {
-                        const sectionId = "global";
-                        const expanded = isConversationSectionExpanded(sectionId);
-                        const visibleConversations = expanded
-                          ? globalConversations
-                          : globalConversations.slice(0, CONVERSATION_LIST_PREVIEW_LIMIT);
-                        const hiddenCount = globalConversations.length - CONVERSATION_LIST_PREVIEW_LIMIT;
-                        return (
-                          <>
-                            {visibleConversations.map((session) => (
-                              <ConversationSidebarRow
-                                key={session.id}
-                                session={session}
-                                href={p.conversationDetail(session.id)}
-                                pathname={pathname}
-                                title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
-                                timeLabel={timeAgo(session.updated_at)}
-                                unreadLabel={unreadConversationLabel}
-                                archiveLabel={archiveConversationLabel}
-                                archiveTitle={resolveSidebarLabel(
-                                  t(($) => $.sidebar.archive_conversation_named, {
-                                    title: session.title?.trim() || t(($) => $.sidebar.untitled_conversation),
-                                  }),
-                                  "sidebar.archive_conversation_named",
-                                  `${sidebarFallbacks.archiveConversationNamed} ${session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}`,
-                                )}
-                                markUnreadDisabled={session.has_unread || isNavActive(pathname, p.conversationDetail(session.id))}
-                                markUnreadLabel={markConversationUnreadLabel}
-                                renameLabel={renameConversationLabel}
-                                onArchive={() => archiveConversation.mutate(session.id)}
-                                onMarkUnread={() => markConversationUnread.mutate(session.id)}
-                                onRename={() => setRenamingConversation(session)}
-                              />
-                            ))}
-                            <ConversationListToggle
-                              hiddenCount={hiddenCount}
-                              label={expanded ? showFewerConversationsLabel : getShowMoreConversationsLabel(hiddenCount)}
-                              onToggle={() => toggleConversationSection(sectionId)}
+          {localPinned.length > 0 && (
+            <Collapsible defaultOpen>
+              <SidebarGroup className="group/pinned">
+                <SidebarGroupLabel
+                  render={<CollapsibleTrigger />}
+                  className="group/trigger cursor-pointer hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+                >
+                  <span>{t(($) => $.sidebar.pinned_label)}</span>
+                  <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
+                  <span className="ml-auto text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover/pinned:opacity-100">{localPinned.length}</span>
+                </SidebarGroupLabel>
+                <CollapsibleContent>
+                  <SidebarGroupContent>
+                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+                      <SortableContext items={localPinned.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+                        <SidebarMenu className="gap-0.5">
+                          {localPinned.map((pin: PinnedItem) => (
+                            <PinRow
+                              key={pin.id}
+                              pin={pin}
+                              href={pin.item_type === "issue" ? p.issueDetail(pin.item_id) : p.projectDetail(pin.item_id)}
+                              pathname={pathname}
+                              onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
+                              wsId={wsId ?? ""}
                             />
-                          </>
-                        );
-                      })()}
-                    </React.Fragment>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+                          ))}
+                        </SidebarMenu>
+                      </SortableContext>
+                    </DndContext>
+                  </SidebarGroupContent>
+                </CollapsibleContent>
+              </SidebarGroup>
+            </Collapsible>
+          )}
 
           <Collapsible defaultOpen>
             <SidebarGroup className="group/projects">
@@ -1599,40 +1574,69 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             </SidebarGroup>
           </Collapsible>
 
-          {localPinned.length > 0 && (
-            <Collapsible defaultOpen>
-              <SidebarGroup className="group/pinned">
-                <SidebarGroupLabel
-                  render={<CollapsibleTrigger />}
-                  className="group/trigger cursor-pointer hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
-                >
-                  <span>{t(($) => $.sidebar.pinned_label)}</span>
-                  <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
-                  <span className="ml-auto text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover/pinned:opacity-100">{localPinned.length}</span>
-                </SidebarGroupLabel>
-                <CollapsibleContent>
-                  <SidebarGroupContent>
-                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-                      <SortableContext items={localPinned.map((p) => p.id)} strategy={verticalListSortingStrategy}>
-                        <SidebarMenu className="gap-0.5">
-                          {localPinned.map((pin: PinnedItem) => (
-                            <PinRow
-                              key={pin.id}
-                              pin={pin}
-                              href={pin.item_type === "issue" ? p.issueDetail(pin.item_id) : p.projectDetail(pin.item_id)}
-                              pathname={pathname}
-                              onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
-                              wsId={wsId ?? ""}
-                            />
-                          ))}
-                        </SidebarMenu>
-                      </SortableContext>
-                    </DndContext>
-                  </SidebarGroupContent>
-                </CollapsibleContent>
-              </SidebarGroup>
-            </Collapsible>
-          )}
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-0.5">
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={isNavActive(pathname, p.conversations())}
+                    render={<AppLink href={p.conversations()} />}
+                    className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                  >
+                    <MessageSquare />
+                    <span>{t(($) => $.nav.conversations)}</span>
+                    {conversationUnreadCount > 0 && (
+                      <span className="ml-auto text-xs">
+                        {conversationUnreadCount > 99 ? "99+" : conversationUnreadCount}
+                      </span>
+                    )}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                {(() => {
+                  const sectionId = "global";
+                  const expanded = isConversationSectionExpanded(sectionId);
+                  const visibleConversations = expanded
+                    ? globalConversations
+                    : globalConversations.slice(0, CONVERSATION_LIST_PREVIEW_LIMIT);
+                  const hiddenCount = globalConversations.length - CONVERSATION_LIST_PREVIEW_LIMIT;
+                  return (
+                    <>
+                      {visibleConversations.map((session) => (
+                        <ConversationSidebarRow
+                          key={session.id}
+                          session={session}
+                          href={p.conversationDetail(session.id)}
+                          pathname={pathname}
+                          title={session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}
+                          timeLabel={timeAgo(session.updated_at)}
+                          unreadLabel={unreadConversationLabel}
+                          archiveLabel={archiveConversationLabel}
+                          archiveTitle={resolveSidebarLabel(
+                            t(($) => $.sidebar.archive_conversation_named, {
+                              title: session.title?.trim() || t(($) => $.sidebar.untitled_conversation),
+                            }),
+                            "sidebar.archive_conversation_named",
+                            `${sidebarFallbacks.archiveConversationNamed} ${session.title?.trim() || t(($) => $.sidebar.untitled_conversation)}`,
+                          )}
+                          markUnreadDisabled={session.has_unread || isNavActive(pathname, p.conversationDetail(session.id))}
+                          markUnreadLabel={markConversationUnreadLabel}
+                          renameLabel={renameConversationLabel}
+                          onArchive={() => archiveConversation.mutate(session.id)}
+                          onMarkUnread={() => markConversationUnread.mutate(session.id)}
+                          onRename={() => setRenamingConversation(session)}
+                        />
+                      ))}
+                      <ConversationListToggle
+                        hiddenCount={hiddenCount}
+                        label={expanded ? showFewerConversationsLabel : getShowMoreConversationsLabel(hiddenCount)}
+                        onToggle={() => toggleConversationSection(sectionId)}
+                      />
+                    </>
+                  );
+                })()}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
 
           <SidebarGroup>
             <SidebarGroupLabel>{t(($) => $.sidebar.workspace_group)}</SidebarGroupLabel>
@@ -1657,37 +1661,23 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-
-          <SidebarGroup>
-            <SidebarGroupLabel>{t(($) => $.sidebar.configure_group)}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5">
-                {configureNav.map((item) => {
-                  const href = p[item.key]();
-                  const isActive = isNavActive(pathname, href);
-                  return (
-                    <SidebarMenuItem key={item.key}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        render={<AppLink href={href} />}
-                        className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                      >
-                        <item.icon />
-                        <span>{t(($) => $.nav[item.labelKey])}</span>
-                        {item.key === "runtimes" && hasRuntimeUpdates && (
-                          <span className="ml-auto size-1.5 rounded-full bg-destructive" />
-                        )}
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
         </SidebarContent>
 
         <SidebarFooter className="p-2">
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between gap-2">
+            <SidebarMenu className="min-w-0 flex-1">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  size="sm"
+                  isActive={isNavActive(pathname, p.settings())}
+                  render={<AppLink href={p.settings()} />}
+                  className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                >
+                  <Settings className="size-3.5" />
+                  <span>{t(($) => $.nav.settings)}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
             <HelpLauncher />
           </div>
         </SidebarFooter>
