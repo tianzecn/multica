@@ -2,9 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "../hooks";
-import { useAuthStore } from "../auth";
-import { agentListOptions, memberListOptions } from "../workspace/queries";
-import { canAssignAgentToIssue } from "../permissions";
+import { agentListOptions } from "../workspace/queries";
 
 /**
  * Three-state availability for "does the current user have any agent
@@ -17,44 +15,27 @@ import { canAssignAgentToIssue } from "../permissions";
  * disabled/empty states for the first few hundred ms after mount, even
  * when the workspace actually has agents.
  *
- *   "loading"   — agent or member list still in flight (be neutral in UI)
- *   "none"      — both queries resolved, user has zero assignable agents
- *   "available" — at least one agent passes archive + visibility filters
+ *   "loading"   — agent list still in flight (be neutral in UI)
+ *   "none"      — the agent query resolved, user has zero chat-visible agents
+ *   "available" — at least one visible agent is not archived
  */
 export type WorkspaceAgentAvailability = "loading" | "none" | "available";
 
 /**
- * Mirrors the per-agent visibility/archived filter used by AssigneePicker
- * and the chat agent dropdown, so the three pickers can never disagree on
- * "is this agent reachable?".
- *
- * Members are queried because `canAssignAgentToIssue` reads the caller's
- * role to decide visibility for `private` agents — without member data,
- * a freshly-loaded agent list could still produce wrong answers.
+ * Chat reachability is intentionally not the same as issue assignment.
+ * `GET /api/agents` already filters out private agents the caller cannot
+ * access; this hook only removes archived rows so chat can offer every
+ * visible agent instead of inheriting assignment-specific restrictions.
  */
 export function useWorkspaceAgentAvailability(): WorkspaceAgentAvailability {
   const wsId = useWorkspaceId();
-  const userId = useAuthStore((s) => s.user?.id);
   const { data: agents, isFetched: agentsFetched } = useQuery(
     agentListOptions(wsId),
   );
-  const { data: members, isFetched: membersFetched } = useQuery(
-    memberListOptions(wsId),
-  );
 
-  if (!agentsFetched || !membersFetched) return "loading";
+  if (!agentsFetched) return "loading";
 
-  const rawRole = members?.find((m) => m.user_id === userId)?.role;
-  const role =
-    rawRole === "owner" || rawRole === "admin" || rawRole === "member"
-      ? rawRole
-      : null;
-
-  const hasVisibleAgent = (agents ?? []).some(
-    (a) =>
-      !a.archived_at &&
-      canAssignAgentToIssue(a, { userId: userId ?? null, role }).allowed,
-  );
+  const hasVisibleAgent = (agents ?? []).some((a) => !a.archived_at);
 
   return hasVisibleAgent ? "available" : "none";
 }

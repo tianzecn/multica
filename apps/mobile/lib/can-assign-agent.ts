@@ -11,8 +11,8 @@
  *   - Workspace-visibility agents → assignable by any workspace member
  *   - Private agents               → only owner + workspace admins/owners
  *
- * Used by the chat agent picker to filter "agents I can talk to" and by
- * NoAgentBanner to detect the all-zero state.
+ * Kept for assignment semantics. Chat uses the server-filtered agent list
+ * directly so it can offer every chat-visible agent.
  */
 import type { Agent } from "@multica/core/types";
 

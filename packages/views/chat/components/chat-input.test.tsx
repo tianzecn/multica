@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
+import type { MentionItem } from "../../editor";
 import enCommon from "../../locales/en/common.json";
 import enChat from "../../locales/en/chat.json";
 
@@ -30,6 +31,10 @@ const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
 const dropHandlers = vi.hoisted(() => ({
   onDrop: null as null | ((files: File[]) => void),
 }));
+const editorProps = vi.hoisted(() => ({
+  submitOnEnter: undefined as boolean | undefined,
+  mentionItems: undefined as MentionItem[] | undefined,
+}));
 
 vi.mock("../../editor", () => ({
   useFileDropZone: ({ onDrop }: { onDrop: (files: File[]) => void }) => {
@@ -43,14 +48,20 @@ vi.mock("../../editor", () => ({
       onUpdate,
       placeholder,
       onUploadFile,
+      submitOnEnter,
+      mentionItems,
     }: {
       defaultValue?: string;
       onUpdate?: (md: string) => void;
       placeholder?: string;
       onUploadFile?: (file: File) => Promise<UploadResult | null>;
+      submitOnEnter?: boolean;
+      mentionItems?: MentionItem[];
     },
     ref: React.Ref<unknown>,
   ) {
+    editorProps.submitOnEnter = submitOnEnter;
+    editorProps.mentionItems = mentionItems;
     const valueRef = useRef<string>(defaultValue ?? "");
     const uploadingRef = useRef(0);
     useImperativeHandle(ref, () => ({
@@ -60,6 +71,11 @@ vi.mock("../../editor", () => ({
       },
       blur: () => {},
       focus: () => {},
+      insertMention: (item: { id: string; label: string; type: string }) => {
+        valueRef.current =
+          `${valueRef.current}[@${item.label}](mention://${item.type}/${item.id}) `.trimStart();
+        onUpdate?.(valueRef.current);
+      },
       uploadFile: async (file: File) => {
         uploadingRef.current += 1;
         try {
@@ -126,27 +142,36 @@ function renderInput(props: Partial<React.ComponentProps<typeof ChatInput>> = {}
 }
 
 describe("ChatInput attachment wiring", () => {
-  it("routes dropped files through the editor's upload handler", async () => {
+  it("uses Enter-to-send editor behavior", () => {
+    renderInput();
+    expect(editorProps.submitOnEnter).toBe(true);
+  });
+
+  it("forwards scoped mention items to the editor", () => {
+    const mentionItems: MentionItem[] = [
+      { id: "agent-2", label: "Planner", type: "agent" },
+    ];
+    renderInput({ mentionItems });
+    expect(editorProps.mentionItems).toBe(mentionItems);
+  });
+
+  it("routes dropped files through the tray upload handler", async () => {
     const { onUploadFile } = renderInput();
     expect(dropHandlers.onDrop).not.toBeNull();
     const file = new File(["x"], "drop.png", { type: "image/png" });
     dropHandlers.onDrop?.([file]);
-    // Microtask: the mock editor awaits onUploadFile before mutating its value.
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(onUploadFile).toHaveBeenCalledWith(file);
+    await waitFor(() => expect(onUploadFile).toHaveBeenCalledWith(file));
   });
 
-  it("passes attachment_ids to onSend for uploads still referenced in the content", async () => {
+  it("passes tray attachment markdown and attachment_ids to onSend", async () => {
     const onSend = vi.fn();
     const onUploadFile = vi.fn(async (_file: File) =>
       makeUpload({ id: "att-42", link: "https://cdn.example/att-42.png", filename: "x.png" }),
     );
     renderInput({ onSend, onUploadFile });
 
-    // Simulate the drop → editor.uploadFile → onUploadFile happy path. The
-    // mock editor appends the markdown link into its value and calls
-    // onUpdate so the input flips out of the empty state.
+    // Simulate the drop → tray upload happy path. The editor body stays
+    // empty; the tray itself is enough to enable send.
     const file = new File(["x"], "drop.png", { type: "image/png" });
     dropHandlers.onDrop?.([file]);
 
@@ -162,7 +187,8 @@ describe("ChatInput attachment wiring", () => {
     fireEvent.click(sendButton!);
 
     expect(onSend).toHaveBeenCalledTimes(1);
-    const [, ids] = onSend.mock.calls[0]!;
+    const [content, ids] = onSend.mock.calls[0]!;
+    expect(content).toBe("![x.png](https://cdn.example/att-42.png)");
     expect(ids).toEqual(["att-42"]);
   });
 
@@ -216,5 +242,69 @@ describe("ChatInput attachment wiring", () => {
     // The agent picker / context anchor adornments may render zero buttons
     // in this test (no leftAdornment passed). So a single button = submit.
     expect(buttons.length).toBe(1);
+  });
+
+  it("lets left adornments insert mentions into the editor", async () => {
+    const onSend = vi.fn();
+    renderInput({
+      onSend,
+      renderLeftAdornment: ({ insertMention }) => (
+        <button
+          type="button"
+          onClick={() =>
+            insertMention({ id: "agent-2", label: "Planner", type: "agent" })
+          }
+        >
+          Insert agent
+        </button>
+      ),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Insert agent" }));
+
+    let sendButton: HTMLElement;
+    await waitFor(() => {
+      const buttons = screen.getAllByRole("button");
+      sendButton = buttons[buttons.length - 1]!;
+      expect(sendButton).not.toBeDisabled();
+    });
+    fireEvent.click(sendButton!);
+
+    expect(onSend).toHaveBeenCalledWith(
+      "[@Planner](mention://agent/agent-2)",
+      undefined,
+    );
+  });
+
+  it("lets accessory trays insert mentions into the editor", async () => {
+    const onSend = vi.fn();
+    renderInput({
+      onSend,
+      renderAccessoryTray: ({ insertMention }) => (
+        <button
+          type="button"
+          onClick={() =>
+            insertMention({ id: "agent-3", label: "Researcher", type: "agent" })
+          }
+        >
+          Mention researcher
+        </button>
+      ),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Mention researcher" }));
+
+    let sendButton: HTMLElement;
+    await waitFor(() => {
+      const buttons = screen.getAllByRole("button");
+      sendButton = buttons[buttons.length - 1]!;
+      expect(sendButton).not.toBeDisabled();
+    });
+    fireEvent.click(sendButton!);
+
+    expect(onSend).toHaveBeenCalledWith(
+      "[@Researcher](mention://agent/agent-3)",
+      undefined,
+    );
   });
 });

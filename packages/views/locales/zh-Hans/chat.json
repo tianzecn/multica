@@ -10,7 +10,9 @@
     "placeholder_named": "告诉 {{name}} 该做什么...",
     "placeholder_default": "告诉我该做什么...",
     "send_tooltip": "发送",
-    "stop_tooltip": "停止"
+    "stop_tooltip": "停止",
+    "attachment_uploading": "上传中",
+    "remove_attachment": "移除 {{filename}}"
   },
   "message_list": {
     "show_details": "查看详情",
@@ -108,7 +110,9 @@
     "restore": "恢复",
     "archived_banner": "此对话已归档，恢复后可以继续对话。",
     "no_project": "未归属项目",
-    "project_picker": "项目"
+    "project_picker": "项目",
+    "ai_coworkers": "AI 同事",
+    "insert_ai_coworker": "插入 @{{name}}"
   },
   "no_agent_banner": "需要先有一个智能体才能开始对话。",
   "offline_banner": {

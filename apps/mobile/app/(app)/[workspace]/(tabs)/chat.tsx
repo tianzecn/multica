@@ -47,10 +47,8 @@ import type {
   Project,
 } from "@multica/core/types";
 import { api } from "@/data/api";
-import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentListOptions } from "@/data/queries/agents";
-import { memberListOptions } from "@/data/queries/members";
 import { projectListOptions } from "@/data/queries/projects";
 import {
   chatKeys,
@@ -70,7 +68,6 @@ import {
 } from "@/data/stores/chat-drafts-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
-import { canAssignAgent } from "@/lib/can-assign-agent";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
 import { useAgentPresence } from "@/lib/use-agent-presence";
 import { Header } from "@/components/ui/header";
@@ -87,7 +84,6 @@ export default function ChatTab() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-  const userId = useAuthStore((s) => s.user?.id);
   const params = useLocalSearchParams<{ sessionId?: string; projectId?: string }>();
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -111,7 +107,6 @@ export default function ChatTab() {
   // ── Server state ───────────────────────────────────────────────────────
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
 
   useEffect(() => {
@@ -159,17 +154,9 @@ export default function ChatTab() {
   );
 
   // ── Derived ────────────────────────────────────────────────────────────
-  const memberRole = useMemo(
-    () => members.find((m) => m.user_id === userId)?.role,
-    [members, userId],
-  );
-
   const availableAgents = useMemo(
-    () =>
-      agents.filter(
-        (a) => !a.archived_at && canAssignAgent(a, userId, memberRole),
-      ),
-    [agents, userId, memberRole],
+    () => agents.filter((a) => !a.archived_at),
+    [agents],
   );
 
   const activeSession = useMemo(

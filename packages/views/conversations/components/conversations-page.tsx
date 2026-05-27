@@ -20,15 +20,16 @@ import { useArchiveChatSession, useCreateChatSession, useMarkChatSessionRead, us
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { useWorkspacePaths } from "@multica/core/paths";
-import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
+import { agentListOptions } from "@multica/core/workspace/queries";
 import { useAgentPresenceDetail, useWorkspaceAgentAvailability } from "@multica/core/agents";
 import { projectListOptions } from "@multica/core/projects/queries";
 import type { Agent, ChatMessage, ChatPendingTask, ChatSession, Project } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
+import type { MentionItem } from "../../editor";
 import { useNavigation } from "../../navigation";
-import { canAssignAgent } from "../../issues/components";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { Button } from "@multica/ui/components/ui/button";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { ChatInput } from "../../chat/components/chat-input";
 import { ChatMessageList, ChatMessageSkeleton } from "../../chat/components/chat-message-list";
 import { NoAgentBanner } from "../../chat/components/no-agent-banner";
@@ -65,7 +66,6 @@ export function ConversationsPage({
     enabled: !!sessionId && !sessions.some((s) => s.id === sessionId),
   });
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: projects = EMPTY_PROJECTS } = useQuery(projectListOptions(wsId));
 
   const sessionFromList = sessionId ? sessions.find((s) => s.id === sessionId) : null;
@@ -88,11 +88,18 @@ export function ConversationsPage({
 
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
-  const currentMember = members.find((member) => member.user_id === user?.id);
-  const memberRole = currentMember?.role;
   const availableAgents = useMemo(
-    () => agents.filter((agent) => !agent.archived_at && canAssignAgent(agent, user?.id, memberRole)),
-    [agents, memberRole, user?.id],
+    () => agents.filter((agent) => !agent.archived_at),
+    [agents],
+  );
+  const aiCoworkerMentionItems = useMemo<MentionItem[]>(
+    () =>
+      availableAgents.map((agent) => ({
+        id: agent.id,
+        label: agent.name,
+        type: "agent",
+      })),
+    [availableAgents],
   );
 
   const projectScopedAgent = useMemo(() => {
@@ -144,7 +151,7 @@ export function ConversationsPage({
   const noAgent = agentAvailability === "none" || !activeAgent;
   const isSessionArchived = currentSession?.status === "archived";
   const isSessionAgentUnavailable =
-    !!currentSession && (!activeAgent || !!activeAgent.archived_at || !canAssignAgent(activeAgent, user?.id, memberRole));
+    !!currentSession && (!activeAgent || !!activeAgent.archived_at);
 
   const createSession = useCreateChatSession();
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
@@ -343,35 +350,49 @@ export function ConversationsPage({
             disabled={isSessionArchived || isSessionAgentUnavailable}
             noAgent={noAgent}
             agentName={activeAgent?.name}
-            topSlot={
-              <ProjectPickerSlot
-                projects={projects}
-                value={projectIdForContext}
-                disabled={!!pendingTaskId || isSessionArchived}
-                onChange={(nextProjectId) => {
-                  if (currentSession?.id) {
-                    updateSession.mutate({
-                      sessionId: currentSession.id,
-                      project_id: nextProjectId,
-                    });
-                  } else {
-                    updateDraftProjectId(nextProjectId);
-                  }
-                }}
+            renderAccessoryTray={({ insertMention }) => (
+              <AiCoworkerMentionTray
+                agents={availableAgents}
+                disabled={isSessionArchived || isSessionAgentUnavailable || noAgent}
+                onSelect={(agent) =>
+                  insertMention({
+                    id: agent.id,
+                    label: agent.name,
+                    type: "agent",
+                  })
+                }
               />
-            }
-            leftAdornment={
-              currentSession ? (
-                <AgentStaticPill agent={activeAgent} />
-              ) : (
-                <AgentPicker
-                  agents={availableAgents}
-                  activeAgent={activeAgent}
-                  userId={user?.id}
-                  onSelect={(agent) => setSelectedAgentId(agent.id)}
+            )}
+            renderLeftAdornment={() => (
+              <>
+                <ProjectContextPill
+                  projects={projects}
+                  value={projectIdForContext}
+                  disabled={!!pendingTaskId || isSessionArchived}
+                  onChange={(nextProjectId) => {
+                    if (currentSession?.id) {
+                      updateSession.mutate({
+                        sessionId: currentSession.id,
+                        project_id: nextProjectId,
+                      });
+                    } else {
+                      updateDraftProjectId(nextProjectId);
+                    }
+                  }}
                 />
-              )
-            }
+                {currentSession ? (
+                  <AgentStaticPill agent={activeAgent} />
+                ) : (
+                  <AgentPicker
+                    agents={availableAgents}
+                    activeAgent={activeAgent}
+                    userId={user?.id}
+                    onSelect={(agent) => setSelectedAgentId(agent.id)}
+                  />
+                )}
+              </>
+            )}
+            mentionItems={aiCoworkerMentionItems}
             mentionIssueProjectId={projectIdForContext}
           />
         </>
@@ -386,6 +407,45 @@ function EmptyConversationState({ title, body }: { title: string; body: string }
       <MessageSquare className="mb-3 size-8 text-muted-foreground" />
       <h2 className="text-base font-semibold">{title}</h2>
       <p className="mt-1 max-w-md text-sm text-muted-foreground">{body}</p>
+    </div>
+  );
+}
+
+function AiCoworkerMentionTray({
+  agents,
+  disabled,
+  onSelect,
+}: {
+  agents: Agent[];
+  disabled?: boolean;
+  onSelect: (agent: Agent) => void;
+}) {
+  const { t } = useT("chat");
+  if (agents.length === 0) return null;
+
+  return (
+    <div className="mx-auto mb-2 flex w-full max-w-4xl min-w-0 flex-wrap items-center gap-1.5">
+      <span className="mr-1 text-xs text-muted-foreground">
+        {t(($) => $.conversations.ai_coworkers)}
+      </span>
+      {agents.slice(0, 8).map((agent) => (
+        <Badge
+          key={agent.id}
+          variant="outline"
+          render={<button type="button" />}
+          aria-disabled={disabled}
+          aria-label={t(($) => $.conversations.insert_ai_coworker, { name: agent.name })}
+          tabIndex={disabled ? -1 : 0}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            if (!disabled) onSelect(agent);
+          }}
+          className="h-6 cursor-pointer gap-1 rounded-md px-1.5 font-normal hover:bg-muted hover:text-muted-foreground aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+        >
+          <ActorAvatar actorType="agent" actorId={agent.id} size={16} enableHoverCard showStatusDot profileLink={false} />
+          <span className="max-w-28 truncate">{agent.name}</span>
+        </Badge>
+      ))}
     </div>
   );
 }
@@ -473,7 +533,7 @@ function AgentPickerItem({
   );
 }
 
-function ProjectPickerSlot({
+function ProjectContextPill({
   projects,
   value,
   disabled,
@@ -487,40 +547,38 @@ function ProjectPickerSlot({
   const { t } = useT("chat");
   const selected = value ? projects.find((project) => project.id === value) ?? null : null;
   return (
-    <div className="border-b px-3 py-2">
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          disabled={disabled}
-          className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {selected ? (
-            <>
-              <ProjectIcon project={selected} size="sm" />
-              <span className="truncate">{selected.title}</span>
-            </>
-          ) : (
-            <span>{t(($) => $.conversations.no_project)}</span>
-          )}
-          <ChevronDown className="size-3 shrink-0" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" side="top" className="max-h-80 w-64 overflow-y-auto">
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>{t(($) => $.conversations.project_picker)}</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => onChange(null)} className="flex items-center gap-2">
-              <X className="size-3.5 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate">{t(($) => $.conversations.no_project)}</span>
-              {!selected && <Check className="size-3.5 text-muted-foreground" />}
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        disabled={disabled}
+        className="inline-flex min-w-0 max-w-40 shrink items-center gap-1.5 rounded-md bg-muted px-1.5 py-1 text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {selected ? (
+          <>
+            <ProjectIcon project={selected} size="sm" />
+            <span className="truncate">{selected.title}</span>
+          </>
+        ) : (
+          <span className="truncate">{t(($) => $.conversations.no_project)}</span>
+        )}
+        <ChevronDown className="size-3 shrink-0" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top" className="max-h-80 w-64 overflow-y-auto">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>{t(($) => $.conversations.project_picker)}</DropdownMenuLabel>
+          <DropdownMenuItem onClick={() => onChange(null)} className="flex items-center gap-2">
+            <X className="size-3.5 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate">{t(($) => $.conversations.no_project)}</span>
+            {!selected && <Check className="size-3.5 text-muted-foreground" />}
+          </DropdownMenuItem>
+          {projects.map((project) => (
+            <DropdownMenuItem key={project.id} onClick={() => onChange(project.id)} className="flex min-w-0 items-center gap-2">
+              <ProjectIcon project={project} size="sm" />
+              <span className="min-w-0 flex-1 truncate">{project.title}</span>
+              {project.id === value && <Check className="size-3.5 text-muted-foreground" />}
             </DropdownMenuItem>
-            {projects.map((project) => (
-              <DropdownMenuItem key={project.id} onClick={() => onChange(project.id)} className="flex min-w-0 items-center gap-2">
-                <ProjectIcon project={project} size="sm" />
-                <span className="min-w-0 flex-1 truncate">{project.title}</span>
-                {project.id === value && <Check className="size-3.5 text-muted-foreground" />}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
+          ))}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

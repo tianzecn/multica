@@ -1,11 +1,13 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useCallback, useRef, useState } from "react";
+import type { ClipboardEvent, ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { File as FileIcon, X } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import {
   ContentEditor,
   type ContentEditorRef,
+  type MentionItem,
   useFileDropZone,
   FileDropOverlay,
 } from "../../editor";
@@ -18,6 +20,10 @@ import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import { useT } from "../../i18n";
 
 const logger = createLogger("chat.ui");
+
+export interface ChatInputAdornmentHelpers {
+  insertMention: (item: MentionItem) => void;
+}
 
 interface ChatInputProps {
   onSend: (content: string, attachmentIds?: string[]) => void;
@@ -39,11 +45,17 @@ interface ChatInputProps {
   agentName?: string;
   /** Rendered at the bottom-left of the input bar — typically the agent picker. */
   leftAdornment?: ReactNode;
+  /** Rendered at the bottom-left with access to editor commands. */
+  renderLeftAdornment?: (helpers: ChatInputAdornmentHelpers) => ReactNode;
   /** Rendered just before the submit button — used for context-anchor action. */
   rightAdornment?: ReactNode;
+  /** Rendered above the input card with access to editor commands. */
+  renderAccessoryTray?: (helpers: ChatInputAdornmentHelpers) => ReactNode;
   /** Rendered inside the rounded container, above the editor — attached
    *  context cards, drafts, etc. */
   topSlot?: ReactNode;
+  /** Optional scoped mention list for @ completion. */
+  mentionItems?: MentionItem[];
   /** Optional project scope for @ issue search inside the chat composer. */
   mentionIssueProjectId?: string | null;
 }
@@ -57,8 +69,11 @@ export function ChatInput({
   noAgent,
   agentName,
   leftAdornment,
+  renderLeftAdornment,
   rightAdornment,
+  renderAccessoryTray,
   topSlot,
+  mentionItems,
   mentionIssueProjectId,
 }: ChatInputProps) {
   const { t } = useT("chat");
@@ -101,37 +116,66 @@ export function ChatInput({
   // bypass the button (Mod+Enter while paste is mid-stream, drag-drop
   // racing the keyboard) — defense in depth.
   const [pendingUploads, setPendingUploads] = useState(0);
+  const [pendingAttachments, setPendingAttachments] = useState<UploadResult[]>([]);
 
-  // Maps "CDN URL inserted into the editor" → "attachment row id" so that
-  // on send we can ask the server to bind only the attachments still
-  // referenced in the message body. Cleared after every send. Mirrors the
-  // comment-input flow exactly.
-  const uploadMapRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (!activeSessionId) return;
+    setPendingAttachments((current) =>
+      current.filter(
+        (attachment) =>
+          !attachment.chat_session_id ||
+          attachment.chat_session_id === activeSessionId,
+      ),
+    );
+  }, [activeSessionId]);
 
-  const handleUpload = useCallback(
-    async (file: File): Promise<UploadResult | null> => {
-      if (!onUploadFile) return null;
-      setPendingUploads((n) => n + 1);
+  const uploadFiles = useCallback(
+    async (files: File[]): Promise<void> => {
+      if (!onUploadFile) return;
+      if (files.length === 0) return;
+      setPendingUploads((n) => n + files.length);
       try {
-        const result = await onUploadFile(file);
-        if (result) uploadMapRef.current.set(result.link, result.id);
-        return result;
+        const results = await Promise.all(files.map((file) => onUploadFile(file)));
+        const attachments = results.filter(Boolean) as UploadResult[];
+        if (attachments.length > 0) {
+          setPendingAttachments((current) => [...current, ...attachments]);
+        }
       } finally {
-        setPendingUploads((n) => Math.max(0, n - 1));
+        setPendingUploads((n) => Math.max(0, n - files.length));
       }
     },
     [onUploadFile],
   );
 
   // Drop zone wraps the rounded card so a drop anywhere on the input
-  // surface routes the file through the editor's upload extension (same
-  // handler as the in-editor paste path).
+  // surface routes the file into the attachment tray.
   const { isDragOver, dropZoneProps } = useFileDropZone({
-    onDrop: (files) => files.forEach((f) => editorRef.current?.uploadFile(f)),
+    onDrop: (files) => void uploadFiles(files),
   });
 
+  const handlePasteCapture = useCallback(
+    (event: ClipboardEvent<HTMLDivElement>) => {
+      const files = Array.from(event.clipboardData.files ?? []);
+      if (files.length === 0 || disabled || noAgent || !onUploadFile) return;
+      event.preventDefault();
+      void uploadFiles(files);
+    },
+    [disabled, noAgent, onUploadFile, uploadFiles],
+  );
+
+  const removePendingAttachment = useCallback((attachmentId: string) => {
+    setPendingAttachments((current) =>
+      current.filter((attachment) => attachment.id !== attachmentId),
+    );
+  }, []);
+
   const handleSend = () => {
-    const content = editorRef.current?.getMarkdown()?.replace(/(\n\s*)+$/, "").trim();
+    const editorContent = editorRef.current?.getMarkdown()?.replace(/(\n\s*)+$/, "").trim() ?? "";
+    const attachmentMarkdown = pendingAttachments
+      .map(formatChatAttachmentMarkdown)
+      .filter(Boolean)
+      .join("\n");
+    const content = [editorContent, attachmentMarkdown].filter(Boolean).join("\n\n").trim();
     if (!content || isRunning || disabled || noAgent) {
       logger.debug("input.send skipped", {
         emptyContent: !content,
@@ -152,12 +196,11 @@ export function ChatInput({
       logger.debug("input.send skipped: uploads in flight");
       return;
     }
-    // Only send attachment IDs for uploads still present in the content.
-    // Edits / deletions that remove the markdown URL also drop the binding.
-    const activeIds: string[] = [];
-    for (const [url, id] of uploadMapRef.current) {
-      if (content.includes(url)) activeIds.push(id);
+    if (pendingUploads > 0) {
+      logger.debug("input.send skipped: tray uploads in flight");
+      return;
     }
+    const activeIds = pendingAttachments.map((attachment) => attachment.id);
     // Capture draft key BEFORE onSend — creating a new session mutates
     // activeSessionId synchronously, so reading it after onSend would point
     // at the new session and leave the old draft orphaned.
@@ -178,7 +221,7 @@ export function ChatInput({
     // a fair price for not stealing focus mid-action.
     editorRef.current?.blur();
     clearInputDraft(keyAtSend);
-    uploadMapRef.current.clear();
+    setPendingAttachments([]);
     setIsEmpty(true);
   };
 
@@ -191,6 +234,19 @@ export function ChatInput({
         : t(($) => $.input.placeholder_default);
 
   const uploadEnabled = !!onUploadFile && !disabled && !noAgent;
+  const insertMention = useCallback(
+    (item: MentionItem) => {
+      if (disabled || noAgent) return;
+      editorRef.current?.insertMention(item);
+    },
+    [disabled, noAgent],
+  );
+  const renderedLeftAdornment = renderLeftAdornment
+    ? renderLeftAdornment({ insertMention })
+    : leftAdornment;
+  const renderedAccessoryTray = renderAccessoryTray
+    ? renderAccessoryTray({ insertMention })
+    : null;
 
   return (
     <div
@@ -203,10 +259,12 @@ export function ChatInput({
         noAgent && "cursor-not-allowed",
       )}
     >
+      {renderedAccessoryTray}
       <div
         {...(uploadEnabled ? dropZoneProps : {})}
+        onPasteCapture={handlePasteCapture}
         className={cn(
-          "relative mx-auto flex min-h-16 max-h-40 w-full max-w-4xl flex-col rounded-lg bg-card pb-9 border-1 border-border transition-colors focus-within:border-brand",
+          "relative mx-auto flex min-h-24 max-h-40 w-full max-w-4xl flex-col rounded-lg bg-card pb-9 border-1 border-border transition-colors focus-within:border-brand",
           // Visual + interaction lock when there's no agent. We don't
           // toggle ContentEditor's editable mode (Tiptap can't switch
           // cleanly post-mount, and the prop has been removed); instead
@@ -218,7 +276,16 @@ export function ChatInput({
         aria-disabled={noAgent || undefined}
       >
         {topSlot}
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+        <ChatAttachmentTray
+          attachments={pendingAttachments}
+          pendingUploads={pendingUploads}
+          onRemove={removePendingAttachment}
+          uploadingLabel={t(($) => $.input.attachment_uploading)}
+          removeLabel={(filename) =>
+            t(($) => $.input.remove_attachment, { filename })
+          }
+        />
+        <div className="flex-1 min-h-14 overflow-y-auto px-3 py-2">
           <ContentEditor
             // See the editorKey / draftKey split note above — editorKey
             // intentionally does not depend on activeSessionId.
@@ -231,21 +298,21 @@ export function ChatInput({
               setInputDraft(draftKey, md);
             }}
             onSubmit={handleSend}
-            onUploadFile={uploadEnabled ? handleUpload : undefined}
+            mentionItems={mentionItems}
             mentionIssueProjectId={mentionIssueProjectId ?? null}
             debounceMs={100}
             // Chat is short-form — the floating formatting toolbar is
             // more distraction than feature here.
             showBubbleMenu={false}
-            // Mod+Enter submits. Bare Enter falls through to Tiptap's
-            // default, which continues lists/quotes and breaks paragraphs.
-            // Without this, Enter-as-send would steal the only key that
-            // continues a bullet list, leaving users stuck after one item.
+            // Match channels: Enter sends, Shift+Enter inserts a soft break.
+            // The submit extension still lets IME composition and code-block
+            // newlines pass through instead of turning them into sends.
+            submitOnEnter
           />
         </div>
-        {leftAdornment && (
-          <div className="absolute bottom-1.5 left-2 flex items-center">
-            {leftAdornment}
+        {renderedLeftAdornment && (
+          <div className="absolute bottom-1.5 left-2 right-24 flex min-w-0 items-center gap-1 overflow-hidden">
+            {renderedLeftAdornment}
           </div>
         )}
         <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
@@ -253,12 +320,19 @@ export function ChatInput({
           {uploadEnabled && (
             <FileUploadButton
               size="sm"
-              onSelect={(file) => editorRef.current?.uploadFile(file)}
+              onSelect={(file) => void uploadFiles([file])}
+              onSelectFiles={(files) => void uploadFiles(files)}
+              multiple
             />
           )}
           <SubmitButton
             onClick={handleSend}
-            disabled={isEmpty || !!disabled || !!noAgent || pendingUploads > 0}
+            disabled={
+              (isEmpty && pendingAttachments.length === 0) ||
+              !!disabled ||
+              !!noAgent ||
+              pendingUploads > 0
+            }
             running={isRunning}
             onStop={onStop}
             tooltip={`${t(($) => $.input.send_tooltip)} · ${formatShortcut(modKey, enterKey)}`}
@@ -269,4 +343,83 @@ export function ChatInput({
       </div>
     </div>
   );
+}
+
+function ChatAttachmentTray({
+  attachments,
+  pendingUploads,
+  onRemove,
+  uploadingLabel,
+  removeLabel,
+}: {
+  attachments: UploadResult[];
+  pendingUploads: number;
+  onRemove: (attachmentId: string) => void;
+  uploadingLabel: string;
+  removeLabel: (filename: string) => string;
+}) {
+  if (attachments.length === 0 && pendingUploads === 0) return null;
+
+  return (
+    <div className="flex shrink-0 gap-2 overflow-x-auto px-3 pt-2">
+      {attachments.map((attachment) => {
+        const isImage = attachment.content_type.startsWith("image/");
+        return (
+          <div
+            key={attachment.id}
+            className="group relative flex size-14 shrink-0 overflow-hidden rounded-lg border bg-muted"
+          >
+            {isImage ? (
+              <img
+                src={attachment.url}
+                alt={attachment.filename}
+                className="size-full object-cover"
+              />
+            ) : (
+              <div className="flex size-full flex-col items-center justify-center gap-1 px-1.5 text-center">
+                <FileIcon className="size-4 text-muted-foreground" />
+                <span className="w-full truncate text-[10px] text-muted-foreground">
+                  {attachment.filename}
+                </span>
+              </div>
+            )}
+            <button
+              type="button"
+              aria-label={removeLabel(attachment.filename)}
+              onClick={() => onRemove(attachment.id)}
+              className="absolute right-1 top-1 flex size-4 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus:opacity-100"
+            >
+              <X className="size-2.5" />
+            </button>
+          </div>
+        );
+      })}
+      {Array.from({ length: pendingUploads }).map((_, index) => (
+        <div
+          key={`uploading-${index}`}
+          className="flex size-14 shrink-0 animate-pulse items-center justify-center rounded-lg border bg-muted text-[10px] text-muted-foreground"
+        >
+          {uploadingLabel}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatChatAttachmentMarkdown(attachment: UploadResult) {
+  const filename = escapeMarkdownLabel(attachment.filename || "file");
+  const url = escapeMarkdownUrl(attachment.url);
+  if (!url) return "";
+  if (attachment.content_type.startsWith("image/")) {
+    return `![${filename}](${url})`;
+  }
+  return `!file[${filename}](${url})`;
+}
+
+function escapeMarkdownLabel(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+}
+
+function escapeMarkdownUrl(value: string) {
+  return value.replace(/\s/g, "%20").replace(/\)/g, "%29");
 }

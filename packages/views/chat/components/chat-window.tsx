@@ -27,8 +27,7 @@ import {
 } from "@multica/ui/components/ui/alert-dialog";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
-import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
-import { canAssignAgent } from "@multica/views/issues/components";
+import { agentListOptions } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
 import { useAgentPresenceDetail, useWorkspaceAgentAvailability } from "@multica/core/agents";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
@@ -79,7 +78,6 @@ export function ChatWindow() {
   const setSelectedAgentId = useChatStore((s) => s.setSelectedAgentId);
   const user = useAuthStore((s) => s.user);
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
   // Single sessions cache. The dropdown groups locally into "active" /
   // "archived" — eliminating the separate active/all queries that used
   // to drift during the WS-invalidate window.
@@ -117,11 +115,7 @@ export function ChatWindow() {
   const createSession = useCreateChatSession();
   const markRead = useMarkChatSessionRead();
 
-  const currentMember = members.find((m) => m.user_id === user?.id);
-  const memberRole = currentMember?.role;
-  const availableAgents = agents.filter(
-    (a) => !a.archived_at && canAssignAgent(a, user?.id, memberRole),
-  );
+  const availableAgents = agents.filter((a) => !a.archived_at);
 
   // Resolve selected agent: stored preference → first available
   const activeAgent =

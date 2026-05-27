@@ -11,7 +11,9 @@
     "placeholder_named": "Tell {{name}} what to do…",
     "placeholder_default": "Tell me what to do…",
     "send_tooltip": "Send",
-    "stop_tooltip": "Stop"
+    "stop_tooltip": "Stop",
+    "attachment_uploading": "Uploading",
+    "remove_attachment": "Remove {{filename}}"
   },
   "message_list": {
     "show_details": "Show details",
@@ -112,7 +114,9 @@
     "restore": "Restore",
     "archived_banner": "This conversation is archived. Restore it to continue chatting.",
     "no_project": "No project",
-    "project_picker": "Project"
+    "project_picker": "Project",
+    "ai_coworkers": "AI teammates",
+    "insert_ai_coworker": "Insert @{{name}}"
   },
   "no_agent_banner": "You need an agent to start chatting.",
   "offline_banner": {
