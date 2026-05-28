@@ -1,4 +1,4 @@
-import { app, ipcMain, BrowserWindow, shell } from "electron";
+import { app, ipcMain, BrowserWindow, shell, dialog } from "electron";
 import { execFile } from "child_process";
 import {
   readFile,
@@ -159,6 +159,45 @@ async function fetchHealthAtPort(
   } catch {
     return null;
   }
+}
+
+const PROJECT_GIT_OPERATIONS = new Set(["fetch", "pull", "rebase", "commit", "push", "snapshot"]);
+
+async function fetchActiveDaemonJSON<T>(
+  path: string,
+  options: { method?: string; body?: unknown; timeoutMs?: number } = {},
+): Promise<T> {
+  const active = await ensureActiveProfile();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);
+  try {
+    const init: RequestInit = {
+      method: options.method ?? "GET",
+      signal: controller.signal,
+    };
+    if (options.body !== undefined) {
+      init.headers = { "Content-Type": "application/json" };
+      init.body = JSON.stringify(options.body);
+    }
+    const res = await fetch(`http://127.0.0.1:${active.port}${path}`, init);
+    if (!res.ok) {
+      const text = (await res.text()).trim();
+      throw new Error(text || `Daemon request failed with HTTP ${res.status}`);
+    }
+    if (res.status === 204) return null as T;
+    return (await res.json()) as T;
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new Error(err.name === "AbortError" ? "Daemon request timed out" : err.message);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function projectWorkspaceLocalPath(projectId: string, suffix = ""): string {
+  return `/project-workspaces/${encodeURIComponent(projectId)}${suffix}`;
 }
 
 // Desktop owns a dedicated CLI profile named after the target API host, so it
@@ -864,6 +903,94 @@ export function setupDaemonManager(
   ipcMain.handle("daemon:stop", () => withGuard(() => stopDaemon()));
   ipcMain.handle("daemon:restart", () => withGuard(() => restartDaemon()));
   ipcMain.handle("daemon:get-status", () => fetchHealth());
+  ipcMain.handle("daemon:select-project-folder", async () => {
+    const win = getMainWindow();
+    const options: Electron.OpenDialogOptions = {
+      properties: ["openDirectory", "createDirectory"],
+    };
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    return {
+      canceled: result.canceled,
+      path: result.filePaths[0] ?? null,
+    };
+  });
+  ipcMain.handle("daemon:get-project-workspace", (_event, projectId: string) =>
+    fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId)),
+  );
+  ipcMain.handle(
+    "daemon:bind-project-workspace",
+    (_event, projectId: string, payload: unknown) =>
+      fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId), {
+        method: "PUT",
+        body: payload,
+      }),
+  );
+  ipcMain.handle(
+    "daemon:clone-project-workspace",
+    (_event, projectId: string, payload: unknown) =>
+      fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId, "/clone"), {
+        method: "POST",
+        body: payload,
+        timeoutMs: 120_000,
+      }),
+  );
+  ipcMain.handle("daemon:get-project-git-status", (_event, projectId: string) =>
+    fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId, "/git/status")),
+  );
+  ipcMain.handle("daemon:get-project-git-diff", (_event, projectId: string) =>
+    fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId, "/git/diff")),
+  );
+  ipcMain.handle("daemon:get-project-git-log", (_event, projectId: string) =>
+    fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId, "/git/log")),
+  );
+  ipcMain.handle("daemon:get-project-git-snapshots", (_event, projectId: string) =>
+    fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId, "/git/snapshots")),
+  );
+  ipcMain.handle(
+    "daemon:get-project-file-tree",
+    (_event, projectId: string, path?: string) => {
+      const query = path ? `?path=${encodeURIComponent(path)}` : "";
+      return fetchActiveDaemonJSON(
+        projectWorkspaceLocalPath(projectId, `/files/tree${query}`),
+      );
+    },
+  );
+  ipcMain.handle(
+    "daemon:read-project-file",
+    (_event, projectId: string, path: string) =>
+      fetchActiveDaemonJSON(
+        projectWorkspaceLocalPath(
+          projectId,
+          `/files/read?path=${encodeURIComponent(path)}`,
+        ),
+      ),
+  );
+  ipcMain.handle(
+    "daemon:write-project-file",
+    (_event, projectId: string, payload: unknown) =>
+      fetchActiveDaemonJSON(projectWorkspaceLocalPath(projectId, "/files/write"), {
+        method: "PUT",
+        body: payload,
+      }),
+  );
+  ipcMain.handle(
+    "daemon:run-project-git-operation",
+    (_event, projectId: string, operation: string, payload: unknown) => {
+      if (!PROJECT_GIT_OPERATIONS.has(operation)) {
+        throw new Error(`Unsupported Project Git operation: ${operation}`);
+      }
+      return fetchActiveDaemonJSON(
+        projectWorkspaceLocalPath(projectId, `/git/${operation}`),
+        {
+          method: "POST",
+          body: payload ?? {},
+          timeoutMs: 120_000,
+        },
+      );
+    },
+  );
   ipcMain.handle(
     "daemon:sync-token",
     (_event, token: string, userId: string) => syncToken(token, userId),

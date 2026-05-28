@@ -95,9 +95,9 @@ func TestPiExecuteAttachesStdinPipe(t *testing.T) {
 		t.Fatalf("new pi backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: fakeAgentExecTimeout})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestPiExecuteAttachesStdinPipe(t *testing.T) {
 		if result.Status != "completed" {
 			t.Fatalf("expected status=completed (stdin attached as fifo), got %q (error=%q)", result.Status, result.Error)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(fakeAgentResultTimeout):
 		t.Fatal("timeout waiting for result")
 	}
 }

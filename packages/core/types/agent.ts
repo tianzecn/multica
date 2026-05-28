@@ -87,6 +87,8 @@ export interface AgentTask {
   autopilot_run_id?: string;
   /** Set when this task was created as an auto-retry of a parent task. */
   parent_task_id?: string;
+  /** Project scope for project-bound chat tasks or issue tasks. */
+  project_id?: string;
   /** 1-based attempt counter; >1 means this is a retry. */
   attempt?: number;
   /** Set when an issue comment triggered this task (@mention or assignee comment). */

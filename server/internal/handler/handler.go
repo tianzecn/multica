@@ -105,6 +105,8 @@ type Handler struct {
 	WebhookRateLimiter    WebhookRateLimiter
 	WebhookIPRateLimiter  WebhookRateLimiter
 	CloudRuntime          cloudRuntimeProxy
+	GitHubRepoCreator     GitHubRepoCreator
+	GitHubPRReviewFetcher GitHubPRReviewFetcher
 	cfg                   Config
 }
 
@@ -150,7 +152,8 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 			BaseURL: cfg.CloudRuntimeFleetURL,
 			Timeout: cfg.CloudRuntimeFleetTimeout,
 		}),
-		cfg: cfg,
+		GitHubRepoCreator: NewEnvGitHubRepoCreator(),
+		cfg:               cfg,
 	}
 }
 

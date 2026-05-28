@@ -121,10 +121,12 @@ const (
 	EventChannelDispatchPlanUpdated = "channel_dispatch_plan:updated"
 
 	// Daemon events
-	EventDaemonHeartbeat     = "daemon:heartbeat"
-	EventDaemonHeartbeatAck  = "daemon:heartbeat_ack"
-	EventDaemonRegister      = "daemon:register"
-	EventDaemonTaskAvailable = "daemon:task_available"
+	EventDaemonHeartbeat                = "daemon:heartbeat"
+	EventDaemonHeartbeatAck             = "daemon:heartbeat_ack"
+	EventDaemonRegister                 = "daemon:register"
+	EventDaemonTaskAvailable            = "daemon:task_available"
+	EventDaemonProjectWorkspaceRequest  = "daemon:project_workspace_request"
+	EventDaemonProjectWorkspaceResponse = "daemon:project_workspace_response"
 
 	// GitHub integration events
 	EventGitHubInstallationCreated = "github_installation:created"

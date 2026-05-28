@@ -177,9 +177,10 @@ type AgentTaskResponse struct {
 	ParentTaskID            *string               `json:"parent_task_id,omitempty"`
 	Agent                   *TaskAgentData        `json:"agent,omitempty"`
 	Repos                   []RepoData            `json:"repos,omitempty"`
-	ProjectID               string                `json:"project_id,omitempty"`        // issue's project, when present
-	ProjectTitle            string                `json:"project_title,omitempty"`     // for surfacing in agent context
-	ProjectResources        []ProjectResourceData `json:"project_resources,omitempty"` // resources attached to the project
+	ProjectID               string                `json:"project_id,omitempty"`          // issue's project, when present
+	ProjectTitle            string                `json:"project_title,omitempty"`       // for surfacing in agent context
+	ProjectBaseBranch       string                `json:"project_base_branch,omitempty"` // project workspace base branch for branch/rebase policy
+	ProjectResources        []ProjectResourceData `json:"project_resources,omitempty"`   // resources attached to the project
 	CreatedAt               string                `json:"created_at"`
 	PriorSessionID          string                `json:"prior_session_id,omitempty"`          // session ID from a previous task on same issue
 	PriorWorkDir            string                `json:"prior_work_dir,omitempty"`            // work_dir from a previous task on same issue
@@ -276,6 +277,7 @@ func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
 		Attempt:          t.Attempt,
 		MaxAttempts:      t.MaxAttempts,
 		ParentTaskID:     uuidToPtr(t.ParentTaskID),
+		ProjectID:        uuidToString(t.ProjectID),
 		CreatedAt:        timestampToString(t.CreatedAt),
 		TriggerCommentID: uuidToPtr(t.TriggerCommentID),
 		TriggerSummary:   textToPtr(t.TriggerSummary),

@@ -170,6 +170,120 @@ interface DaemonStatus {
   serverUrl?: string;
 }
 
+interface ProjectGitFile {
+  path: string;
+  status: string;
+}
+
+interface ProjectGitStatus {
+  branch: string;
+  remote: string;
+  dirty_count: number;
+  untracked_count: number;
+  ahead: number;
+  behind: number;
+  head_sha: string;
+  last_fetch_at?: string | null;
+  has_uncommitted: boolean;
+  files?: ProjectGitFile[];
+}
+
+interface ProjectLocalWorkspace {
+  bound: boolean;
+  project_id: string;
+  workspace_id?: string;
+  primary_repo_url?: string;
+  local_path?: string;
+  path_alias?: string;
+  path_basename?: string;
+  git?: ProjectGitStatus;
+  error?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface BindProjectLocalWorkspaceRequest {
+  workspace_id: string;
+  primary_repo_url: string;
+  local_path: string;
+  path_alias?: string;
+}
+
+interface ProjectFolderSelection {
+  canceled: boolean;
+  path?: string | null;
+}
+
+interface ProjectGitDiffResponse {
+  status: ProjectGitStatus;
+  patch: string;
+  truncated: boolean;
+}
+
+interface ProjectGitLogResponse {
+  graph: string;
+}
+
+type ProjectGitOperation = "fetch" | "pull" | "rebase" | "commit" | "push" | "snapshot";
+
+interface ProjectGitOperationRequest {
+  message?: string;
+  paths?: string[];
+  base_branch?: string;
+  allow_base_push?: boolean;
+}
+
+interface ProjectGitOperationResponse {
+  operation: ProjectGitOperation;
+  output: string;
+  status: ProjectGitStatus;
+  snapshot?: ProjectSafetySnapshot | null;
+}
+
+interface ProjectSafetySnapshot {
+  ref: string;
+  head_sha: string;
+  message: string;
+  created_at: string;
+}
+
+interface ProjectSafetySnapshotListResponse {
+  snapshots: ProjectSafetySnapshot[];
+}
+
+interface ProjectFileEntry {
+  path: string;
+  name: string;
+  type: string;
+  size: number;
+  modified_at?: string | null;
+}
+
+interface ProjectFileTreeResponse {
+  path: string;
+  entries: ProjectFileEntry[];
+}
+
+interface ProjectFileReadResponse {
+  path: string;
+  content?: string;
+  hash: string;
+  size: number;
+  binary: boolean;
+}
+
+interface ProjectFileWriteRequest {
+  path: string;
+  content: string;
+  base_hash?: string;
+}
+
+interface ProjectFileWriteResponse {
+  path: string;
+  hash: string;
+  size: number;
+}
+
 const daemonAPI = {
   start: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke("daemon:start"),
@@ -179,6 +293,49 @@ const daemonAPI = {
     ipcRenderer.invoke("daemon:restart"),
   getStatus: (): Promise<DaemonStatus> =>
     ipcRenderer.invoke("daemon:get-status"),
+  selectProjectFolder: (): Promise<ProjectFolderSelection> =>
+    ipcRenderer.invoke("daemon:select-project-folder"),
+  getProjectWorkspace: (projectId: string): Promise<ProjectLocalWorkspace> =>
+    ipcRenderer.invoke("daemon:get-project-workspace", projectId),
+  bindProjectWorkspace: (
+    projectId: string,
+    payload: BindProjectLocalWorkspaceRequest,
+  ): Promise<ProjectLocalWorkspace> =>
+    ipcRenderer.invoke("daemon:bind-project-workspace", projectId, payload),
+  cloneProjectWorkspace: (
+    projectId: string,
+    payload: BindProjectLocalWorkspaceRequest,
+  ): Promise<ProjectLocalWorkspace> =>
+    ipcRenderer.invoke("daemon:clone-project-workspace", projectId, payload),
+  getProjectGitStatus: (projectId: string): Promise<ProjectGitStatus> =>
+    ipcRenderer.invoke("daemon:get-project-git-status", projectId),
+  getProjectGitDiff: (projectId: string): Promise<ProjectGitDiffResponse> =>
+    ipcRenderer.invoke("daemon:get-project-git-diff", projectId),
+  getProjectGitLog: (projectId: string): Promise<ProjectGitLogResponse> =>
+    ipcRenderer.invoke("daemon:get-project-git-log", projectId),
+  getProjectGitSnapshots: (projectId: string): Promise<ProjectSafetySnapshotListResponse> =>
+    ipcRenderer.invoke("daemon:get-project-git-snapshots", projectId),
+  getProjectFileTree: (
+    projectId: string,
+    path?: string,
+  ): Promise<ProjectFileTreeResponse> =>
+    ipcRenderer.invoke("daemon:get-project-file-tree", projectId, path),
+  readProjectFile: (
+    projectId: string,
+    path: string,
+  ): Promise<ProjectFileReadResponse> =>
+    ipcRenderer.invoke("daemon:read-project-file", projectId, path),
+  writeProjectFile: (
+    projectId: string,
+    payload: ProjectFileWriteRequest,
+  ): Promise<ProjectFileWriteResponse> =>
+    ipcRenderer.invoke("daemon:write-project-file", projectId, payload),
+  runProjectGitOperation: (
+    projectId: string,
+    operation: ProjectGitOperation,
+    payload?: ProjectGitOperationRequest,
+  ): Promise<ProjectGitOperationResponse> =>
+    ipcRenderer.invoke("daemon:run-project-git-operation", projectId, operation, payload ?? {}),
   onStatusChange: (callback: (status: DaemonStatus) => void) => {
     const handler = (_: unknown, status: DaemonStatus) => callback(status);
     ipcRenderer.on("daemon:status", handler);

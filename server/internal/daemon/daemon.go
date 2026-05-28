@@ -131,6 +131,15 @@ type Daemon struct {
 	activeEnvRootsMu sync.Mutex
 	activeEnvRoots   map[string]int // env root path -> reference count (handles reuse paths marked twice)
 
+	projectScriptsMu sync.Mutex
+	projectScripts   map[string]*projectScriptProcess // run id -> daemon-managed project script
+
+	projectTerminalsMu sync.Mutex
+	projectTerminals   map[string]*projectTerminalSession // session id -> daemon-managed project terminal
+
+	projectTaskLocksMu sync.Mutex
+	projectTaskLocks   map[string]chan struct{} // project_id -> single writable task slot
+
 	// bgSyncs tracks background goroutines started by registerTaskRepos so
 	// callers (notably tests using t.TempDir-backed cache roots) can wait for
 	// them to drain before tearing the daemon down. Without this the bg
@@ -164,6 +173,9 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		agentVersions:             make(map[string]string),
 		wsHBLastAck:               make(map[string]time.Time),
 		activeEnvRoots:            make(map[string]int),
+		projectScripts:            make(map[string]*projectScriptProcess),
+		projectTerminals:          make(map[string]*projectTerminalSession),
+		projectTaskLocks:          make(map[string]chan struct{}),
 		runtimeGoneInflight:       make(map[string]struct{}),
 		reregisterNextAttempt:     make(map[string]time.Time),
 		reregisterLastCompletedAt: make(map[string]time.Time),
@@ -2263,6 +2275,25 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		WorkspaceContext:                 task.WorkspaceContext,
 	}
 
+	releaseProjectLock, err := d.acquireProjectTaskLock(ctx, task.ProjectID)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("acquire project workspace lock: %w", err)
+	}
+	defer releaseProjectLock()
+
+	projectWorkDir, projectBranch, err := d.prepareProjectTaskWorkspace(ctx, task)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare project workspace: %w", err)
+	}
+	priorWorkDir := task.PriorWorkDir
+	resumeSessionID := task.PriorSessionID
+	if projectWorkDir != "" {
+		priorWorkDir = ""
+		if task.PriorWorkDir != projectWorkDir {
+			resumeSessionID = ""
+		}
+	}
+
 	// Mark candidate env roots as active before any env work so the GC loop
 	// can't reclaim artifacts inside them mid-execution. We mark both the
 	// predicted root for a fresh Prepare and the prior root for Reuse — they
@@ -2270,8 +2301,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	predictedRoot := execenv.PredictRootDir(d.cfg.WorkspacesRoot, task.WorkspaceID, task.ID)
 	d.markActiveEnvRoot(predictedRoot)
 	defer d.unmarkActiveEnvRoot(predictedRoot)
-	if task.PriorWorkDir != "" {
-		priorRoot := filepath.Dir(task.PriorWorkDir)
+	if priorWorkDir != "" {
+		priorRoot := filepath.Dir(priorWorkDir)
 		if priorRoot != predictedRoot {
 			d.markActiveEnvRoot(priorRoot)
 			defer d.unmarkActiveEnvRoot(priorRoot)
@@ -2285,9 +2316,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "openclaw" {
 		openclawBin = entry.Path
 	}
-	if task.PriorWorkDir != "" {
+	if priorWorkDir != "" {
 		env = execenv.Reuse(execenv.ReuseParams{
-			WorkDir:      task.PriorWorkDir,
+			WorkDir:      priorWorkDir,
 			Provider:     provider,
 			CodexVersion: codexVersion,
 			OpenclawBin:  openclawBin,
@@ -2321,6 +2352,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
+	}
+	executionCwd := env.WorkDir
+	if projectWorkDir != "" {
+		executionCwd = projectWorkDir
 	}
 	// NOTE: No cleanup — workdir is preserved for reuse by future tasks on
 	// the same (agent, issue) pair. The work_dir path is stored in DB on
@@ -2359,6 +2394,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if task.AutopilotRunID != "" {
 		agentEnv["MULTICA_AUTOPILOT_RUN_ID"] = task.AutopilotRunID
+	}
+	if projectWorkDir != "" {
+		agentEnv["MULTICA_PROJECT_WORKDIR"] = projectWorkDir
+		agentEnv["MULTICA_PROJECT_BRANCH"] = projectBranch
 	}
 	if task.AutopilotID != "" {
 		agentEnv["MULTICA_AUTOPILOT_ID"] = task.AutopilotID
@@ -2422,15 +2461,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
 	}
 
-	reused := task.PriorWorkDir != "" && env.WorkDir == task.PriorWorkDir
+	reused := priorWorkDir != "" && env.WorkDir == priorWorkDir
 	taskLog.Info("starting agent",
 		"provider", provider,
-		"workdir", env.WorkDir,
+		"workdir", executionCwd,
+		"context_workdir", env.WorkDir,
+		"project_branch", projectBranch,
 		"model", entry.Model,
 		"reused", reused,
 	)
-	if task.PriorSessionID != "" {
-		taskLog.Info("resuming session", "session_id", task.PriorSessionID)
+	if resumeSessionID != "" {
+		taskLog.Info("resuming session", "session_id", resumeSessionID)
 	}
 
 	taskStart := time.Now()
@@ -2491,11 +2532,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	execOpts := agent.ExecOptions{
-		Cwd:                       env.WorkDir,
+		Cwd:                       executionCwd,
 		Model:                     model,
 		Timeout:                   d.cfg.AgentTimeout,
 		SemanticInactivityTimeout: d.cfg.CodexSemanticInactivityTimeout,
-		ResumeSessionID:           task.PriorSessionID,
+		ResumeSessionID:           resumeSessionID,
 		ExtraArgs:                 extraArgs,
 		CustomArgs:                customArgs,
 		McpConfig:                 mcpConfig,
@@ -2522,7 +2563,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Hermes loads AGENTS.md / .agent_context itself. Prepending the full runtime
 	// brief into the ACP user prompt duplicates that context, bloats every turn,
 	// and has triggered upstream safety filters on harmless tasks.
-	if providerNeedsInlineSystemPrompt(provider) {
+	if providerNeedsInlineSystemPrompt(provider) || projectWorkDir != "" {
 		execOpts.SystemPrompt = runtimeBrief
 	}
 
@@ -2546,7 +2587,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Fallback: if session resume failed before establishing a session, retry
 	// with a fresh session. We check SessionID == "" to distinguish a resume
 	// failure (no session established) from a failure during actual execution.
-	if result.Status == "failed" && task.PriorSessionID != "" && result.SessionID == "" {
+	if result.Status == "failed" && resumeSessionID != "" && result.SessionID == "" {
 		firstUsage := result.Usage
 		taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
 		execOpts.ResumeSessionID = ""
@@ -2599,12 +2640,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// a normal completion so the task is not incorrectly marked as
 			// blocked.
 			return TaskResult{
-				Status:    "completed",
-				Comment:   "",
-				SessionID: result.SessionID,
-				WorkDir:   env.WorkDir,
-				EnvRoot:   env.RootDir,
-				Usage:     usageEntries,
+				Status:     "completed",
+				Comment:    "",
+				BranchName: projectBranch,
+				SessionID:  result.SessionID,
+				WorkDir:    executionCwd,
+				EnvRoot:    env.RootDir,
+				Usage:      usageEntries,
 			}, nil
 		}
 		// Detect "poisoned" terminal output: the agent didn't reach a real
@@ -2621,20 +2663,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			return TaskResult{
 				Status:        "blocked",
 				Comment:       result.Output,
+				BranchName:    projectBranch,
 				SessionID:     result.SessionID,
-				WorkDir:       env.WorkDir,
+				WorkDir:       executionCwd,
 				EnvRoot:       env.RootDir,
 				Usage:         usageEntries,
 				FailureReason: reason,
 			}, nil
 		}
 		return TaskResult{
-			Status:    "completed",
-			Comment:   result.Output,
-			SessionID: result.SessionID,
-			WorkDir:   env.WorkDir,
-			EnvRoot:   env.RootDir,
-			Usage:     usageEntries,
+			Status:     "completed",
+			Comment:    result.Output,
+			BranchName: projectBranch,
+			SessionID:  result.SessionID,
+			WorkDir:    executionCwd,
+			EnvRoot:    env.RootDir,
+			Usage:      usageEntries,
 		}, nil
 	case "timeout":
 		// Surface session_id/work_dir so the chat resume pointer is kept
@@ -2655,8 +2699,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{
 			Status:        "blocked",
 			Comment:       comment,
+			BranchName:    projectBranch,
 			SessionID:     result.SessionID,
-			WorkDir:       env.WorkDir,
+			WorkDir:       executionCwd,
 			EnvRoot:       env.RootDir,
 			FailureReason: failureReason,
 			Usage:         usageEntries,
@@ -2674,8 +2719,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{
 			Status:        "blocked",
 			Comment:       comment,
+			BranchName:    projectBranch,
 			SessionID:     result.SessionID,
-			WorkDir:       env.WorkDir,
+			WorkDir:       executionCwd,
 			EnvRoot:       env.RootDir,
 			FailureReason: "idle_watchdog",
 			Usage:         usageEntries,
@@ -2687,12 +2733,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// status string for the "agent finished" log line so operators can
 		// distinguish "task cancelled by server" from a real timeout.
 		return TaskResult{
-			Status:    "cancelled",
-			Comment:   "task cancelled by server",
-			SessionID: result.SessionID,
-			WorkDir:   env.WorkDir,
-			EnvRoot:   env.RootDir,
-			Usage:     usageEntries,
+			Status:     "cancelled",
+			Comment:    "task cancelled by server",
+			BranchName: projectBranch,
+			SessionID:  result.SessionID,
+			WorkDir:    executionCwd,
+			EnvRoot:    env.RootDir,
+			Usage:      usageEntries,
 		}, nil
 	default:
 		errMsg := result.Error
@@ -2720,8 +2767,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{
 			Status:        "blocked",
 			Comment:       errMsg,
+			BranchName:    projectBranch,
 			SessionID:     result.SessionID,
-			WorkDir:       env.WorkDir,
+			WorkDir:       executionCwd,
 			EnvRoot:       env.RootDir,
 			Usage:         usageEntries,
 			FailureReason: failureReason,

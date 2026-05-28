@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestNewReturnsOpencodeBackend(t *testing.T) {
@@ -902,12 +901,12 @@ func TestOpencodeBackendAnchorsDirAndPWD(t *testing.T) {
 		t.Fatalf("new opencode backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
 
 	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
 		Cwd:     workDir,
-		Timeout: 5 * time.Second,
+		Timeout: fakeAgentExecTimeout,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -973,11 +972,11 @@ func TestOpencodeBackendDoesNotUsePermissionEnvOverride(t *testing.T) {
 		t.Fatalf("new opencode backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
 
 	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
-		Timeout: 5 * time.Second,
+		Timeout: fakeAgentExecTimeout,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -1025,12 +1024,12 @@ func TestOpencodeBackendQuestionDenySurvivesUserConfig(t *testing.T) {
 		t.Fatalf("new opencode backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
 
 	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
 		Cwd:     workDir,
-		Timeout: 5 * time.Second,
+		Timeout: fakeAgentExecTimeout,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -1079,12 +1078,12 @@ func TestOpencodeBackendBlocksDirOverride(t *testing.T) {
 		t.Fatalf("new opencode backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
 
 	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
 		Cwd:        workDir,
-		Timeout:    5 * time.Second,
+		Timeout:    fakeAgentExecTimeout,
 		CustomArgs: []string{"--dir", bogusDir},
 	})
 	if err != nil {

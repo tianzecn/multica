@@ -4,6 +4,7 @@
  *   - List       (projectKeys.list)       — `Project[]`
  *   - Detail     (projectKeys.detail)     — `Project`
  *   - Resources  (projectKeys.resources)  — `ProjectResource[]` (per project)
+ *   - Workspace  (projectKeys.workspace)  — `ProjectWorkspace` (bindings/config)
  *
  * Detail and Resources are workspace-scoped via the `wsId` segment so
  * switching workspaces flips the cache without manual invalidate, per the
@@ -25,6 +26,38 @@ export const projectKeys = {
     [...projectKeys.all(wsId), "detail", id] as const,
   resources: (wsId: string | null, id: string) =>
     [...projectKeys.all(wsId), "detail", id, "resources"] as const,
+  workspace: (wsId: string | null, id: string) =>
+    [...projectKeys.all(wsId), "detail", id, "workspace"] as const,
+  pullRequests: (wsId: string | null, id: string) =>
+    [...projectKeys.all(wsId), "detail", id, "pull-requests"] as const,
+  pullRequestReview: (
+    wsId: string | null,
+    id: string,
+    pullRequestId: string | null,
+  ) =>
+    [...projectKeys.pullRequests(wsId, id), "review", pullRequestId ?? ""] as const,
+  device: (wsId: string | null, id: string, deviceId: string | null) =>
+    [...projectKeys.workspace(wsId, id), "device", deviceId ?? ""] as const,
+  deviceGitStatus: (wsId: string | null, id: string, deviceId: string | null) =>
+    [...projectKeys.device(wsId, id, deviceId), "git", "status"] as const,
+  deviceGitSnapshots: (wsId: string | null, id: string, deviceId: string | null) =>
+    [...projectKeys.device(wsId, id, deviceId), "git", "snapshots"] as const,
+  deviceFileTree: (
+    wsId: string | null,
+    id: string,
+    deviceId: string | null,
+    path = "",
+  ) =>
+    [...projectKeys.device(wsId, id, deviceId), "files", "tree", path] as const,
+  deviceFileRead: (
+    wsId: string | null,
+    id: string,
+    deviceId: string | null,
+    path: string,
+  ) =>
+    [...projectKeys.device(wsId, id, deviceId), "files", "read", path] as const,
+  deviceTerminals: (wsId: string | null, id: string, deviceId: string | null) =>
+    [...projectKeys.device(wsId, id, deviceId), "terminal"] as const,
 };
 
 export const projectListOptions = (wsId: string | null) =>
@@ -52,6 +85,110 @@ export const projectResourcesOptions = (wsId: string | null, id: string) =>
       return res.resources;
     },
     enabled: !!wsId && !!id,
+  });
+
+export const projectWorkspaceOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: projectKeys.workspace(wsId, id),
+    queryFn: ({ signal }) => api.getProjectWorkspace(id, { signal }),
+    enabled: !!wsId && !!id,
+  });
+
+export const projectPullRequestsOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: projectKeys.pullRequests(wsId, id),
+    queryFn: async ({ signal }) => {
+      const res = await api.listProjectPullRequests(id, { signal });
+      return res.pull_requests;
+    },
+    enabled: !!wsId && !!id,
+  });
+
+export const projectPullRequestReviewOptions = (
+  wsId: string | null,
+  id: string,
+  pullRequestId: string | null,
+) =>
+  queryOptions({
+    queryKey: projectKeys.pullRequestReview(wsId, id, pullRequestId),
+    queryFn: ({ signal }) => {
+      if (!pullRequestId) throw new Error("pullRequestId is required");
+      return api.getProjectPullRequestReview(id, pullRequestId, { signal });
+    },
+    enabled: !!wsId && !!id && !!pullRequestId,
+  });
+
+export const projectDeviceGitStatusOptions = (
+  wsId: string | null,
+  id: string,
+  deviceId: string | null,
+) =>
+  queryOptions({
+    queryKey: projectKeys.deviceGitStatus(wsId, id, deviceId),
+    queryFn: ({ signal }) => {
+      if (!deviceId) throw new Error("deviceId is required");
+      return api.getProjectDeviceGitStatus(id, deviceId, { signal });
+    },
+    enabled: !!wsId && !!id && !!deviceId,
+  });
+
+export const projectDeviceGitSnapshotsOptions = (
+  wsId: string | null,
+  id: string,
+  deviceId: string | null,
+) =>
+  queryOptions({
+    queryKey: projectKeys.deviceGitSnapshots(wsId, id, deviceId),
+    queryFn: ({ signal }) => {
+      if (!deviceId) throw new Error("deviceId is required");
+      return api.getProjectDeviceSafetySnapshots(id, deviceId, { signal });
+    },
+    enabled: !!wsId && !!id && !!deviceId,
+  });
+
+export const projectDeviceFileTreeOptions = (
+  wsId: string | null,
+  id: string,
+  deviceId: string | null,
+  path = "",
+) =>
+  queryOptions({
+    queryKey: projectKeys.deviceFileTree(wsId, id, deviceId, path),
+    queryFn: ({ signal }) => {
+      if (!deviceId) throw new Error("deviceId is required");
+      return api.getProjectDeviceFileTree(id, deviceId, path, { signal });
+    },
+    enabled: !!wsId && !!id && !!deviceId,
+  });
+
+export const projectDeviceFileReadOptions = (
+  wsId: string | null,
+  id: string,
+  deviceId: string | null,
+  path: string,
+) =>
+  queryOptions({
+    queryKey: projectKeys.deviceFileRead(wsId, id, deviceId, path),
+    queryFn: ({ signal }) => {
+      if (!deviceId) throw new Error("deviceId is required");
+      if (!path) throw new Error("path is required");
+      return api.readProjectDeviceFile(id, deviceId, path, { signal });
+    },
+    enabled: !!wsId && !!id && !!deviceId && !!path,
+  });
+
+export const projectDeviceTerminalsOptions = (
+  wsId: string | null,
+  id: string,
+  deviceId: string | null,
+) =>
+  queryOptions({
+    queryKey: projectKeys.deviceTerminals(wsId, id, deviceId),
+    queryFn: ({ signal }) => {
+      if (!deviceId) throw new Error("deviceId is required");
+      return api.listProjectDeviceTerminals(id, deviceId, { signal });
+    },
+    enabled: !!wsId && !!id && !!deviceId,
   });
 
 /**

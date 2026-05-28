@@ -183,6 +183,53 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 	return i, err
 }
 
+const getPullRequestByProject = `-- name: GetPullRequestByProject :one
+SELECT pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login, pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at, pr.pr_updated_at, pr.created_at, pr.updated_at, pr.head_sha, pr.mergeable_state, pr.additions, pr.deletions, pr.changed_files
+FROM github_pull_request pr
+JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+JOIN issue i ON i.id = ipr.issue_id
+WHERE i.project_id = $1
+  AND pr.id = $2
+  AND pr.workspace_id = i.workspace_id
+LIMIT 1
+`
+
+type GetPullRequestByProjectParams struct {
+	ProjectID     pgtype.UUID `json:"project_id"`
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+}
+
+func (q *Queries) GetPullRequestByProject(ctx context.Context, arg GetPullRequestByProjectParams) (GithubPullRequest, error) {
+	row := q.db.QueryRow(ctx, getPullRequestByProject, arg.ProjectID, arg.PullRequestID)
+	var i GithubPullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.RepoOwner,
+		&i.RepoName,
+		&i.PrNumber,
+		&i.Title,
+		&i.State,
+		&i.HtmlUrl,
+		&i.Branch,
+		&i.AuthorLogin,
+		&i.AuthorAvatarUrl,
+		&i.MergedAt,
+		&i.ClosedAt,
+		&i.PrCreatedAt,
+		&i.PrUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeadSha,
+		&i.MergeableState,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
+	)
+	return i, err
+}
+
 const getSiblingPullRequestStateCountsForIssue = `-- name: GetSiblingPullRequestStateCountsForIssue :one
 SELECT
     COALESCE(SUM(CASE WHEN pr.state IN ('open', 'draft') THEN 1 ELSE 0 END), 0)::bigint AS open_count,
@@ -407,6 +454,135 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 	items := []ListPullRequestsByIssueRow{}
 	for rows.Next() {
 		var i ListPullRequestsByIssueRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+			&i.Title,
+			&i.State,
+			&i.HtmlUrl,
+			&i.Branch,
+			&i.AuthorLogin,
+			&i.AuthorAvatarUrl,
+			&i.MergedAt,
+			&i.ClosedAt,
+			&i.PrCreatedAt,
+			&i.PrUpdatedAt,
+			&i.HeadSha,
+			&i.MergeableState,
+			&i.Additions,
+			&i.Deletions,
+			&i.ChangedFiles,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ChecksTotal,
+			&i.ChecksPassed,
+			&i.ChecksFailed,
+			&i.ChecksPending,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPullRequestsByProject = `-- name: ListPullRequestsByProject :many
+WITH project_prs AS (
+    SELECT DISTINCT pr.id, pr.head_sha
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    JOIN issue i ON i.id = ipr.issue_id
+    WHERE i.project_id = $1
+),
+per_app_latest AS (
+    SELECT DISTINCT ON (cs.pr_id, cs.app_id)
+        cs.pr_id, cs.app_id, cs.conclusion, cs.status
+    FROM github_pull_request_check_suite cs
+    JOIN project_prs pp ON pp.id = cs.pr_id
+    WHERE cs.head_sha = pp.head_sha AND pp.head_sha <> ''
+    ORDER BY cs.pr_id, cs.app_id, cs.updated_at DESC
+),
+checks AS (
+    SELECT
+        pr_id,
+        COUNT(*)::bigint AS total,
+        SUM(CASE WHEN status = 'completed' AND conclusion IN
+                ('failure','cancelled','timed_out','action_required','startup_failure','stale')
+            THEN 1 ELSE 0 END)::bigint AS failed,
+        SUM(CASE WHEN status = 'completed' AND conclusion IN
+                ('success','neutral','skipped')
+            THEN 1 ELSE 0 END)::bigint AS passed,
+        SUM(CASE WHEN status <> 'completed' OR conclusion IS NULL
+            THEN 1 ELSE 0 END)::bigint AS pending
+    FROM per_app_latest
+    GROUP BY pr_id
+)
+SELECT
+    pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name,
+    pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
+    pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
+    pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
+    pr.additions, pr.deletions, pr.changed_files,
+    pr.created_at, pr.updated_at,
+    COALESCE(c.total, 0)::bigint   AS checks_total,
+    COALESCE(c.passed, 0)::bigint  AS checks_passed,
+    COALESCE(c.failed, 0)::bigint  AS checks_failed,
+    COALESCE(c.pending, 0)::bigint AS checks_pending
+FROM github_pull_request pr
+JOIN project_prs pp ON pp.id = pr.id
+LEFT JOIN checks c ON c.pr_id = pr.id
+ORDER BY pr.pr_created_at DESC
+`
+
+type ListPullRequestsByProjectRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	InstallationID  int64              `json:"installation_id"`
+	RepoOwner       string             `json:"repo_owner"`
+	RepoName        string             `json:"repo_name"`
+	PrNumber        int32              `json:"pr_number"`
+	Title           string             `json:"title"`
+	State           string             `json:"state"`
+	HtmlUrl         string             `json:"html_url"`
+	Branch          pgtype.Text        `json:"branch"`
+	AuthorLogin     pgtype.Text        `json:"author_login"`
+	AuthorAvatarUrl pgtype.Text        `json:"author_avatar_url"`
+	MergedAt        pgtype.Timestamptz `json:"merged_at"`
+	ClosedAt        pgtype.Timestamptz `json:"closed_at"`
+	PrCreatedAt     pgtype.Timestamptz `json:"pr_created_at"`
+	PrUpdatedAt     pgtype.Timestamptz `json:"pr_updated_at"`
+	HeadSha         string             `json:"head_sha"`
+	MergeableState  pgtype.Text        `json:"mergeable_state"`
+	Additions       int32              `json:"additions"`
+	Deletions       int32              `json:"deletions"`
+	ChangedFiles    int32              `json:"changed_files"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ChecksTotal     int64              `json:"checks_total"`
+	ChecksPassed    int64              `json:"checks_passed"`
+	ChecksFailed    int64              `json:"checks_failed"`
+	ChecksPending   int64              `json:"checks_pending"`
+}
+
+// Returns PRs linked to any issue in the project, with the same current-head
+// check aggregation used by the issue sidebar. DISTINCT ON keeps a PR that is
+// linked to multiple project issues from rendering more than once.
+func (q *Queries) ListPullRequestsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPullRequestsByProjectRow, error) {
+	rows, err := q.db.Query(ctx, listPullRequestsByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPullRequestsByProjectRow{}
+	for rows.Next() {
+		var i ListPullRequestsByProjectRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,

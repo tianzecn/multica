@@ -124,12 +124,12 @@ func TestKiroBackendSetModelFailureFailsTask(t *testing.T) {
 		t.Fatalf("new kiro backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
 
 	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
 		Model:   "bogus-model",
-		Timeout: 5 * time.Second,
+		Timeout: fakeAgentExecTimeout,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -156,7 +156,7 @@ func TestKiroBackendSetModelFailureFailsTask(t *testing.T) {
 		if result.SessionID != "ses_new" {
 			t.Errorf("expected session id to be preserved on failure, got %q", result.SessionID)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(fakeAgentResultTimeout):
 		t.Fatal("timeout waiting for result")
 	}
 }
@@ -178,12 +178,12 @@ func TestKiroBackendInvokesACPWithTrustAllTools(t *testing.T) {
 		t.Fatalf("new kiro backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
 
 	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
 		Model:      "bogus-model",
-		Timeout:    5 * time.Second,
+		Timeout:    fakeAgentExecTimeout,
 		CustomArgs: []string{"acp", "--trust-tools", "shell", "-a", "--agent", "multica"},
 	})
 	if err != nil {
@@ -238,12 +238,12 @@ func TestKiroBackendUsesSessionLoadForResume(t *testing.T) {
 		t.Fatalf("new kiro backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
 
 	session, err := backend.Execute(ctx, "continue", ExecOptions{
 		ResumeSessionID: "ses_existing",
-		Timeout:         5 * time.Second,
+		Timeout:         fakeAgentExecTimeout,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)

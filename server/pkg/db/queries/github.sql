@@ -91,6 +91,16 @@ RETURNING *;
 SELECT * FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
 
+-- name: GetPullRequestByProject :one
+SELECT pr.*
+FROM github_pull_request pr
+JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+JOIN issue i ON i.id = ipr.issue_id
+WHERE i.project_id = sqlc.arg('project_id')
+  AND pr.id = sqlc.arg('pull_request_id')
+  AND pr.workspace_id = i.workspace_id
+LIMIT 1;
+
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the aggregated check-suite counts for
 -- the PR's CURRENT head SHA. The `issue_prs` CTE narrows to this issue's PR
@@ -145,6 +155,56 @@ FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 LEFT JOIN checks c ON c.pr_id = pr.id
 WHERE ipr.issue_id = sqlc.arg('issue_id')
+ORDER BY pr.pr_created_at DESC;
+
+-- name: ListPullRequestsByProject :many
+-- Returns PRs linked to any issue in the project, with the same current-head
+-- check aggregation used by the issue sidebar. DISTINCT ON keeps a PR that is
+-- linked to multiple project issues from rendering more than once.
+WITH project_prs AS (
+    SELECT DISTINCT pr.id, pr.head_sha
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    JOIN issue i ON i.id = ipr.issue_id
+    WHERE i.project_id = sqlc.arg('project_id')
+),
+per_app_latest AS (
+    SELECT DISTINCT ON (cs.pr_id, cs.app_id)
+        cs.pr_id, cs.app_id, cs.conclusion, cs.status
+    FROM github_pull_request_check_suite cs
+    JOIN project_prs pp ON pp.id = cs.pr_id
+    WHERE cs.head_sha = pp.head_sha AND pp.head_sha <> ''
+    ORDER BY cs.pr_id, cs.app_id, cs.updated_at DESC
+),
+checks AS (
+    SELECT
+        pr_id,
+        COUNT(*)::bigint AS total,
+        SUM(CASE WHEN status = 'completed' AND conclusion IN
+                ('failure','cancelled','timed_out','action_required','startup_failure','stale')
+            THEN 1 ELSE 0 END)::bigint AS failed,
+        SUM(CASE WHEN status = 'completed' AND conclusion IN
+                ('success','neutral','skipped')
+            THEN 1 ELSE 0 END)::bigint AS passed,
+        SUM(CASE WHEN status <> 'completed' OR conclusion IS NULL
+            THEN 1 ELSE 0 END)::bigint AS pending
+    FROM per_app_latest
+    GROUP BY pr_id
+)
+SELECT
+    pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name,
+    pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
+    pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
+    pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
+    pr.additions, pr.deletions, pr.changed_files,
+    pr.created_at, pr.updated_at,
+    COALESCE(c.total, 0)::bigint   AS checks_total,
+    COALESCE(c.passed, 0)::bigint  AS checks_passed,
+    COALESCE(c.failed, 0)::bigint  AS checks_failed,
+    COALESCE(c.pending, 0)::bigint AS checks_pending
+FROM github_pull_request pr
+JOIN project_prs pp ON pp.id = pr.id
+LEFT JOIN checks c ON c.pr_id = pr.id
 ORDER BY pr.pr_created_at DESC;
 
 -- name: ListIssueIDsForPullRequest :many

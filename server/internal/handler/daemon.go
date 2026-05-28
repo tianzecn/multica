@@ -236,6 +236,22 @@ func workspaceReposResponse(workspaceID string, raw []byte, settingsRaw []byte) 
 	return resp
 }
 
+func (h *Handler) projectBaseBranchForClaim(ctx context.Context, project db.Project) string {
+	config := h.defaultProjectWorkspaceConfig(project)
+	stored, err := h.Queries.GetProjectWorkspaceConfig(ctx, db.GetProjectWorkspaceConfigParams{
+		ProjectID: project.ID, WorkspaceID: project.WorkspaceID,
+	})
+	if err == nil {
+		config = projectWorkspaceConfigToResponse(stored)
+	} else if !isNotFound(err) {
+		slog.Warn("failed to load project workspace config for task claim",
+			"project_id", uuidToString(project.ID),
+			"error", err,
+		)
+	}
+	return config.BaseBranch
+}
+
 func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	var req DaemonRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1187,6 +1203,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				resp.ProjectID = uuidToString(issue.ProjectID)
 				if proj, err := h.Queries.GetProject(r.Context(), issue.ProjectID); err == nil {
 					resp.ProjectTitle = proj.Title
+					resp.ProjectBaseBranch = h.projectBaseBranchForClaim(r.Context(), proj)
 				}
 				if rows := h.listProjectResourcesForProject(r.Context(), issue.ProjectID); len(rows) > 0 {
 					out, repos := projectResourcesForClaim(rows)
@@ -1271,6 +1288,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				resp.ProjectID = uuidToString(cs.ProjectID)
 				if proj, err := h.Queries.GetProject(r.Context(), cs.ProjectID); err == nil {
 					resp.ProjectTitle = proj.Title
+					resp.ProjectBaseBranch = h.projectBaseBranchForClaim(r.Context(), proj)
 				}
 				if rows := h.listProjectResourcesForProject(r.Context(), cs.ProjectID); len(rows) > 0 {
 					out, repos := projectResourcesForClaim(rows)
@@ -1393,6 +1411,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					resp.ProjectID = qc.ProjectID
 					if proj, err := h.Queries.GetProject(r.Context(), projectUUID); err == nil {
 						resp.ProjectTitle = proj.Title
+						resp.ProjectBaseBranch = h.projectBaseBranchForClaim(r.Context(), proj)
 					}
 					if rows := h.listProjectResourcesForProject(r.Context(), projectUUID); len(rows) > 0 {
 						out, repos := projectResourcesForClaim(rows)

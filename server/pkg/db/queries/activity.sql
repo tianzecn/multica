@@ -6,6 +6,22 @@ WHERE issue_id = $1
 ORDER BY created_at ASC, id ASC
 LIMIT $2;
 
+-- name: ListActivitiesForProject :many
+-- Project-scoped activities are stored as workspace-level rows with no issue
+-- and a project_id marker inside details, so repo/folder unbinds do not erase
+-- history while project deletion still cascades through details governance.
+SELECT * FROM activity_log
+WHERE workspace_id = $1
+  AND issue_id IS NULL
+  AND details->>'project_id' = sqlc.arg('project_id')::text
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('limit');
+
+-- name: DeleteActivitiesForProject :exec
+DELETE FROM activity_log
+WHERE workspace_id = $1
+  AND details->>'project_id' = sqlc.arg('project_id')::text;
+
 -- name: GetActivity :one
 SELECT * FROM activity_log
 WHERE id = $1;

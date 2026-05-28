@@ -1452,9 +1452,9 @@ func TestOpenclawExecuteRejectsOldVersion(t *testing.T) {
 		t.Fatalf("new openclaw backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
-	_, err = backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	_, err = backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: fakeAgentExecTimeout})
 	if err == nil {
 		t.Fatal("expected Execute to return a version error, got nil")
 	}
@@ -1491,9 +1491,9 @@ func TestOpenclawExecuteAllowsCurrentVersion(t *testing.T) {
 		t.Fatalf("new openclaw backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: fakeAgentExecTimeout})
 	if err != nil {
 		t.Fatalf("Execute returned synchronous error past the version gate: %v", err)
 	}
@@ -1506,7 +1506,7 @@ func TestOpenclawExecuteAllowsCurrentVersion(t *testing.T) {
 		if strings.Contains(result.Error, "openclaw update") {
 			t.Errorf("version gate fired for a current version: %q", result.Error)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(fakeAgentResultTimeout):
 		t.Fatal("timeout waiting for result")
 	}
 }

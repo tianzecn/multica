@@ -35,6 +35,8 @@ import type {
   CreateLabelRequest,
   CreateProjectRequest,
   CreateProjectResourceRequest,
+  GitHubPullRequest,
+  GitHubPullRequestReview,
   InboxItem,
   Issue,
   IssueLabelsResponse,
@@ -50,7 +52,23 @@ import type {
   PinnedItem,
   PinnedItemType,
   Project,
+  ProjectFileReadResponse,
+  ProjectFileTreeResponse,
+  ProjectFileWriteRequest,
+  ProjectFileWriteResponse,
+  ProjectGitDiffResponse,
+  ProjectGitLogResponse,
+  ProjectGitOperation,
+  ProjectGitOperationRequest,
+  ProjectGitOperationResponse,
+  ProjectGitStatus,
+  ProjectTerminalInputRequest,
+  ProjectTerminalListResponse,
+  ProjectTerminalSession,
   ProjectResource,
+  ProjectSafetySnapshotListResponse,
+  ProjectWorkspace,
+  ProjectWorkspaceConfig,
   Reaction,
   ReorderPinsRequest,
   RuntimeDevice,
@@ -67,6 +85,7 @@ import type {
   UpdateIssueRequest,
   UpdateMeRequest,
   UpdateProjectRequest,
+  UpdateProjectWorkspaceConfigRequest,
   User,
   Workspace,
 } from "@multica/core/types";
@@ -129,6 +148,18 @@ import {
   EMPTY_LIST_PROJECTS_RESPONSE,
   EMPTY_MEMBER_LIST,
   EMPTY_NOTIFICATION_PREFERENCES,
+  EMPTY_PROJECT_GIT_DIFF_RESPONSE,
+  EMPTY_PROJECT_FILE_READ_RESPONSE,
+  EMPTY_PROJECT_FILE_TREE_RESPONSE,
+  EMPTY_PROJECT_FILE_WRITE_RESPONSE,
+  EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE,
+  EMPTY_GITHUB_PULL_REQUEST_REVIEW,
+  EMPTY_PROJECT_GIT_LOG_RESPONSE,
+  EMPTY_PROJECT_GIT_STATUS,
+  EMPTY_PROJECT_SAFETY_SNAPSHOT_LIST,
+  EMPTY_PROJECT_TERMINAL_LIST_RESPONSE,
+  EMPTY_PROJECT_TERMINAL_SESSION,
+  EMPTY_PROJECT_WORKSPACE,
   EMPTY_PIN_LIST,
   EMPTY_PROJECT,
   EMPTY_RUNTIME_LIST,
@@ -145,7 +176,19 @@ import {
   MemberListSchema,
   PinListSchema,
   PinnedItemSchema,
+  ProjectGitDiffResponseSchema,
+  ProjectFileReadResponseSchema,
+  ProjectFileTreeResponseSchema,
+  ProjectFileWriteResponseSchema,
+  ProjectGitLogResponseSchema,
+  ProjectGitOperationResponseSchema,
+  ProjectGitStatusSchema,
+  ProjectTerminalListResponseSchema,
+  ProjectTerminalSessionSchema,
   ProjectSchema,
+  ProjectSafetySnapshotListResponseSchema,
+  ProjectWorkspaceConfigSchema,
+  ProjectWorkspaceSchema,
   RuntimeListSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
@@ -153,6 +196,8 @@ import {
   SquadListSchema,
   TaskMessageListSchema,
   EMPTY_TASK_MESSAGE_LIST,
+  GitHubPullRequestListResponseSchema,
+  GitHubPullRequestReviewSchema,
   UserSchema,
   WorkspaceListSchema,
 } from "./schemas";
@@ -1013,6 +1058,254 @@ class ApiClient {
     await this.fetch<void>(
       `/api/projects/${projectId}/resources/${resourceId}`,
       { method: "DELETE" },
+    );
+  }
+
+  // --- Project workspace relay ---
+  async getProjectWorkspace(
+    projectId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectWorkspace> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace`,
+      ProjectWorkspaceSchema,
+      EMPTY_PROJECT_WORKSPACE,
+      { signal: opts?.signal, endpoint: "GET /api/projects/:id/workspace" },
+    );
+  }
+
+  async updateProjectWorkspaceConfig(
+    projectId: string,
+    data: UpdateProjectWorkspaceConfigRequest,
+  ): Promise<ProjectWorkspaceConfig> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/config`,
+      ProjectWorkspaceConfigSchema,
+      EMPTY_PROJECT_WORKSPACE.config,
+      { method: "PUT", body: JSON.stringify(data) },
+      { endpoint: "PUT /api/projects/:id/workspace/config" },
+    );
+  }
+
+  async getProjectDeviceGitStatus(
+    projectId: string,
+    deviceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectGitStatus> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/status`,
+      ProjectGitStatusSchema,
+      EMPTY_PROJECT_GIT_STATUS,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/status",
+      },
+    );
+  }
+
+  async getProjectDeviceGitDiff(
+    projectId: string,
+    deviceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectGitDiffResponse> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/diff`,
+      ProjectGitDiffResponseSchema,
+      EMPTY_PROJECT_GIT_DIFF_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/diff",
+      },
+    );
+  }
+
+  async getProjectDeviceGitLog(
+    projectId: string,
+    deviceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectGitLogResponse> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/log`,
+      ProjectGitLogResponseSchema,
+      EMPTY_PROJECT_GIT_LOG_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/log",
+      },
+    );
+  }
+
+  async getProjectDeviceFileTree(
+    projectId: string,
+    deviceId: string,
+    path = "",
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectFileTreeResponse> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/tree${query}`,
+      ProjectFileTreeResponseSchema,
+      EMPTY_PROJECT_FILE_TREE_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/files/tree",
+      },
+    );
+  }
+
+  async readProjectDeviceFile(
+    projectId: string,
+    deviceId: string,
+    path: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectFileReadResponse> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/read?path=${encodeURIComponent(path)}`,
+      ProjectFileReadResponseSchema,
+      EMPTY_PROJECT_FILE_READ_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/files/read",
+      },
+    );
+  }
+
+  async writeProjectDeviceFile(
+    projectId: string,
+    deviceId: string,
+    data: ProjectFileWriteRequest,
+  ): Promise<ProjectFileWriteResponse> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/write`,
+      ProjectFileWriteResponseSchema,
+      EMPTY_PROJECT_FILE_WRITE_RESPONSE,
+      { method: "PUT", body: JSON.stringify(data) },
+      { endpoint: "PUT /api/projects/:id/workspace/bindings/:deviceId/files/write" },
+    );
+  }
+
+  async getProjectDeviceSafetySnapshots(
+    projectId: string,
+    deviceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectSafetySnapshotListResponse> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/snapshots`,
+      ProjectSafetySnapshotListResponseSchema,
+      EMPTY_PROJECT_SAFETY_SNAPSHOT_LIST,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/snapshots",
+      },
+    );
+  }
+
+  async runProjectDeviceGitOperation(
+    projectId: string,
+    deviceId: string,
+    operation: ProjectGitOperation,
+    data: ProjectGitOperationRequest = {},
+  ): Promise<ProjectGitOperationResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/${operation}`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    );
+    const parsed = ProjectGitOperationResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Project Git operation response invalid", 200, raw);
+    }
+    return parsed.data;
+  }
+
+  async listProjectDeviceTerminals(
+    projectId: string,
+    deviceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectTerminalListResponse> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal`,
+      ProjectTerminalListResponseSchema,
+      EMPTY_PROJECT_TERMINAL_LIST_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/terminal",
+      },
+    );
+  }
+
+  async startProjectDeviceTerminal(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectTerminalSession> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/start`,
+      ProjectTerminalSessionSchema,
+      EMPTY_PROJECT_TERMINAL_SESSION,
+      { method: "POST", body: JSON.stringify({}) },
+      { endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/terminal/start" },
+    );
+  }
+
+  async sendProjectDeviceTerminalInput(
+    projectId: string,
+    deviceId: string,
+    sessionId: string,
+    data: ProjectTerminalInputRequest,
+  ): Promise<ProjectTerminalSession> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/input`,
+      ProjectTerminalSessionSchema,
+      EMPTY_PROJECT_TERMINAL_SESSION,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/terminal/:sessionId/input" },
+    );
+  }
+
+  async stopProjectDeviceTerminal(
+    projectId: string,
+    deviceId: string,
+    sessionId: string,
+  ): Promise<ProjectTerminalSession> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/stop`,
+      ProjectTerminalSessionSchema,
+      EMPTY_PROJECT_TERMINAL_SESSION,
+      { method: "POST", body: JSON.stringify({}) },
+      { endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/terminal/:sessionId/stop" },
+    );
+  }
+
+  async listProjectPullRequests(
+    projectId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ pull_requests: GitHubPullRequest[] }> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/pull-requests`,
+      GitHubPullRequestListResponseSchema,
+      EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/pull-requests",
+      },
+    );
+  }
+
+  async getProjectPullRequestReview(
+    projectId: string,
+    pullRequestId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequestReview> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/pull-requests/${pullRequestId}/review`,
+      GitHubPullRequestReviewSchema,
+      EMPTY_GITHUB_PULL_REQUEST_REVIEW,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/pull-requests/:pullRequestId/review",
+      },
     );
   }
 

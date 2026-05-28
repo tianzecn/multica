@@ -19,7 +19,12 @@ import type {
   CreateProjectRequest,
   CreateProjectResourceRequest,
   Project,
+  ProjectFileWriteRequest,
+  ProjectGitOperation,
+  ProjectGitOperationRequest,
   ProjectResource,
+  ProjectWorkspace,
+  UpdateProjectWorkspaceConfigRequest,
   UpdateProjectRequest,
 } from "@multica/core/types";
 import { api } from "@/data/api";
@@ -42,6 +47,51 @@ export function useCreateProject() {
       qc.setQueryData<Project[]>(projectKeys.list(wsId), (old) =>
         old ? [project, ...old.filter((p) => p.id !== project.id)] : [project],
       );
+    },
+  });
+}
+
+export function useWriteProjectDeviceFile(
+  projectId: string,
+  deviceId: string | null,
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationKey: ["projectDeviceFileWrite", projectId, deviceId] as const,
+    mutationFn: (data: ProjectFileWriteRequest) => {
+      if (!deviceId) throw new Error("Choose an online device first.");
+      return api.writeProjectDeviceFile(projectId, deviceId, data);
+    },
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({
+        queryKey: projectKeys.deviceGitStatus(wsId, projectId, deviceId),
+      });
+      qc.invalidateQueries({
+        queryKey: projectKeys.deviceFileRead(wsId, projectId, deviceId, vars.path),
+      });
+    },
+  });
+}
+
+export function useUpdateProjectWorkspaceConfig(projectId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationKey: ["updateProjectWorkspaceConfig", projectId] as const,
+    mutationFn: (data: UpdateProjectWorkspaceConfigRequest) =>
+      api.updateProjectWorkspaceConfig(projectId, data),
+    onSuccess: (config) => {
+      qc.setQueryData<ProjectWorkspace>(
+        projectKeys.workspace(wsId, projectId),
+        (old) => (old ? { ...old, config } : old),
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
     },
   });
 }
@@ -199,6 +249,37 @@ export function useDeleteProjectResource(projectId: string) {
           ? old.map((p) => (p.id === projectId ? dropCount(p) : p))
           : old,
       );
+    },
+  });
+}
+
+export function useRunProjectDeviceGitOperation(
+  projectId: string,
+  deviceId: string | null,
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationKey: ["projectDeviceGitOperation", projectId, deviceId] as const,
+    mutationFn: ({
+      operation,
+      data,
+    }: {
+      operation: ProjectGitOperation;
+      data?: ProjectGitOperationRequest;
+    }) => {
+      if (!deviceId) throw new Error("Choose an online device first.");
+      return api.runProjectDeviceGitOperation(projectId, deviceId, operation, data);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({
+        queryKey: projectKeys.deviceGitStatus(wsId, projectId, deviceId),
+      });
+      qc.invalidateQueries({
+        queryKey: projectKeys.deviceGitSnapshots(wsId, projectId, deviceId),
+      });
     },
   });
 }

@@ -22,6 +22,7 @@ func TestCreateChatSessionPersistsProjectID(t *testing.T) {
 		"title":      "project chat",
 		"project_id": projectID,
 	})
+	req = withChatTestWorkspaceCtx(t, req)
 	testHandler.CreateChatSession(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("CreateChatSession: expected 201, got %d: %s", w.Code, w.Body.String())

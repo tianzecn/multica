@@ -125,7 +125,7 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- d.readTaskWakeupMessages(conn, taskWakeups)
+		errCh <- d.readTaskWakeupMessages(ctx, conn, taskWakeups, writes)
 	}()
 
 	// Defer cleanup must shut goroutines down in this order:
@@ -255,8 +255,8 @@ func (d *Daemon) handleWSHeartbeatAck(ctx context.Context, ack *HeartbeatRespons
 	d.handleHeartbeatActions(ctx, ack.RuntimeID, ack)
 }
 
-func (d *Daemon) readTaskWakeupMessages(conn *websocket.Conn, taskWakeups chan<- struct{}) error {
-	conn.SetReadLimit(64 * 1024)
+func (d *Daemon) readTaskWakeupMessages(ctx context.Context, conn *websocket.Conn, taskWakeups chan<- struct{}, writes chan<- []byte) error {
+	conn.SetReadLimit(protocol.DaemonProjectWorkspaceMaxFrameBytes)
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -287,6 +287,13 @@ func (d *Daemon) readTaskWakeupMessages(conn *websocket.Conn, taskWakeups chan<-
 				continue
 			}
 			d.handleWSHeartbeatAck(context.Background(), &ack)
+		case protocol.EventDaemonProjectWorkspaceRequest:
+			var payload protocol.DaemonProjectWorkspaceRequestPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				d.logger.Debug("project workspace relay invalid payload", "error", err)
+				continue
+			}
+			go d.handleWSProjectWorkspaceRequest(ctx, payload, writes)
 		}
 	}
 }

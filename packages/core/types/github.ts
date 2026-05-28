@@ -60,6 +60,54 @@ export interface GitHubPullRequest {
   changed_files?: number;
 }
 
+export interface GitHubPullRequestReviewFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch: string;
+  blob_url: string;
+  raw_url: string;
+  contents_url: string;
+  previous_filename?: string;
+}
+
+export interface GitHubPullRequestReviewComment {
+  id: number;
+  path: string;
+  body: string;
+  user_login: string;
+  html_url: string;
+  diff_hunk: string;
+  line?: number;
+  original_line?: number;
+  start_line?: number;
+  side?: string;
+  in_reply_to_id?: number;
+  /** GitHub REST review comments do not expose thread resolution state. */
+  resolved?: boolean | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GitHubPullRequestReviewSummary {
+  id: number;
+  user_login: string;
+  state: string;
+  body: string;
+  html_url: string;
+  submitted_at: string;
+}
+
+export interface GitHubPullRequestReview {
+  pull_request: GitHubPullRequest;
+  files: GitHubPullRequestReviewFile[];
+  comments: GitHubPullRequestReviewComment[];
+  reviews: GitHubPullRequestReviewSummary[];
+  fetched_at: string;
+}
+
 export interface ListGitHubInstallationsResponse {
   installations: GitHubInstallation[];
   /** Whether the deployment has GitHub App credentials configured. When false, the Connect button is hidden / disabled. */

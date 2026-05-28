@@ -561,9 +561,9 @@ func TestClaudeExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 		t.Fatalf("new claude backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: fakeAgentExecTimeout})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestClaudeExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 		if !strings.Contains(result.Error, "claude stderr:") {
 			t.Fatalf("expected stderr label in error, got %q", result.Error)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(fakeAgentResultTimeout):
 		t.Fatal("timeout waiting for result")
 	}
 }
@@ -613,9 +613,9 @@ func TestClaudeExecuteRecordsResultModelUsage(t *testing.T) {
 		t.Fatalf("new claude backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: fakeAgentExecTimeout})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestClaudeExecuteRecordsResultModelUsage(t *testing.T) {
 		if usage.InputTokens != 123 || usage.OutputTokens != 45 || usage.CacheReadTokens != 7 || usage.CacheWriteTokens != 11 {
 			t.Fatalf("unexpected usage: %+v", usage)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(fakeAgentResultTimeout):
 		t.Fatal("timeout waiting for result")
 	}
 }

@@ -720,9 +720,9 @@ func TestAggregateChecksConclusion(t *testing.T) {
 		return *p
 	}
 	cases := []struct {
-		name                            string
+		name                           string
 		failed, passed, pending, total int64
-		want                            string
+		want                           string
 	}{
 		{"no_suites_nil", 0, 0, 0, 0, "<nil>"},
 		{"any_failure_wins", 1, 5, 0, 6, "failed"},
@@ -889,6 +889,162 @@ func TestWebhook_CheckSuite_AggregatesAcrossApps(t *testing.T) {
 		t.Errorf("expected aggregate failed, got %v (counts: failed=%d passed=%d pending=%d total=%d)",
 			got, rows[0].ChecksFailed, rows[0].ChecksPassed, rows[0].ChecksPending, rows[0].ChecksTotal)
 	}
+}
+
+func TestListPullRequestsForProject(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	const secret = "project-pr-list-secret"
+	created, installationID := setupPRTestIssue(t, ctx, secret)
+
+	project, err := testHandler.Queries.CreateProject(ctx, db.CreateProjectParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Title:       "Project PR list",
+		Status:      "in_progress",
+		Priority:    "none",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE issue SET project_id = NULL WHERE id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, project.ID)
+	})
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET project_id = $1 WHERE id = $2`, project.ID, created.ID); err != nil {
+		t.Fatalf("attach issue to project: %v", err)
+	}
+
+	head := "projectpr123456"
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "project-pr-repo", 71, "opened", head, "clean")
+	fireCheckSuiteWebhook(t, secret, installationID, "project-pr-repo", []int32{71}, 7101, 9101, head, "success", "2026-05-01T00:00:00Z")
+
+	rec := httptest.NewRecorder()
+	req := newRequest("GET", "/api/projects/"+uuidToString(project.ID)+"/pull-requests", nil)
+	req = withURLParams(req, "id", uuidToString(project.ID))
+	testHandler.ListPullRequestsForProject(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ListPullRequestsForProject: %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		PullRequests []GitHubPullRequestResponse `json:"pull_requests"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.PullRequests) != 1 {
+		t.Fatalf("expected 1 project PR, got %d", len(body.PullRequests))
+	}
+	pr := body.PullRequests[0]
+	if pr.RepoName != "project-pr-repo" || pr.Number != 71 {
+		t.Fatalf("unexpected PR response: %+v", pr)
+	}
+	if pr.ChecksConclusion == nil || *pr.ChecksConclusion != "passed" {
+		t.Fatalf("checks_conclusion = %v, want passed", pr.ChecksConclusion)
+	}
+}
+
+func TestGetProjectPullRequestReview(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	const secret = "project-pr-review-secret"
+	created, installationID := setupPRTestIssue(t, ctx, secret)
+
+	project, err := testHandler.Queries.CreateProject(ctx, db.CreateProjectParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Title:       "Project PR review",
+		Status:      "in_progress",
+		Priority:    "none",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE issue SET project_id = NULL WHERE id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, project.ID)
+	})
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET project_id = $1 WHERE id = $2`, project.ID, created.ID); err != nil {
+		t.Fatalf("attach issue to project: %v", err)
+	}
+
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "review-repo", 72, "opened", "reviewhead", "clean")
+	rows, err := testHandler.Queries.ListPullRequestsByProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ListPullRequestsByProject: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 project PR, got %d", len(rows))
+	}
+
+	fetcher := &fakeGitHubPRReviewFetcher{
+		data: GitHubPullRequestReviewData{
+			Files: []GitHubPullRequestReviewFileResponse{{
+				Filename:  "server/main.go",
+				Status:    "modified",
+				Additions: 3,
+				Deletions: 1,
+				Changes:   4,
+				Patch:     "@@ -1 +1 @@",
+			}},
+			Comments: []GitHubPullRequestReviewCommentResponse{{
+				ID:        101,
+				Path:      "server/main.go",
+				Body:      "Please tighten this.",
+				UserLogin: "reviewer",
+			}},
+			Reviews: []GitHubPullRequestReviewSummaryResponse{{
+				ID:        201,
+				UserLogin: "reviewer",
+				State:     "COMMENTED",
+				Body:      "Overall looks close.",
+			}},
+			FetchedAt: "2026-05-28T00:00:00Z",
+		},
+	}
+	prev := testHandler.GitHubPRReviewFetcher
+	testHandler.GitHubPRReviewFetcher = fetcher
+	t.Cleanup(func() { testHandler.GitHubPRReviewFetcher = prev })
+
+	rec := httptest.NewRecorder()
+	req := newRequest("GET", "/api/projects/"+uuidToString(project.ID)+"/pull-requests/"+uuidToString(rows[0].ID)+"/review", nil)
+	req = withURLParams(req, "id", uuidToString(project.ID), "pullRequestId", uuidToString(rows[0].ID))
+	testHandler.GetProjectPullRequestReview(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetProjectPullRequestReview: %d %s", rec.Code, rec.Body.String())
+	}
+	var body GitHubPullRequestReviewResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(fetcher.targets) != 1 || fetcher.targets[0].RepoName != "review-repo" || fetcher.targets[0].Number != 72 {
+		t.Fatalf("unexpected fetch target: %+v", fetcher.targets)
+	}
+	if body.PullRequest.ID != uuidToString(rows[0].ID) {
+		t.Fatalf("pull_request.id = %q, want %q", body.PullRequest.ID, uuidToString(rows[0].ID))
+	}
+	if len(body.Files) != 1 || body.Files[0].Filename != "server/main.go" {
+		t.Fatalf("unexpected files: %+v", body.Files)
+	}
+	if len(body.Comments) != 1 || body.Comments[0].Body != "Please tighten this." {
+		t.Fatalf("unexpected comments: %+v", body.Comments)
+	}
+	if len(body.Reviews) != 1 || body.Reviews[0].State != "COMMENTED" {
+		t.Fatalf("unexpected reviews: %+v", body.Reviews)
+	}
+}
+
+type fakeGitHubPRReviewFetcher struct {
+	targets []GitHubPRReviewTarget
+	data    GitHubPullRequestReviewData
+	err     error
+}
+
+func (f *fakeGitHubPRReviewFetcher) FetchPullRequestReview(_ context.Context, target GitHubPRReviewTarget) (GitHubPullRequestReviewData, error) {
+	f.targets = append(f.targets, target)
+	return f.data, f.err
 }
 
 // TestWebhook_CheckSuite_OldHeadIgnored asserts that a late-arriving

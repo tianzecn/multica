@@ -93,6 +93,30 @@ import type {
   ProjectResource,
   CreateProjectResourceRequest,
   ListProjectResourcesResponse,
+  ProjectWorkspace,
+  ProjectWorkspaceConfig,
+  ProjectDeviceBinding,
+  UpdateProjectWorkspaceConfigRequest,
+  UpsertProjectDeviceBindingRequest,
+  CreateProjectGitHubRepositoryRequest,
+  CreateProjectGitHubRepositoryResponse,
+  ProjectFileReadResponse,
+  ProjectFileTreeResponse,
+  ProjectFileWriteRequest,
+  ProjectFileWriteResponse,
+  ProjectGitDiffResponse,
+  ProjectGitLogResponse,
+  ProjectGitOperation,
+  ProjectGitOperationRequest,
+  ProjectGitOperationResponse,
+  ProjectGitStatus,
+  ProjectSafetySnapshotListResponse,
+  ProjectScriptListResponse,
+  ProjectScriptRun,
+  ProjectScriptRunRequest,
+  ProjectTerminalInputRequest,
+  ProjectTerminalListResponse,
+  ProjectTerminalSession,
   Label,
   CreateLabelRequest,
   UpdateLabelRequest,
@@ -118,6 +142,7 @@ import type {
   NotificationPreferenceResponse,
   NotificationPreferences,
   GitHubPullRequest,
+  GitHubPullRequestReview,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
   Squad,
@@ -1906,6 +1931,10 @@ export class ApiClient {
     await this.fetch(`/api/projects/${id}`, { method: "DELETE" });
   }
 
+  async listProjectActivity(projectId: string): Promise<TimelineEntry[]> {
+    return this.fetch(`/api/projects/${projectId}/activity`);
+  }
+
   // Project resources
   async listProjectResources(
     projectId: string,
@@ -1929,6 +1958,188 @@ export class ApiClient {
   ): Promise<void> {
     await this.fetch(`/api/projects/${projectId}/resources/${resourceId}`, {
       method: "DELETE",
+    });
+  }
+
+  async createProjectGitHubRepository(
+    projectId: string,
+    data: CreateProjectGitHubRepositoryRequest,
+  ): Promise<CreateProjectGitHubRepositoryResponse> {
+    return this.fetch(`/api/projects/${projectId}/github/repos`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  // Project workspace
+  async getProjectWorkspace(projectId: string): Promise<ProjectWorkspace> {
+    return this.fetch(`/api/projects/${projectId}/workspace`);
+  }
+
+  async updateProjectWorkspaceConfig(
+    projectId: string,
+    data: UpdateProjectWorkspaceConfigRequest,
+  ): Promise<ProjectWorkspaceConfig> {
+    return this.fetch(`/api/projects/${projectId}/workspace/config`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async upsertProjectDeviceBinding(
+    projectId: string,
+    deviceId: string,
+    data: UpsertProjectDeviceBindingRequest,
+  ): Promise<ProjectDeviceBinding> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteProjectDeviceBinding(
+    projectId: string,
+    deviceId: string,
+  ): Promise<void> {
+    await this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getProjectDeviceGitStatus(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectGitStatus> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/status`);
+  }
+
+  async getProjectDeviceGitDiff(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectGitDiffResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/diff`);
+  }
+
+  async getProjectDeviceGitLog(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectGitLogResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/log`);
+  }
+
+  async getProjectDeviceSafetySnapshots(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectSafetySnapshotListResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/snapshots`);
+  }
+
+  async runProjectDeviceGitOperation(
+    projectId: string,
+    deviceId: string,
+    operation: ProjectGitOperation,
+    data: ProjectGitOperationRequest = {},
+  ): Promise<ProjectGitOperationResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/${operation}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getProjectDeviceFileTree(
+    projectId: string,
+    deviceId: string,
+    path?: string,
+  ): Promise<ProjectFileTreeResponse> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/tree${query}`);
+  }
+
+  async readProjectDeviceFile(
+    projectId: string,
+    deviceId: string,
+    path: string,
+  ): Promise<ProjectFileReadResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/read?path=${encodeURIComponent(path)}`);
+  }
+
+  async writeProjectDeviceFile(
+    projectId: string,
+    deviceId: string,
+    data: ProjectFileWriteRequest,
+  ): Promise<ProjectFileWriteResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/write`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listProjectDeviceScripts(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectScriptListResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts`);
+  }
+
+  async runProjectDeviceScript(
+    projectId: string,
+    deviceId: string,
+    data: ProjectScriptRunRequest,
+  ): Promise<ProjectScriptRun> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/run`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async stopProjectDeviceScript(
+    projectId: string,
+    deviceId: string,
+    runId: string,
+  ): Promise<ProjectScriptRun> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/${encodeURIComponent(runId)}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  async listProjectDeviceTerminals(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectTerminalListResponse> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal`);
+  }
+
+  async startProjectDeviceTerminal(
+    projectId: string,
+    deviceId: string,
+  ): Promise<ProjectTerminalSession> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/start`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  async sendProjectDeviceTerminalInput(
+    projectId: string,
+    deviceId: string,
+    sessionId: string,
+    data: ProjectTerminalInputRequest,
+  ): Promise<ProjectTerminalSession> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/input`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async stopProjectDeviceTerminal(
+    projectId: string,
+    deviceId: string,
+    sessionId: string,
+  ): Promise<ProjectTerminalSession> {
+    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
     });
   }
 
@@ -2209,5 +2420,18 @@ export class ApiClient {
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
     return this.fetch(`/api/issues/${issueId}/pull-requests`);
+  }
+
+  async listProjectPullRequests(projectId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
+    return this.fetch(`/api/projects/${projectId}/pull-requests`);
+  }
+
+  async getProjectPullRequestReview(
+    projectId: string,
+    pullRequestId: string,
+  ): Promise<GitHubPullRequestReview> {
+    return this.fetch(
+      `/api/projects/${projectId}/pull-requests/${pullRequestId}/review`,
+    );
   }
 }

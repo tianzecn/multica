@@ -3,6 +3,7 @@ package daemonws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -218,6 +219,112 @@ func TestHeartbeatRoundTrip(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("HeartbeatHandler invocations = %d, want 1", got)
+	}
+}
+
+func TestRequestProjectWorkspaceRoundTrip(t *testing.T) {
+	M.Reset()
+	defer M.Reset()
+
+	hub := NewHub()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hub.HandleWebSocket(w, r, ClientIdentity{RuntimeIDs: []string{"runtime-1"}})
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for hub.RuntimeConnectionCount("runtime-1") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("runtime connection was not registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	respCh := make(chan *protocol.DaemonProjectWorkspaceResponsePayload, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		resp, err := hub.RequestProjectWorkspace(ctx, "runtime-1", protocol.DaemonProjectWorkspaceRequestPayload{
+			RequestID: "req-1",
+			ProjectID: "project-1",
+			Method:    http.MethodGet,
+			Path:      "/git/status",
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		respCh <- resp
+	}()
+
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal request envelope: %v", err)
+	}
+	if msg.Type != protocol.EventDaemonProjectWorkspaceRequest {
+		t.Fatalf("message type = %q, want %q", msg.Type, protocol.EventDaemonProjectWorkspaceRequest)
+	}
+	var req protocol.DaemonProjectWorkspaceRequestPayload
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		t.Fatalf("unmarshal request payload: %v", err)
+	}
+	if req.RequestID != "req-1" || req.Path != "/git/status" {
+		t.Fatalf("request payload = %+v", req)
+	}
+
+	ackFrame, err := json.Marshal(protocol.Message{
+		Type: protocol.EventDaemonProjectWorkspaceResponse,
+		Payload: mustMarshalRaw(protocol.DaemonProjectWorkspaceResponsePayload{
+			RequestID:  "req-1",
+			StatusCode: http.StatusOK,
+			Body:       `{"branch":"main"}`,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, ackFrame); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("RequestProjectWorkspace returned error: %v", err)
+	case resp := <-respCh:
+		if resp.StatusCode != http.StatusOK || resp.Body != `{"branch":"main"}` {
+			t.Fatalf("response = %+v", resp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relay response")
+	}
+}
+
+func TestRequestProjectWorkspaceNoRuntimeConnection(t *testing.T) {
+	hub := NewHub()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := hub.RequestProjectWorkspace(ctx, "runtime-missing", protocol.DaemonProjectWorkspaceRequestPayload{
+		ProjectID: "project-1",
+		Method:    http.MethodGet,
+		Path:      "/git/status",
+	})
+	if !errors.Is(err, ErrRuntimeNotConnected) {
+		t.Fatalf("error = %v, want ErrRuntimeNotConnected", err)
 	}
 }
 

@@ -2,6 +2,8 @@ package protocol
 
 import "encoding/json"
 
+const DaemonProjectWorkspaceMaxFrameBytes = 4 * 1024 * 1024
+
 // Message is the envelope for all WebSocket messages.
 type Message struct {
 	Type    string          `json:"type"`
@@ -21,6 +23,31 @@ type TaskDispatchPayload struct {
 type TaskAvailablePayload struct {
 	RuntimeID string `json:"runtime_id"`
 	TaskID    string `json:"task_id,omitempty"`
+}
+
+// DaemonProjectWorkspaceRequestPayload is sent from server to daemon when a
+// web/mobile client explicitly targets an online device for Project workspace
+// file or Git operations. Path is relative to the daemon's local
+// /project-workspaces/{project_id} handler and is allowlisted on both sides.
+type DaemonProjectWorkspaceRequestPayload struct {
+	RequestID string `json:"request_id"`
+	ProjectID string `json:"project_id"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	Query     string `json:"query,omitempty"`
+	Body      string `json:"body,omitempty"`
+}
+
+// DaemonProjectWorkspaceResponsePayload carries the daemon-local HTTP response
+// back to the server. Body is text instead of json.RawMessage because daemon
+// errors may be plain text from http.Error; server handlers normalize errors
+// into their public JSON shape before replying to clients.
+type DaemonProjectWorkspaceResponsePayload struct {
+	RequestID   string `json:"request_id"`
+	StatusCode  int    `json:"status_code"`
+	ContentType string `json:"content_type,omitempty"`
+	Body        string `json:"body,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // TaskProgressPayload is sent from daemon to server during task execution.

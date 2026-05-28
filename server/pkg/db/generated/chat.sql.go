@@ -704,6 +704,37 @@ func (q *Queries) UpdateChatSession(ctx context.Context, arg UpdateChatSessionPa
 	return i, err
 }
 
+const updateChatSessionSession = `-- name: UpdateChatSessionSession :exec
+UPDATE chat_session
+SET session_id = COALESCE($1, session_id),
+    work_dir = COALESCE($2, work_dir),
+    runtime_id = COALESCE($3, runtime_id),
+    updated_at = now()
+WHERE id = $4
+`
+
+type UpdateChatSessionSessionParams struct {
+	SessionID pgtype.Text `json:"session_id"`
+	WorkDir   pgtype.Text `json:"work_dir"`
+	RuntimeID pgtype.UUID `json:"runtime_id"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+// Updates the resume pointer for a chat session. Empty/NULL inputs are
+// ignored via COALESCE so a task that completes without a session_id (e.g.
+// the agent crashed before establishing one) cannot wipe out a previously
+// recorded resume pointer. This makes the chat memory robust against
+// intermittent agent failures.
+func (q *Queries) UpdateChatSessionSession(ctx context.Context, arg UpdateChatSessionSessionParams) error {
+	_, err := q.db.Exec(ctx, updateChatSessionSession,
+		arg.SessionID,
+		arg.WorkDir,
+		arg.RuntimeID,
+		arg.ID,
+	)
+	return err
+}
+
 const updateChatSessionStatus = `-- name: UpdateChatSessionStatus :one
 UPDATE chat_session
 SET status = $1,
@@ -736,35 +767,4 @@ func (q *Queries) UpdateChatSessionStatus(ctx context.Context, arg UpdateChatSes
 		&i.ProjectID,
 	)
 	return i, err
-}
-
-const updateChatSessionSession = `-- name: UpdateChatSessionSession :exec
-UPDATE chat_session
-SET session_id = COALESCE($1, session_id),
-    work_dir = COALESCE($2, work_dir),
-    runtime_id = COALESCE($3, runtime_id),
-    updated_at = now()
-WHERE id = $4
-`
-
-type UpdateChatSessionSessionParams struct {
-	SessionID pgtype.Text `json:"session_id"`
-	WorkDir   pgtype.Text `json:"work_dir"`
-	RuntimeID pgtype.UUID `json:"runtime_id"`
-	ID        pgtype.UUID `json:"id"`
-}
-
-// Updates the resume pointer for a chat session. Empty/NULL inputs are
-// ignored via COALESCE so a task that completes without a session_id (e.g.
-// the agent crashed before establishing one) cannot wipe out a previously
-// recorded resume pointer. This makes the chat memory robust against
-// intermittent agent failures.
-func (q *Queries) UpdateChatSessionSession(ctx context.Context, arg UpdateChatSessionSessionParams) error {
-	_, err := q.db.Exec(ctx, updateChatSessionSession,
-		arg.SessionID,
-		arg.WorkDir,
-		arg.RuntimeID,
-		arg.ID,
-	)
-	return err
 }

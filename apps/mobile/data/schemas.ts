@@ -18,6 +18,11 @@ import type {
   ChatPendingTask,
   ChatSession,
   Comment,
+  GitHubPullRequest,
+  GitHubPullRequestReview,
+  GitHubPullRequestReviewComment,
+  GitHubPullRequestReviewFile,
+  GitHubPullRequestReviewSummary,
   InboxItem,
   IssueLabelsResponse,
   Label,
@@ -27,7 +32,21 @@ import type {
   MemberWithUser,
   PinnedItem,
   Project,
+  ProjectActiveTask,
+  ProjectGitDiffResponse,
+  ProjectFileReadResponse,
+  ProjectFileTreeResponse,
+  ProjectFileWriteResponse,
+  ProjectGitLogResponse,
+  ProjectGitOperationResponse,
+  ProjectGitStatus,
+  ProjectTerminalListResponse,
+  ProjectTerminalSession,
   ProjectResource,
+  ProjectRunScript,
+  ProjectSafetySnapshotListResponse,
+  ProjectWorkspace,
+  ProjectWorkspaceConfig,
   RuntimeDevice,
   SearchChatSessionsResponse,
   SearchIssuesResponse,
@@ -229,6 +248,345 @@ export const EMPTY_LIST_PROJECT_RESOURCES_RESPONSE: ListProjectResourcesResponse
   total: 0,
 };
 
+const ProjectRunScriptSchema: z.ZodType<ProjectRunScript> = z.object({
+  name: z.string().default(""),
+  command: z.string().default(""),
+}).loose();
+
+export const ProjectWorkspaceConfigSchema: z.ZodType<ProjectWorkspaceConfig> = z.object({
+  project_id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  base_branch: z.string().default("main"),
+  scope_path: z.string().default(""),
+  verification_commands: z.array(z.string()).default([]),
+  run_scripts: z.array(ProjectRunScriptSchema).default([]),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+}).loose();
+
+export const EMPTY_PROJECT_WORKSPACE_CONFIG: ProjectWorkspaceConfig = {
+  project_id: "",
+  workspace_id: "",
+  base_branch: "main",
+  scope_path: "",
+  verification_commands: [],
+  run_scripts: [],
+};
+
+const ProjectDeviceBindingSchema = z.object({
+  id: z.string().default(""),
+  project_id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  runtime_id: z.string().nullable().default(null),
+  device_id: z.string().default(""),
+  primary_repo_url: z.string().default(""),
+  status: z.enum(["online", "offline", "unknown", "error"]).catch("unknown"),
+  capabilities: z.record(z.string(), z.unknown()).default({}),
+  path_alias: z.string().default(""),
+  path_basename: z.string().default(""),
+  last_seen_at: z.string().nullable().optional(),
+  runtime_name: z.string().nullable().optional(),
+  runtime_status: z.string().nullable().optional(),
+  runtime_last_seen_at: z.string().nullable().optional(),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+const ProjectActiveTaskSchema: z.ZodType<ProjectActiveTask> = z.object({
+  id: z.string().default(""),
+  status: z.string().default(""),
+  runtime_id: z.string().default(""),
+  created_at: z.string().default(""),
+  started_at: z.string().nullable().optional(),
+  dispatched_at: z.string().nullable().optional(),
+}).loose();
+
+export const ProjectWorkspaceSchema: z.ZodType<ProjectWorkspace> = z.object({
+  project_id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  primary_repo_url: z.string().nullable().default(null),
+  config: ProjectWorkspaceConfigSchema.default(EMPTY_PROJECT_WORKSPACE_CONFIG),
+  bindings: z.array(ProjectDeviceBindingSchema).default([]),
+  active_tasks: z.array(ProjectActiveTaskSchema).default([]),
+}).loose();
+
+export const EMPTY_PROJECT_WORKSPACE: ProjectWorkspace = {
+  project_id: "",
+  workspace_id: "",
+  primary_repo_url: null,
+  config: EMPTY_PROJECT_WORKSPACE_CONFIG,
+  bindings: [],
+  active_tasks: [],
+};
+
+const ProjectGitFileSchema = z.object({
+  path: z.string().default(""),
+  status: z.string().default(""),
+}).loose();
+
+export const ProjectGitStatusSchema: z.ZodType<ProjectGitStatus> = z.object({
+  branch: z.string().default(""),
+  remote: z.string().default(""),
+  dirty_count: z.number().default(0),
+  untracked_count: z.number().default(0),
+  ahead: z.number().default(0),
+  behind: z.number().default(0),
+  head_sha: z.string().default(""),
+  last_fetch_at: z.string().nullable().optional(),
+  has_uncommitted: z.boolean().default(false),
+  files: z.array(ProjectGitFileSchema).optional(),
+}).loose();
+
+export const EMPTY_PROJECT_GIT_STATUS: ProjectGitStatus = {
+  branch: "",
+  remote: "",
+  dirty_count: 0,
+  untracked_count: 0,
+  ahead: 0,
+  behind: 0,
+  head_sha: "",
+  last_fetch_at: null,
+  has_uncommitted: false,
+  files: [],
+};
+
+export const ProjectGitDiffResponseSchema: z.ZodType<ProjectGitDiffResponse> = z.object({
+  status: ProjectGitStatusSchema,
+  patch: z.string().default(""),
+  truncated: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_PROJECT_GIT_DIFF_RESPONSE: ProjectGitDiffResponse = {
+  status: EMPTY_PROJECT_GIT_STATUS,
+  patch: "",
+  truncated: false,
+};
+
+export const ProjectGitLogResponseSchema: z.ZodType<ProjectGitLogResponse> = z.object({
+  graph: z.string().default(""),
+}).loose();
+
+export const EMPTY_PROJECT_GIT_LOG_RESPONSE: ProjectGitLogResponse = {
+  graph: "",
+};
+
+const ProjectFileEntrySchema = z.object({
+  path: z.string().default(""),
+  name: z.string().default(""),
+  type: z.string().default("file"),
+  size: z.number().default(0),
+  modified_at: z.string().nullable().optional(),
+}).loose();
+
+export const ProjectFileTreeResponseSchema: z.ZodType<ProjectFileTreeResponse> = z.object({
+  path: z.string().default(""),
+  entries: z.array(ProjectFileEntrySchema).default([]),
+}).loose();
+
+export const EMPTY_PROJECT_FILE_TREE_RESPONSE: ProjectFileTreeResponse = {
+  path: "",
+  entries: [],
+};
+
+export const ProjectFileReadResponseSchema: z.ZodType<ProjectFileReadResponse> = z.object({
+  path: z.string().default(""),
+  content: z.string().optional(),
+  hash: z.string().default(""),
+  size: z.number().default(0),
+  binary: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_PROJECT_FILE_READ_RESPONSE: ProjectFileReadResponse = {
+  path: "",
+  content: "",
+  hash: "",
+  size: 0,
+  binary: false,
+};
+
+export const ProjectFileWriteResponseSchema: z.ZodType<ProjectFileWriteResponse> = z.object({
+  path: z.string().default(""),
+  hash: z.string().default(""),
+  size: z.number().default(0),
+  patch: z.string().optional(),
+  truncated: z.boolean().optional(),
+}).loose();
+
+export const EMPTY_PROJECT_FILE_WRITE_RESPONSE: ProjectFileWriteResponse = {
+  path: "",
+  hash: "",
+  size: 0,
+};
+
+const ProjectSafetySnapshotSchema = z.object({
+  ref: z.string().default(""),
+  head_sha: z.string().default(""),
+  message: z.string().default(""),
+  created_at: z.string().default(""),
+}).loose();
+
+export const ProjectSafetySnapshotListResponseSchema: z.ZodType<ProjectSafetySnapshotListResponse> = z.object({
+  snapshots: z.array(ProjectSafetySnapshotSchema).default([]),
+}).loose();
+
+export const EMPTY_PROJECT_SAFETY_SNAPSHOT_LIST: ProjectSafetySnapshotListResponse = {
+  snapshots: [],
+};
+
+export const ProjectGitOperationResponseSchema: z.ZodType<ProjectGitOperationResponse> = z.object({
+  operation: z
+    .enum(["fetch", "pull", "rebase", "commit", "push", "snapshot"])
+    .catch("fetch"),
+  output: z.string().default(""),
+  status: ProjectGitStatusSchema.default(EMPTY_PROJECT_GIT_STATUS),
+  snapshot: ProjectSafetySnapshotSchema.nullable().optional(),
+}).loose();
+
+const ProjectScriptRunStatusSchema = z
+  .enum(["running", "stopping", "exited", "failed", "stopped"])
+  .catch("failed");
+
+export const ProjectTerminalSessionSchema: z.ZodType<ProjectTerminalSession> = z.object({
+  id: z.string().default(""),
+  project_id: z.string().default(""),
+  shell: z.string().default(""),
+  status: ProjectScriptRunStatusSchema,
+  pid: z.number().nullable().optional(),
+  started_at: z.string().default(""),
+  finished_at: z.string().nullable().optional(),
+  exit_code: z.number().nullable().optional(),
+  log: z.string().default(""),
+}).loose();
+
+export const EMPTY_PROJECT_TERMINAL_SESSION: ProjectTerminalSession = {
+  id: "",
+  project_id: "",
+  shell: "",
+  status: "failed",
+  pid: null,
+  started_at: "",
+  finished_at: null,
+  exit_code: null,
+  log: "",
+};
+
+export const ProjectTerminalListResponseSchema: z.ZodType<ProjectTerminalListResponse> = z.object({
+  terminals: z.array(ProjectTerminalSessionSchema).default([]),
+}).loose();
+
+export const EMPTY_PROJECT_TERMINAL_LIST_RESPONSE: ProjectTerminalListResponse = {
+  terminals: [],
+};
+
+export const GitHubPullRequestSchema: z.ZodType<GitHubPullRequest> = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  repo_owner: z.string().default(""),
+  repo_name: z.string().default(""),
+  number: z.number().default(0),
+  title: z.string().default(""),
+  state: z.enum(["open", "closed", "merged", "draft"]).catch("open"),
+  html_url: z.string().default(""),
+  branch: z.string().nullable().default(null),
+  author_login: z.string().nullable().default(null),
+  author_avatar_url: z.string().nullable().default(null),
+  merged_at: z.string().nullable().default(null),
+  closed_at: z.string().nullable().default(null),
+  pr_created_at: z.string().default(""),
+  pr_updated_at: z.string().default(""),
+  mergeable_state: z.string().nullable().optional(),
+  checks_conclusion: z.enum(["passed", "failed", "pending"]).nullable().optional(),
+  checks_passed: z.number().optional(),
+  checks_failed: z.number().optional(),
+  checks_pending: z.number().optional(),
+  additions: z.number().optional(),
+  deletions: z.number().optional(),
+  changed_files: z.number().optional(),
+}).loose();
+
+export const GitHubPullRequestListResponseSchema = z.object({
+  pull_requests: z.array(GitHubPullRequestSchema).default([]),
+}).loose();
+
+export type GitHubPullRequestListResponse = z.infer<
+  typeof GitHubPullRequestListResponseSchema
+>;
+
+export const EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE: GitHubPullRequestListResponse = {
+  pull_requests: [],
+};
+
+const GitHubPullRequestReviewFileSchema: z.ZodType<GitHubPullRequestReviewFile> = z.object({
+  filename: z.string().default(""),
+  status: z.string().default(""),
+  additions: z.number().default(0),
+  deletions: z.number().default(0),
+  changes: z.number().default(0),
+  patch: z.string().default(""),
+  blob_url: z.string().default(""),
+  raw_url: z.string().default(""),
+  contents_url: z.string().default(""),
+  previous_filename: z.string().optional(),
+}).loose();
+
+const GitHubPullRequestReviewCommentSchema: z.ZodType<GitHubPullRequestReviewComment> = z.object({
+  id: z.number().default(0),
+  path: z.string().default(""),
+  body: z.string().default(""),
+  user_login: z.string().default(""),
+  html_url: z.string().default(""),
+  diff_hunk: z.string().default(""),
+  line: z.number().optional(),
+  original_line: z.number().optional(),
+  start_line: z.number().optional(),
+  side: z.string().optional(),
+  in_reply_to_id: z.number().optional(),
+  resolved: z.boolean().nullable().optional(),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+const GitHubPullRequestReviewSummarySchema: z.ZodType<GitHubPullRequestReviewSummary> = z.object({
+  id: z.number().default(0),
+  user_login: z.string().default(""),
+  state: z.string().default(""),
+  body: z.string().default(""),
+  html_url: z.string().default(""),
+  submitted_at: z.string().default(""),
+}).loose();
+
+export const GitHubPullRequestReviewSchema: z.ZodType<GitHubPullRequestReview> = z.object({
+  pull_request: GitHubPullRequestSchema,
+  files: z.array(GitHubPullRequestReviewFileSchema).default([]),
+  comments: z.array(GitHubPullRequestReviewCommentSchema).default([]),
+  reviews: z.array(GitHubPullRequestReviewSummarySchema).default([]),
+  fetched_at: z.string().default(""),
+}).loose();
+
+export const EMPTY_GITHUB_PULL_REQUEST_REVIEW: GitHubPullRequestReview = {
+  pull_request: {
+    id: "",
+    workspace_id: "",
+    repo_owner: "",
+    repo_name: "",
+    number: 0,
+    title: "",
+    state: "open",
+    html_url: "",
+    branch: null,
+    author_login: null,
+    author_avatar_url: null,
+    merged_at: null,
+    closed_at: null,
+    pr_created_at: "",
+    pr_updated_at: "",
+  },
+  files: [],
+  comments: [],
+  reviews: [],
+  fetched_at: "",
+};
+
 // =====================================================
 // Chat (sessions / messages / pending task)
 // =====================================================
@@ -405,6 +763,7 @@ export const AgentTaskSchema: z.ZodType<AgentTask> = z.object({
   chat_session_id: z.string().optional(),
   autopilot_run_id: z.string().optional(),
   parent_task_id: z.string().optional(),
+  project_id: z.string().optional(),
   attempt: z.number().optional(),
   trigger_comment_id: z.string().optional(),
   trigger_summary: z.string().optional(),

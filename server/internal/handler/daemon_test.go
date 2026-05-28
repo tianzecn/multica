@@ -1740,6 +1740,12 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO project_workspace_config (project_id, workspace_id, base_branch)
+		VALUES ($1, $2, 'develop')
+	`, projectID, testWorkspaceID); err != nil {
+		t.Fatalf("create project workspace config: %v", err)
+	}
 
 	const projectRepoURL = "https://github.com/example/project-only-repo"
 	const relatedRepoURL = "https://github.com/example/project-related-repo"
@@ -1797,9 +1803,10 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 
 	var resp struct {
 		Task *struct {
-			Repos            []RepoData            `json:"repos"`
-			ProjectID        string                `json:"project_id"`
-			ProjectResources []ProjectResourceData `json:"project_resources"`
+			Repos             []RepoData            `json:"repos"`
+			ProjectID         string                `json:"project_id"`
+			ProjectBaseBranch string                `json:"project_base_branch"`
+			ProjectResources  []ProjectResourceData `json:"project_resources"`
 		} `json:"task"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -1810,6 +1817,9 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	}
 	if resp.Task.ProjectID != projectID {
 		t.Errorf("project_id = %q, want %q", resp.Task.ProjectID, projectID)
+	}
+	if resp.Task.ProjectBaseBranch != "develop" {
+		t.Errorf("project_base_branch = %q, want develop", resp.Task.ProjectBaseBranch)
 	}
 	if len(resp.Task.Repos) != 1 || resp.Task.Repos[0].URL != projectRepoURL {
 		t.Fatalf("expected resp.Repos to contain only the primary project repo URL, got %+v", resp.Task.Repos)

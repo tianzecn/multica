@@ -645,6 +645,22 @@ type Project struct {
 	Priority    string             `json:"priority"`
 }
 
+type ProjectDeviceBinding struct {
+	ID             pgtype.UUID        `json:"id"`
+	ProjectID      pgtype.UUID        `json:"project_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RuntimeID      pgtype.UUID        `json:"runtime_id"`
+	DeviceID       string             `json:"device_id"`
+	PrimaryRepoUrl string             `json:"primary_repo_url"`
+	Status         string             `json:"status"`
+	Capabilities   []byte             `json:"capabilities"`
+	PathAlias      string             `json:"path_alias"`
+	PathBasename   string             `json:"path_basename"`
+	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ProjectResource struct {
 	ID           pgtype.UUID        `json:"id"`
 	ProjectID    pgtype.UUID        `json:"project_id"`
@@ -655,6 +671,17 @@ type ProjectResource struct {
 	Position     int32              `json:"position"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	CreatedBy    pgtype.UUID        `json:"created_by"`
+}
+
+type ProjectWorkspaceConfig struct {
+	ProjectID            pgtype.UUID        `json:"project_id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	BaseBranch           string             `json:"base_branch"`
+	ScopePath            string             `json:"scope_path"`
+	VerificationCommands []byte             `json:"verification_commands"`
+	RunScripts           []byte             `json:"run_scripts"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Skill struct {

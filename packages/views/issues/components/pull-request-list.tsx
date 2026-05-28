@@ -56,17 +56,38 @@ const CHECKS_ICON: Record<
 
 export function PullRequestList({ issueId }: { issueId: string }) {
   const { t } = useT("issues");
-  const [expanded, setExpanded] = useState(false);
   const { data, isLoading } = useQuery(issuePullRequestsOptions(issueId));
   const prs = data?.pull_requests ?? [];
+  return (
+    <PullRequestRows
+      prs={prs}
+      isLoading={isLoading}
+      loadingText={t(($) => $.detail.pull_requests_loading)}
+      emptyText={t(($) => $.detail.pull_requests_empty)}
+    />
+  );
+}
 
+export function PullRequestRows({
+  prs,
+  isLoading,
+  loadingText,
+  emptyText,
+}: {
+  prs: GitHubPullRequest[];
+  isLoading: boolean;
+  loadingText: string;
+  emptyText: string;
+}) {
+  const { t } = useT("issues");
+  const [expanded, setExpanded] = useState(false);
   if (isLoading) {
-    return <p className="text-xs text-muted-foreground px-2">{t(($) => $.detail.pull_requests_loading)}</p>;
+    return <p className="text-xs text-muted-foreground px-2">{loadingText}</p>;
   }
   if (prs.length === 0) {
     return (
       <p className="text-xs text-muted-foreground px-2">
-        {t(($) => $.detail.pull_requests_empty)}
+        {emptyText}
       </p>
     );
   }

@@ -2,9 +2,13 @@ package daemonws
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +20,11 @@ const (
 	writeWait  = 10 * time.Second
 	pongWait   = 60 * time.Second
 	pingPeriod = (pongWait * 9) / 10
+)
+
+var (
+	ErrRuntimeNotConnected = errors.New("daemon runtime is not connected")
+	ErrRuntimeBackpressure = errors.New("daemon runtime connection is busy")
 )
 
 // ClientIdentity captures the already-authenticated daemon connection scope.
@@ -80,8 +89,10 @@ type Hub struct {
 	clients   map[*client]bool
 	byRuntime map[string]map[*client]bool
 
-	hbMu        sync.RWMutex
-	onHeartbeat HeartbeatHandler
+	hbMu         sync.RWMutex
+	onHeartbeat  HeartbeatHandler
+	relayMu      sync.Mutex
+	relayPending map[string]chan protocol.DaemonProjectWorkspaceResponsePayload
 }
 
 func NewHub() *Hub {
@@ -94,8 +105,9 @@ func NewHub() *Hub {
 			// grows cookie fallback.
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
-		clients:   make(map[*client]bool),
-		byRuntime: make(map[string]map[*client]bool),
+		clients:      make(map[*client]bool),
+		byRuntime:    make(map[string]map[*client]bool),
+		relayPending: make(map[string]chan protocol.DaemonProjectWorkspaceResponsePayload),
 	}
 }
 
@@ -159,6 +171,102 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, identity C
 // NotifyTaskAvailable sends a best-effort wakeup to daemons watching runtimeID.
 func (h *Hub) NotifyTaskAvailable(runtimeID, taskID string) {
 	h.notifyTaskAvailable(runtimeID, taskID, "")
+}
+
+// RequestProjectWorkspace sends a single Project workspace request to exactly
+// one connected daemon runtime and waits for the matching response. Write
+// operations must never be broadcast to every connection for a runtime.
+func (h *Hub) RequestProjectWorkspace(ctx context.Context, runtimeID string, req protocol.DaemonProjectWorkspaceRequestPayload) (*protocol.DaemonProjectWorkspaceResponsePayload, error) {
+	if h == nil {
+		return nil, ErrRuntimeNotConnected
+	}
+	runtimeID = strings.TrimSpace(runtimeID)
+	if runtimeID == "" {
+		return nil, ErrRuntimeNotConnected
+	}
+	if req.RequestID == "" {
+		req.RequestID = newProjectWorkspaceRelayID()
+	}
+	frame, err := json.Marshal(protocol.Message{
+		Type:    protocol.EventDaemonProjectWorkspaceRequest,
+		Payload: mustMarshalRaw(req),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal project workspace request: %w", err)
+	}
+
+	ch := make(chan protocol.DaemonProjectWorkspaceResponsePayload, 1)
+	h.relayMu.Lock()
+	h.relayPending[req.RequestID] = ch
+	h.relayMu.Unlock()
+	defer func() {
+		h.relayMu.Lock()
+		delete(h.relayPending, req.RequestID)
+		h.relayMu.Unlock()
+	}()
+
+	if err := h.sendProjectWorkspaceFrame(runtimeID, frame); err != nil {
+		return nil, err
+	}
+
+	select {
+	case resp := <-ch:
+		return &resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func newProjectWorkspaceRelayID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", b[:])
+}
+
+func (h *Hub) sendProjectWorkspaceFrame(runtimeID string, frame []byte) error {
+	var slow *client
+	h.mu.RLock()
+	clients := h.byRuntime[runtimeID]
+	for c := range clients {
+		select {
+		case c.send <- frame:
+			h.mu.RUnlock()
+			return nil
+		default:
+			slow = c
+		}
+		break
+	}
+	h.mu.RUnlock()
+	if slow != nil {
+		h.unregister(slow)
+		if slow.conn != nil {
+			slow.conn.Close()
+		}
+		return ErrRuntimeBackpressure
+	}
+	return ErrRuntimeNotConnected
+}
+
+func (h *Hub) completeProjectWorkspaceResponse(resp protocol.DaemonProjectWorkspaceResponsePayload) {
+	if resp.RequestID == "" {
+		return
+	}
+	h.relayMu.Lock()
+	ch := h.relayPending[resp.RequestID]
+	if ch != nil {
+		delete(h.relayPending, resp.RequestID)
+	}
+	h.relayMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- resp:
+	default:
+	}
 }
 
 func (h *Hub) notifyTaskAvailable(runtimeID, taskID, eventID string) {
@@ -320,7 +428,7 @@ func (c *client) readPump() {
 		c.conn.Close()
 	}()
 
-	c.conn.SetReadLimit(4096)
+	c.conn.SetReadLimit(protocol.DaemonProjectWorkspaceMaxFrameBytes)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -348,10 +456,21 @@ func (c *client) handleFrame(raw []byte) {
 	switch msg.Type {
 	case protocol.EventDaemonHeartbeat:
 		c.handleHeartbeatFrame(msg.Payload)
+	case protocol.EventDaemonProjectWorkspaceResponse:
+		c.handleProjectWorkspaceResponseFrame(msg.Payload)
 	default:
 		// Unknown app messages are intentionally ignored for forward
 		// compatibility with future daemon → server message types.
 	}
+}
+
+func (c *client) handleProjectWorkspaceResponseFrame(raw json.RawMessage) {
+	var resp protocol.DaemonProjectWorkspaceResponsePayload
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		slog.Debug("daemon websocket project workspace response invalid payload", "error", err, "daemon_id", c.identity.DaemonID)
+		return
+	}
+	c.hub.completeProjectWorkspaceResponse(resp)
 }
 
 // handleHeartbeatFrame processes an inbound daemon:heartbeat from the daemon,

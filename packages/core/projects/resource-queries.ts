@@ -2,6 +2,8 @@ import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query
 import { api } from "../api";
 import { projectKeys } from "./queries";
 import type {
+  CreateProjectGitHubRepositoryRequest,
+  CreateProjectGitHubRepositoryResponse,
   CreateProjectResourceRequest,
   ListProjectResourcesResponse,
   ProjectResource,
@@ -42,6 +44,34 @@ export function useCreateProjectResource(wsId: string, projectId: string) {
       qc.invalidateQueries({
         queryKey: projectResourceKeys.list(wsId, projectId),
       });
+    },
+  });
+}
+
+export function useCreateProjectGitHubRepository(wsId: string, projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: CreateProjectGitHubRepositoryRequest) =>
+      api.createProjectGitHubRepository(projectId, data),
+    onSuccess: (created: CreateProjectGitHubRepositoryResponse) => {
+      qc.setQueryData<ListProjectResourcesResponse>(
+        projectResourceKeys.list(wsId, projectId),
+        (old) =>
+          old && !old.resources.some((r) => r.id === created.resource.id)
+            ? {
+                ...old,
+                resources: [...old.resources, created.resource],
+                total: old.total + 1,
+              }
+            : old,
+      );
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({
+        queryKey: projectResourceKeys.list(wsId, projectId),
+      });
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
     },
   });
 }

@@ -97,6 +97,22 @@ func (q *Queries) CreateActivity(ctx context.Context, arg CreateActivityParams) 
 	return i, err
 }
 
+const deleteActivitiesForProject = `-- name: DeleteActivitiesForProject :exec
+DELETE FROM activity_log
+WHERE workspace_id = $1
+  AND details->>'project_id' = $2::text
+`
+
+type DeleteActivitiesForProjectParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   string      `json:"project_id"`
+}
+
+func (q *Queries) DeleteActivitiesForProject(ctx context.Context, arg DeleteActivitiesForProjectParams) error {
+	_, err := q.db.Exec(ctx, deleteActivitiesForProject, arg.WorkspaceID, arg.ProjectID)
+	return err
+}
+
 const getActivity = `-- name: GetActivity :one
 SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
 WHERE id = $1
@@ -160,6 +176,53 @@ type ListActivitiesForIssueParams struct {
 // net to bound the response).
 func (q *Queries) ListActivitiesForIssue(ctx context.Context, arg ListActivitiesForIssueParams) ([]ActivityLog, error) {
 	rows, err := q.db.Query(ctx, listActivitiesForIssue, arg.IssueID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityLog{}
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActivitiesForProject = `-- name: ListActivitiesForProject :many
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE workspace_id = $1
+  AND issue_id IS NULL
+  AND details->>'project_id' = $2::text
+ORDER BY created_at DESC, id DESC
+LIMIT $3
+`
+
+type ListActivitiesForProjectParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   string      `json:"project_id"`
+	Limit       int32       `json:"limit"`
+}
+
+// Project-scoped activities are stored as workspace-level rows with no issue
+// and a project_id marker inside details, so repo/folder unbinds do not erase
+// history while project deletion still cascades through details governance.
+func (q *Queries) ListActivitiesForProject(ctx context.Context, arg ListActivitiesForProjectParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, listActivitiesForProject, arg.WorkspaceID, arg.ProjectID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

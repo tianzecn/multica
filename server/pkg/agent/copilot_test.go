@@ -672,9 +672,9 @@ func TestCopilotExecuteSurfacesStderrOnNonZeroResult(t *testing.T) {
 		t.Fatalf("new copilot backend: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), fakeAgentContextTimeout)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: fakeAgentExecTimeout})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestCopilotExecuteSurfacesStderrOnNonZeroResult(t *testing.T) {
 		if !strings.Contains(result.Error, "copilot stderr:") {
 			t.Fatalf("expected stderr label in error, got %q", result.Error)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(fakeAgentResultTimeout):
 		t.Fatal("timeout waiting for result")
 	}
 }

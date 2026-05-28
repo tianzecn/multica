@@ -64,11 +64,156 @@ interface DaemonPrefs {
   autoStop: boolean;
 }
 
+interface ProjectGitFile {
+  path: string;
+  status: string;
+}
+
+interface ProjectGitStatus {
+  branch: string;
+  remote: string;
+  dirty_count: number;
+  untracked_count: number;
+  ahead: number;
+  behind: number;
+  head_sha: string;
+  last_fetch_at?: string | null;
+  has_uncommitted: boolean;
+  files?: ProjectGitFile[];
+}
+
+interface ProjectLocalWorkspace {
+  bound: boolean;
+  project_id: string;
+  workspace_id?: string;
+  primary_repo_url?: string;
+  local_path?: string;
+  path_alias?: string;
+  path_basename?: string;
+  git?: ProjectGitStatus;
+  error?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface BindProjectLocalWorkspaceRequest {
+  workspace_id: string;
+  primary_repo_url: string;
+  local_path: string;
+  path_alias?: string;
+}
+
+interface ProjectFolderSelection {
+  canceled: boolean;
+  path?: string | null;
+}
+
+interface ProjectGitDiffResponse {
+  status: ProjectGitStatus;
+  patch: string;
+  truncated: boolean;
+}
+
+interface ProjectGitLogResponse {
+  graph: string;
+}
+
+  type ProjectGitOperation = "fetch" | "pull" | "rebase" | "commit" | "push" | "snapshot";
+
+interface ProjectGitOperationRequest {
+  message?: string;
+  paths?: string[];
+  base_branch?: string;
+  allow_base_push?: boolean;
+}
+
+  interface ProjectGitOperationResponse {
+    operation: ProjectGitOperation;
+    output: string;
+    status: ProjectGitStatus;
+    snapshot?: ProjectSafetySnapshot | null;
+  }
+
+  interface ProjectSafetySnapshot {
+    ref: string;
+    head_sha: string;
+    message: string;
+    created_at: string;
+  }
+
+  interface ProjectSafetySnapshotListResponse {
+    snapshots: ProjectSafetySnapshot[];
+  }
+
+interface ProjectFileEntry {
+  path: string;
+  name: string;
+  type: string;
+  size: number;
+  modified_at?: string | null;
+}
+
+interface ProjectFileTreeResponse {
+  path: string;
+  entries: ProjectFileEntry[];
+}
+
+interface ProjectFileReadResponse {
+  path: string;
+  content?: string;
+  hash: string;
+  size: number;
+  binary: boolean;
+}
+
+interface ProjectFileWriteRequest {
+  path: string;
+  content: string;
+  base_hash?: string;
+}
+
+interface ProjectFileWriteResponse {
+  path: string;
+  hash: string;
+  size: number;
+}
+
 interface DaemonAPI {
   start: () => Promise<{ success: boolean; error?: string }>;
   stop: () => Promise<{ success: boolean; error?: string }>;
   restart: () => Promise<{ success: boolean; error?: string }>;
   getStatus: () => Promise<DaemonStatus>;
+  selectProjectFolder: () => Promise<ProjectFolderSelection>;
+  getProjectWorkspace: (projectId: string) => Promise<ProjectLocalWorkspace>;
+  bindProjectWorkspace: (
+    projectId: string,
+    payload: BindProjectLocalWorkspaceRequest,
+  ) => Promise<ProjectLocalWorkspace>;
+  cloneProjectWorkspace: (
+    projectId: string,
+    payload: BindProjectLocalWorkspaceRequest,
+  ) => Promise<ProjectLocalWorkspace>;
+    getProjectGitStatus: (projectId: string) => Promise<ProjectGitStatus>;
+    getProjectGitDiff: (projectId: string) => Promise<ProjectGitDiffResponse>;
+    getProjectGitLog: (projectId: string) => Promise<ProjectGitLogResponse>;
+    getProjectGitSnapshots: (projectId: string) => Promise<ProjectSafetySnapshotListResponse>;
+  getProjectFileTree: (
+    projectId: string,
+    path?: string,
+  ) => Promise<ProjectFileTreeResponse>;
+  readProjectFile: (
+    projectId: string,
+    path: string,
+  ) => Promise<ProjectFileReadResponse>;
+  writeProjectFile: (
+    projectId: string,
+    payload: ProjectFileWriteRequest,
+  ) => Promise<ProjectFileWriteResponse>;
+  runProjectGitOperation: (
+    projectId: string,
+    operation: ProjectGitOperation,
+    payload?: ProjectGitOperationRequest,
+  ) => Promise<ProjectGitOperationResponse>;
   onStatusChange: (callback: (status: DaemonStatus) => void) => () => void;
   setTargetApiUrl: (url: string) => Promise<void>;
   syncToken: (token: string, userId: string) => Promise<void>;
