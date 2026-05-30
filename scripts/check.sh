@@ -30,15 +30,46 @@ EXIT_CODE=0
 # --------------------------------------------------------------------------
 # Cleanup: kill only services this script started
 # --------------------------------------------------------------------------
+kill_process_tree() {
+  local pid="$1"
+  local signal="${2:-TERM}"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    local child
+    while IFS= read -r child; do
+      if [ -n "$child" ]; then
+        kill_process_tree "$child" "$signal"
+      fi
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+  fi
+  kill "-$signal" "$pid" 2>/dev/null || true
+}
+
+stop_started_process() {
+  local pid="$1"
+  local label="$2"
+  kill_process_tree "$pid" TERM
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "    Stopped $label (PID $pid)"
+      return
+    fi
+    sleep 0.2
+  done
+  kill_process_tree "$pid" KILL
+  wait "$pid" 2>/dev/null || true
+  echo "    Stopped $label (PID $pid)"
+}
+
 cleanup() {
   echo ""
   if [ "$STARTED_BACKEND" = true ] && [ -n "$BACKEND_PID" ]; then
-    kill "$BACKEND_PID" 2>/dev/null && wait "$BACKEND_PID" 2>/dev/null || true
-    echo "    Stopped backend (PID $BACKEND_PID)"
+    stop_started_process "$BACKEND_PID" "backend"
   fi
   if [ "$STARTED_FRONTEND" = true ] && [ -n "$FRONTEND_PID" ]; then
-    kill "$FRONTEND_PID" 2>/dev/null && wait "$FRONTEND_PID" 2>/dev/null || true
-    echo "    Stopped frontend (PID $FRONTEND_PID)"
+    stop_started_process "$FRONTEND_PID" "frontend"
   fi
   echo ""
   if [ "$EXIT_CODE" -eq 0 ]; then

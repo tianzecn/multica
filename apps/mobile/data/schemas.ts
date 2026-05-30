@@ -18,15 +18,21 @@ import type {
   ChatPendingTask,
   ChatSession,
   Comment,
+  CreateProjectGitHubRepositoryResponse,
+  CreateGitHubPullRequestResponse,
+  CreatedGitHubRepository,
+  GitHubInstallation,
   GitHubPullRequest,
   GitHubPullRequestReview,
   GitHubPullRequestReviewComment,
   GitHubPullRequestReviewFile,
+  GitHubPullRequestReviewResolution,
   GitHubPullRequestReviewSummary,
   InboxItem,
   IssueLabelsResponse,
   Label,
   ListLabelsResponse,
+  ListGitHubInstallationsResponse,
   ListProjectResourcesResponse,
   ListProjectsResponse,
   MemberWithUser,
@@ -44,7 +50,10 @@ import type {
   ProjectTerminalSession,
   ProjectResource,
   ProjectRunScript,
+  ProjectScriptListResponse,
+  ProjectScriptRun,
   ProjectSafetySnapshotListResponse,
+  ProjectWorkspaceSetupResponse,
   ProjectWorkspace,
   ProjectWorkspaceConfig,
   RuntimeDevice,
@@ -226,7 +235,21 @@ export const EMPTY_PROJECT: Project = {
 // repos). resource_ref shape varies per resource_type; lenient on both
 // `resource_type` (so a future type doesn't crash the list) and
 // `resource_ref` (passes through unchanged for the renderer to dispatch on).
-const ProjectResourceSchema = z.object({
+const PROJECT_RESOURCE_FALLBACK: ProjectResource = {
+  id: "",
+  project_id: "",
+  workspace_id: "",
+  resource_type: "github_repo",
+  resource_ref: {},
+  label: null,
+  position: 0,
+  created_at: "",
+  created_by: null,
+};
+
+export const EMPTY_PROJECT_RESOURCE: ProjectResource = PROJECT_RESOURCE_FALLBACK;
+
+export const ProjectResourceSchema = z.object({
   id: z.string(),
   project_id: z.string(),
   workspace_id: z.string(),
@@ -246,6 +269,73 @@ export const ListProjectResourcesResponseSchema = z.object({
 export const EMPTY_LIST_PROJECT_RESOURCES_RESPONSE: ListProjectResourcesResponse = {
   resources: [],
   total: 0,
+};
+
+const GitHubInstallationSchema: z.ZodType<GitHubInstallation> = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  installation_id: z.number().optional(),
+  account_login: z.string().default(""),
+  account_type: z.enum(["User", "Organization"]).catch("User"),
+  account_avatar_url: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  connected_by: z.string().optional(),
+}).loose();
+
+export const ListGitHubInstallationsResponseSchema: z.ZodType<ListGitHubInstallationsResponse> = z.object({
+  installations: z.array(GitHubInstallationSchema).default([]),
+  configured: z.boolean().default(false),
+  can_manage: z.boolean().optional(),
+}).loose();
+
+export const EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE: ListGitHubInstallationsResponse = {
+  installations: [],
+  configured: false,
+  can_manage: false,
+};
+
+const CreatedGitHubRepositorySchema: z.ZodType<CreatedGitHubRepository> = z.object({
+  owner: z.string().default(""),
+  name: z.string().default(""),
+  full_name: z.string().default(""),
+  html_url: z.string().default(""),
+  clone_url: z.string().default(""),
+  ssh_url: z.string().default(""),
+  default_branch: z.string().default("main"),
+  visibility: z.string().default("private"),
+  private: z.boolean().default(true),
+}).loose();
+
+export const CreateProjectGitHubRepositoryResponseSchema: z.ZodType<CreateProjectGitHubRepositoryResponse> = z.object({
+  repository: CreatedGitHubRepositorySchema,
+  resource: ProjectResourceSchema as z.ZodType<CreateProjectGitHubRepositoryResponse["resource"]>,
+  workspace_repo_added: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_CREATE_PROJECT_GITHUB_REPOSITORY_RESPONSE: CreateProjectGitHubRepositoryResponse = {
+  repository: {
+    owner: "",
+    name: "",
+    full_name: "",
+    html_url: "",
+    clone_url: "",
+    ssh_url: "",
+    default_branch: "main",
+    visibility: "private",
+    private: true,
+  },
+  resource: {
+    id: "",
+    project_id: "",
+    workspace_id: "",
+    resource_type: "github_repo",
+    resource_ref: {},
+    label: null,
+    position: 0,
+    created_at: "",
+    created_by: null,
+  },
+  workspace_repo_added: false,
 };
 
 const ProjectRunScriptSchema: z.ZodType<ProjectRunScript> = z.object({
@@ -292,6 +382,21 @@ const ProjectDeviceBindingSchema = z.object({
   updated_at: z.string().default(""),
 }).loose();
 
+const EMPTY_PROJECT_DEVICE_BINDING = {
+  id: "",
+  project_id: "",
+  workspace_id: "",
+  runtime_id: null,
+  device_id: "",
+  primary_repo_url: "",
+  status: "unknown" as const,
+  capabilities: {},
+  path_alias: "",
+  path_basename: "",
+  created_at: "",
+  updated_at: "",
+};
+
 const ProjectActiveTaskSchema: z.ZodType<ProjectActiveTask> = z.object({
   id: z.string().default(""),
   status: z.string().default(""),
@@ -319,14 +424,29 @@ export const EMPTY_PROJECT_WORKSPACE: ProjectWorkspace = {
   active_tasks: [],
 };
 
+export const ProjectWorkspaceSetupResponseSchema: z.ZodType<ProjectWorkspaceSetupResponse> = z.object({
+  binding: ProjectDeviceBindingSchema.default(EMPTY_PROJECT_DEVICE_BINDING),
+}).loose();
+
+export const EMPTY_PROJECT_WORKSPACE_SETUP_RESPONSE: ProjectWorkspaceSetupResponse = {
+  binding: EMPTY_PROJECT_DEVICE_BINDING,
+};
+
 const ProjectGitFileSchema = z.object({
   path: z.string().default(""),
   status: z.string().default(""),
 }).loose();
 
+const ProjectGitRemoteSchema = z.object({
+  name: z.string().default(""),
+  fetch_url: z.string().default(""),
+  push_url: z.string().default(""),
+}).loose();
+
 export const ProjectGitStatusSchema: z.ZodType<ProjectGitStatus> = z.object({
   branch: z.string().default(""),
   remote: z.string().default(""),
+  remotes: z.array(ProjectGitRemoteSchema).optional(),
   dirty_count: z.number().default(0),
   untracked_count: z.number().default(0),
   ahead: z.number().default(0),
@@ -348,6 +468,7 @@ export const EMPTY_PROJECT_GIT_STATUS: ProjectGitStatus = {
   last_fetch_at: null,
   has_uncommitted: false,
   files: [],
+  remotes: [],
 };
 
 export const ProjectGitDiffResponseSchema: z.ZodType<ProjectGitDiffResponse> = z.object({
@@ -442,9 +563,57 @@ export const ProjectGitOperationResponseSchema: z.ZodType<ProjectGitOperationRes
   snapshot: ProjectSafetySnapshotSchema.nullable().optional(),
 }).loose();
 
+export const EMPTY_PROJECT_GIT_OPERATION_RESPONSE: ProjectGitOperationResponse = {
+  operation: "fetch",
+  output: "",
+  status: EMPTY_PROJECT_GIT_STATUS,
+  snapshot: null,
+};
+
 const ProjectScriptRunStatusSchema = z
   .enum(["running", "stopping", "exited", "failed", "stopped"])
   .catch("failed");
+
+const ProjectScriptPortSchema = z.object({
+  port: z.number().default(0),
+  url: z.string().default(""),
+}).loose();
+
+export const ProjectScriptRunSchema: z.ZodType<ProjectScriptRun> = z.object({
+  id: z.string().default(""),
+  project_id: z.string().default(""),
+  name: z.string().default(""),
+  command: z.string().default(""),
+  status: ProjectScriptRunStatusSchema,
+  pid: z.number().nullable().optional(),
+  started_at: z.string().default(""),
+  finished_at: z.string().nullable().optional(),
+  exit_code: z.number().nullable().optional(),
+  log: z.string().default(""),
+  ports: z.array(ProjectScriptPortSchema).default([]),
+}).loose();
+
+export const EMPTY_PROJECT_SCRIPT_RUN: ProjectScriptRun = {
+  id: "",
+  project_id: "",
+  name: "",
+  command: "",
+  status: "failed",
+  pid: null,
+  started_at: "",
+  finished_at: null,
+  exit_code: null,
+  log: "",
+  ports: [],
+};
+
+export const ProjectScriptListResponseSchema: z.ZodType<ProjectScriptListResponse> = z.object({
+  scripts: z.array(ProjectScriptRunSchema).default([]),
+}).loose();
+
+export const EMPTY_PROJECT_SCRIPT_LIST_RESPONSE: ProjectScriptListResponse = {
+  scripts: [],
+};
 
 export const ProjectTerminalSessionSchema: z.ZodType<ProjectTerminalSession> = z.object({
   id: z.string().default(""),
@@ -516,6 +685,32 @@ export const EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE: GitHubPullRequestListRespo
   pull_requests: [],
 };
 
+export const CreateGitHubPullRequestResponseSchema: z.ZodType<CreateGitHubPullRequestResponse> = z.object({
+  pull_request: GitHubPullRequestSchema,
+  linked_issue_ids: z.array(z.string()).default([]),
+}).loose();
+
+export const EMPTY_CREATE_GITHUB_PULL_REQUEST_RESPONSE: CreateGitHubPullRequestResponse = {
+  pull_request: {
+    id: "",
+    workspace_id: "",
+    repo_owner: "",
+    repo_name: "",
+    number: 0,
+    title: "",
+    state: "open",
+    html_url: "",
+    branch: null,
+    author_login: null,
+    author_avatar_url: null,
+    merged_at: null,
+    closed_at: null,
+    pr_created_at: "",
+    pr_updated_at: "",
+  },
+  linked_issue_ids: [],
+};
+
 const GitHubPullRequestReviewFileSchema: z.ZodType<GitHubPullRequestReviewFile> = z.object({
   filename: z.string().default(""),
   status: z.string().default(""),
@@ -529,7 +724,7 @@ const GitHubPullRequestReviewFileSchema: z.ZodType<GitHubPullRequestReviewFile> 
   previous_filename: z.string().optional(),
 }).loose();
 
-const GitHubPullRequestReviewCommentSchema: z.ZodType<GitHubPullRequestReviewComment> = z.object({
+export const GitHubPullRequestReviewCommentSchema: z.ZodType<GitHubPullRequestReviewComment> = z.object({
   id: z.number().default(0),
   path: z.string().default(""),
   body: z.string().default(""),
@@ -545,6 +740,27 @@ const GitHubPullRequestReviewCommentSchema: z.ZodType<GitHubPullRequestReviewCom
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();
+
+export const EMPTY_GITHUB_PULL_REQUEST_REVIEW_COMMENT: GitHubPullRequestReviewComment = {
+  id: 0,
+  path: "",
+  body: "",
+  user_login: "",
+  html_url: "",
+  diff_hunk: "",
+  created_at: "",
+  updated_at: "",
+};
+
+export const GitHubPullRequestReviewResolutionSchema: z.ZodType<GitHubPullRequestReviewResolution> = z.object({
+  comment_id: z.number().default(0),
+  resolved: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_GITHUB_PULL_REQUEST_REVIEW_RESOLUTION: GitHubPullRequestReviewResolution = {
+  comment_id: 0,
+  resolved: false,
+};
 
 const GitHubPullRequestReviewSummarySchema: z.ZodType<GitHubPullRequestReviewSummary> = z.object({
   id: z.number().default(0),

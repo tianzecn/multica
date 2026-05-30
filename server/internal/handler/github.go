@@ -202,6 +202,25 @@ func projectPullRequestRowToResponse(p db.ListPullRequestsByProjectRow) GitHubPu
 	}
 }
 
+func uuidListToStrings(ids []pgtype.UUID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id.Valid {
+			out = append(out, uuidToString(id))
+		}
+	}
+	return out
+}
+
+func (h *Handler) listProjectIDsForPullRequest(ctx context.Context, prID pgtype.UUID) []string {
+	ids, err := h.Queries.ListProjectIDsForPullRequest(ctx, prID)
+	if err != nil {
+		slog.Warn("github: list project ids for pull request failed", "err", err, "pull_request_id", uuidToString(prID))
+		return nil
+	}
+	return uuidListToStrings(ids)
+}
+
 // aggregateChecksConclusion collapses the per-PR check_suite counts into a
 // single status surfaced to the UI:
 //   - any failed-class suite wins ("failed");
@@ -813,12 +832,18 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 		}
 	}
 
-	// Broadcast PR change to the workspace so any open issue detail page
-	// re-queries its PR list.
-	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
+	projectIDs := h.listProjectIDsForPullRequest(ctx, pr.ID)
+	payload := map[string]any{
 		"pull_request":     resp,
+		"project_ids":      projectIDs,
 		"linked_issue_ids": linkedIssueIDs,
-	})
+	}
+	if len(projectIDs) == 1 {
+		payload["project_id"] = projectIDs[0]
+	}
+	// Broadcast PR change to the workspace so any open issue detail or
+	// Project review page re-queries its PR list.
+	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", payload)
 }
 
 // ── check_suite webhook ────────────────────────────────────────────────────
@@ -891,6 +916,7 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 
 	affectedWorkspaces := map[string]struct{}{}
 	affectedIssues := map[string]struct{}{}
+	affectedProjects := map[string]struct{}{}
 	for _, prRef := range p.CheckSuite.PullRequests {
 		// Scope the lookup to the installation's workspace. The
 		// (workspace_id, repo_owner, repo_name, pr_number) tuple is the
@@ -935,6 +961,9 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 				affectedIssues[uuidToString(id)] = struct{}{}
 			}
 		}
+		for _, id := range h.listProjectIDsForPullRequest(ctx, pr.ID) {
+			affectedProjects[id] = struct{}{}
+		}
 	}
 
 	// Broadcast on the existing event so the issue page just re-queries
@@ -946,9 +975,18 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 		for id := range affectedIssues {
 			linked = append(linked, id)
 		}
-		h.publish(protocol.EventPullRequestUpdated, ws, "system", "", map[string]any{
+		projects := make([]string, 0, len(affectedProjects))
+		for id := range affectedProjects {
+			projects = append(projects, id)
+		}
+		payload := map[string]any{
 			"linked_issue_ids": linked,
-		})
+			"project_ids":      projects,
+		}
+		if len(projects) == 1 {
+			payload["project_id"] = projects[0]
+		}
+		h.publish(protocol.EventPullRequestUpdated, ws, "system", "", payload)
 	}
 }
 

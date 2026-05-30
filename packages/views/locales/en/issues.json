@@ -132,6 +132,7 @@
     "not_found": "This issue does not exist or has been deleted in this workspace.",
     "breadcrumb_project_unknown": "Unknown project",
     "back_to_issues": "Back to Issues",
+    "dirty_snapshot_confirm": "This Project working tree has uncommitted changes. Continue by creating a Multica safety snapshot first?",
     "title_placeholder": "Issue title",
     "desc_placeholder": "Add description...",
     "sub_issues_label": "Sub-issues",

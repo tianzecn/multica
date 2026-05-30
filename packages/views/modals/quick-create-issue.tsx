@@ -30,6 +30,7 @@ import type { Agent, Squad } from "@multica/core/types";
 import { ActorAvatar } from "../common/actor-avatar";
 import { PillButton } from "../common/pill-button";
 import { ProjectPicker } from "../projects/components/project-picker";
+import { useProjectDirtyWorktreeConsent } from "../projects/use-project-dirty-worktree-consent";
 import { canAssignAgent } from "../issues/components/pickers/assignee-picker";
 import {
   PropertyPicker,
@@ -236,6 +237,11 @@ export function AgentCreatePanel({
     [selectedRuntime?.metadata],
   );
   const versionBlocked = versionCheck.state !== "ok";
+  const { confirmProjectDirtyContinue } = useProjectDirtyWorktreeConsent({
+    projectId,
+    runtimeId: selectedAgent?.runtime_id,
+    message: t(($) => $.create_issue.agent.dirty_snapshot_confirm),
+  });
 
   const initialPrompt = (data?.prompt as string) || promptDraft;
   // The editor is uncontrolled — we read the latest markdown via the ref at
@@ -274,12 +280,17 @@ export function AgentCreatePanel({
     setSubmitting(true);
     setError(null);
     try {
+      const dirtyChoice = await confirmProjectDirtyContinue();
+      if (!dirtyChoice.proceed) return;
       await api.quickCreateIssue({
         ...(actor.type === "agent"
           ? { agent_id: actor.id }
           : { squad_id: actor.id }),
         prompt: md,
         project_id: projectId ?? undefined,
+        ...(dirtyChoice.projectContinueOnDirty
+          ? { project_continue_on_dirty: true }
+          : {}),
       });
       setLastActor(actor.type, actor.id);
       setLastProjectId(projectId);

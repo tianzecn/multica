@@ -530,12 +530,22 @@ export function useCreateComment(issueId: string) {
       type,
       parentId,
       attachmentIds,
+      projectContinueOnDirty,
     }: {
       content: string;
       type?: string;
       parentId?: string;
       attachmentIds?: string[];
-    }) => api.createComment(issueId, content, type, parentId, attachmentIds),
+      projectContinueOnDirty?: boolean;
+    }) =>
+      api.createComment(
+        issueId,
+        content,
+        type,
+        parentId,
+        attachmentIds,
+        projectContinueOnDirty,
+      ),
     onSuccess: (comment) => {
       const entry: TimelineEntry = {
         type: "comment",

@@ -32,6 +32,7 @@ func BuildPrompt(task Task, provider string) string {
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). `multica issue comment list %s --output json` returns all comments for the issue (server caps at 2000). On long-running issues use `--recent 20 --output json` to read the 20 most recently active threads, then page older threads via the stderr `Next thread cursor: ...` line and the matching `--before` / `--before-id` until you have enough history. `--since <RFC3339>` is still available for incremental polling and may combine with `--recent`.\n", task.IssueID)
+	b.WriteString(projectGitWorkflowInstructions(task))
 	return b.String()
 }
 
@@ -148,6 +149,7 @@ func buildCommentPrompt(task Task, provider string) string {
 	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then decide how to proceed.\n\n", task.IssueID)
 	fmt.Fprintf(&b, "For comment history, read the triggering thread first: `multica issue comment list %s --thread %s --tail 30 --output json` returns the root + the 30 most recent replies in that thread (root is always included, even at `--tail 0`, so you keep the \"what is this about\" context without dragging hundreds of replies into your prompt). If 30 replies aren't enough, walk older replies in the same thread one page at a time by passing the stderr `Next reply cursor: --before <ts> --before-id <reply-id>` line back as `--before <ts> --before-id <reply-id>` on the next call. If you also need cross-thread background, `multica issue comment list %s --recent 20 --output json` pulls the 20 most recently active threads on the issue; under `--recent` the same `--before` / `--before-id` flags walk older *threads* (stderr label: `Next thread cursor`) instead of older replies. Avoid the unfiltered `--output json` form on long-running issues; it dumps the full flat timeline (cap 2000) and wastes context. `--since <RFC3339>` is still available for incremental polling and may combine with `--thread --tail` or `--recent`.\n\n", task.IssueID, task.TriggerCommentID, task.IssueID)
+	b.WriteString(projectGitWorkflowInstructions(task))
 	b.WriteString(execenv.BuildCommentReplyInstructions(provider, task.IssueID, task.TriggerCommentID))
 	return b.String()
 }
@@ -166,6 +168,7 @@ func buildChatPrompt(task Task) string {
 		b.WriteString("If you create a Multica issue from this conversation, pass ")
 		fmt.Fprintf(&b, "`--project %q` so the issue lands in this project unless the user explicitly asks for a different project.\n\n", task.ProjectID)
 	}
+	b.WriteString(projectGitWorkflowInstructions(task))
 	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
 	// List attachments by id + filename so the agent can fetch them via
 	// the CLI. We deliberately do NOT inline the URL: chat attachments
@@ -220,5 +223,28 @@ func buildAutopilotPrompt(task Task) string {
 		b.WriteString("Complete the instructions above.\n")
 	}
 	b.WriteString("Do not run `multica issue get`; this run does not have an issue ID.\n")
+	b.WriteString(projectGitWorkflowInstructions(task))
+	return b.String()
+}
+
+func projectGitWorkflowInstructions(task Task) string {
+	if task.ProjectID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\nProject workspace Git workflow:\n")
+	b.WriteString("- Work in the Project local working directory that Multica provides for this run.\n")
+	if task.ProjectScopePath != "" {
+		fmt.Fprintf(&b, "- Project scope path: `%s`; focus changes and verification there unless the task clearly needs another part of the repository.\n", task.ProjectScopePath)
+	}
+	if len(task.ProjectVerificationCommands) > 0 {
+		b.WriteString("- Suggested Project verification commands:\n")
+		for _, command := range task.ProjectVerificationCommands {
+			fmt.Fprintf(&b, "  - `%s`\n", command)
+		}
+	}
+	b.WriteString("- Leave code changes uncommitted by default so the user can review the diff in Multica.\n")
+	b.WriteString("- Do NOT run `git commit`, `git push`, `gh pr create`, or otherwise publish remote changes unless the user's task explicitly asks you to commit, push, sync, or create a PR.\n")
+	b.WriteString("- Reading Git state with status, diff, log, or fetch is fine; commit/push/sync are explicit user actions.\n")
 	return b.String()
 }

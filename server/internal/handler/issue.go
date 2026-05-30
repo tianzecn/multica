@@ -19,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -1440,10 +1441,11 @@ func (h *Handler) ChildIssueProgress(w http.ResponseWriter, r *http.Request) {
 // instead of letting it default. The frontend remembers the user's last
 // pick per workspace, so frequent users skip retyping "in project X".
 type QuickCreateIssueRequest struct {
-	AgentID   string `json:"agent_id,omitempty"`
-	SquadID   string `json:"squad_id,omitempty"`
-	Prompt    string `json:"prompt"`
-	ProjectID string `json:"project_id,omitempty"`
+	AgentID                string `json:"agent_id,omitempty"`
+	SquadID                string `json:"squad_id,omitempty"`
+	Prompt                 string `json:"prompt"`
+	ProjectID              string `json:"project_id,omitempty"`
+	ProjectContinueOnDirty bool   `json:"project_continue_on_dirty,omitempty"`
 }
 
 // QuickCreateIssueResponse echoes the queued task id so the frontend can
@@ -1590,7 +1592,7 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		projectUUID = pid
 	}
 
-	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, projectUUID)
+	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, projectUUID, req.ProjectContinueOnDirty)
 	if err != nil {
 		slog.Warn("quick-create enqueue failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue quick-create task")
@@ -1700,6 +1702,9 @@ type CreateIssueRequest struct {
 	StartDate     *string  `json:"start_date"`
 	DueDate       *string  `json:"due_date"`
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
+	// ProjectContinueOnDirty is explicit user consent to let the daemon create
+	// a Multica safety snapshot before starting project-bound work.
+	ProjectContinueOnDirty bool `json:"project_continue_on_dirty,omitempty"`
 	// OriginType / OriginID stamp the new issue with its provenance so
 	// platform-internal flows can deterministically locate it later. Only
 	// trusted callers should set these — currently the daemon CLI passes
@@ -1999,13 +2004,14 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Enqueue agent task when an agent-assigned issue is created.
 	if issue.AssigneeType.Valid && issue.AssigneeID.Valid {
+		taskOpts := service.EnqueueIssueTaskOptions{ProjectContinueOnDirty: req.ProjectContinueOnDirty}
 		if h.shouldEnqueueAgentTask(r.Context(), issue) {
-			h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
+			h.TaskService.EnqueueTaskForIssueWithOptions(r.Context(), issue, taskOpts)
 		}
 		// Squad assigned at creation: trigger the squad leader (skipping
 		// backlog, same parking-lot semantics as agent assignment).
 		if h.shouldEnqueueSquadLeaderOnAssign(r.Context(), issue) {
-			h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, creatorType, actualCreatorID)
+			h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, creatorType, actualCreatorID, taskOpts)
 		}
 	}
 
@@ -2029,6 +2035,9 @@ type UpdateIssueRequest struct {
 	// editor's preview Eye keeps working past a refresh. Existing bindings
 	// are idempotent — re-sending the same id is a no-op.
 	AttachmentIDs []string `json:"attachment_ids"`
+	// ProjectContinueOnDirty is explicit user consent to let the daemon create
+	// a Multica safety snapshot before starting project-bound work.
+	ProjectContinueOnDirty bool `json:"project_continue_on_dirty,omitempty"`
 }
 
 func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
@@ -2248,17 +2257,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Reconcile task queue when assignee changes.
+	taskOpts := service.EnqueueIssueTaskOptions{ProjectContinueOnDirty: req.ProjectContinueOnDirty}
 	if assigneeChanged {
 		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 
 		if h.shouldEnqueueAgentTask(r.Context(), issue) {
-			h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
+			h.TaskService.EnqueueTaskForIssueWithOptions(r.Context(), issue, taskOpts)
 		}
 
 		// Squad assign: trigger the squad leader, respecting the backlog
 		// parking-lot rule used by agent assignment.
 		if h.shouldEnqueueSquadLeaderOnAssign(r.Context(), issue) {
-			h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID)
+			h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID, taskOpts)
 		}
 	}
 
@@ -2268,10 +2278,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if statusChanged && !assigneeChanged && actorType == "member" &&
 		prevIssue.Status == "backlog" && issue.Status != "done" && issue.Status != "cancelled" {
 		if h.isAgentAssigneeReady(r.Context(), issue) {
-			h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
+			h.TaskService.EnqueueTaskForIssueWithOptions(r.Context(), issue, taskOpts)
 		}
 		if h.isSquadLeaderReady(r.Context(), issue) {
-			h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID)
+			h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID, taskOpts)
 		}
 	}
 
@@ -2680,13 +2690,14 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"priority_changed": priorityChanged,
 		})
 
+		taskOpts := service.EnqueueIssueTaskOptions{ProjectContinueOnDirty: req.Updates.ProjectContinueOnDirty}
 		if assigneeChanged {
 			h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 			if h.shouldEnqueueAgentTask(r.Context(), issue) {
-				h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
+				h.TaskService.EnqueueTaskForIssueWithOptions(r.Context(), issue, taskOpts)
 			}
 			if h.shouldEnqueueSquadLeaderOnAssign(r.Context(), issue) {
-				h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID)
+				h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID, taskOpts)
 			}
 		}
 
@@ -2694,10 +2705,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if statusChanged && !assigneeChanged && actorType == "member" &&
 			prevIssue.Status == "backlog" && issue.Status != "done" && issue.Status != "cancelled" {
 			if h.isAgentAssigneeReady(r.Context(), issue) {
-				h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
+				h.TaskService.EnqueueTaskForIssueWithOptions(r.Context(), issue, taskOpts)
 			}
 			if h.isSquadLeaderReady(r.Context(), issue) {
-				h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID)
+				h.enqueueSquadLeaderTask(r.Context(), issue, pgtype.UUID{}, actorType, actorID, taskOpts)
 			}
 		}
 

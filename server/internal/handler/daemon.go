@@ -236,7 +236,7 @@ func workspaceReposResponse(workspaceID string, raw []byte, settingsRaw []byte) 
 	return resp
 }
 
-func (h *Handler) projectBaseBranchForClaim(ctx context.Context, project db.Project) string {
+func (h *Handler) projectWorkspaceConfigForClaim(ctx context.Context, project db.Project) ProjectWorkspaceConfigResponse {
 	config := h.defaultProjectWorkspaceConfig(project)
 	stored, err := h.Queries.GetProjectWorkspaceConfig(ctx, db.GetProjectWorkspaceConfigParams{
 		ProjectID: project.ID, WorkspaceID: project.WorkspaceID,
@@ -249,7 +249,15 @@ func (h *Handler) projectBaseBranchForClaim(ctx context.Context, project db.Proj
 			"error", err,
 		)
 	}
-	return config.BaseBranch
+	return config
+}
+
+func applyProjectWorkspaceConfigForClaim(resp *AgentTaskResponse, config ProjectWorkspaceConfigResponse) {
+	resp.ProjectBaseBranch = config.BaseBranch
+	resp.ProjectScopePath = config.ScopePath
+	if len(config.VerificationCommands) > 0 {
+		resp.ProjectVerificationCommands = config.VerificationCommands
+	}
 }
 
 func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
@@ -1203,7 +1211,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				resp.ProjectID = uuidToString(issue.ProjectID)
 				if proj, err := h.Queries.GetProject(r.Context(), issue.ProjectID); err == nil {
 					resp.ProjectTitle = proj.Title
-					resp.ProjectBaseBranch = h.projectBaseBranchForClaim(r.Context(), proj)
+					applyProjectWorkspaceConfigForClaim(&resp, h.projectWorkspaceConfigForClaim(r.Context(), proj))
 				}
 				if rows := h.listProjectResourcesForProject(r.Context(), issue.ProjectID); len(rows) > 0 {
 					out, repos := projectResourcesForClaim(rows)
@@ -1288,7 +1296,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				resp.ProjectID = uuidToString(cs.ProjectID)
 				if proj, err := h.Queries.GetProject(r.Context(), cs.ProjectID); err == nil {
 					resp.ProjectTitle = proj.Title
-					resp.ProjectBaseBranch = h.projectBaseBranchForClaim(r.Context(), proj)
+					applyProjectWorkspaceConfigForClaim(&resp, h.projectWorkspaceConfigForClaim(r.Context(), proj))
 				}
 				if rows := h.listProjectResourcesForProject(r.Context(), cs.ProjectID); len(rows) > 0 {
 					out, repos := projectResourcesForClaim(rows)
@@ -1411,7 +1419,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					resp.ProjectID = qc.ProjectID
 					if proj, err := h.Queries.GetProject(r.Context(), projectUUID); err == nil {
 						resp.ProjectTitle = proj.Title
-						resp.ProjectBaseBranch = h.projectBaseBranchForClaim(r.Context(), proj)
+						applyProjectWorkspaceConfigForClaim(&resp, h.projectWorkspaceConfigForClaim(r.Context(), proj))
 					}
 					if rows := h.listProjectResourcesForProject(r.Context(), projectUUID); len(rows) > 0 {
 						out, repos := projectResourcesForClaim(rows)
@@ -1597,6 +1605,10 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.recordProjectAgentTaskActivity(r, task, "project_agent_task_started", map[string]any{
+		"status": task.Status,
+	})
+
 	slog.Info("task started", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task))
 }
@@ -1646,7 +1658,8 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
+	originalTask, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
 		return
 	}
 
@@ -1656,8 +1669,11 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, _ := json.Marshal(req)
-	task, err := h.TaskService.CompleteTask(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir)
+	storedWorkDir := taskStoredWorkDir(originalTask, req.WorkDir)
+	resultPayload := req
+	resultPayload.WorkDir = storedWorkDir
+	result, _ := json.Marshal(resultPayload)
+	task, err := h.TaskService.CompleteTask(r.Context(), parseUUID(taskID), result, req.SessionID, storedWorkDir)
 	if err != nil {
 		slog.Warn("complete task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1665,6 +1681,12 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.emitIssueExecutedOnFirstCompletion(r, task)
+	h.recordProjectAgentTaskActivity(r, task, "project_agent_task_completed", map[string]any{
+		"status":      task.Status,
+		"has_pr_url":  strings.TrimSpace(req.PRURL) != "",
+		"has_output":  strings.TrimSpace(req.Output) != "",
+		"has_workdir": strings.TrimSpace(req.WorkDir) != "",
+	})
 
 	// Best-effort revoke of any agent task token minted at claim time.
 	// The token would naturally expire at the 24h watermark and is also
@@ -1792,7 +1814,8 @@ func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
+	originalTask, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
 		return
 	}
 
@@ -1802,12 +1825,20 @@ func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.TaskService.FailTask(r.Context(), parseUUID(taskID), req.Error, req.SessionID, req.WorkDir, req.FailureReason)
+	storedWorkDir := taskStoredWorkDir(originalTask, req.WorkDir)
+	task, err := h.TaskService.FailTask(r.Context(), parseUUID(taskID), req.Error, req.SessionID, storedWorkDir, req.FailureReason)
 	if err != nil {
 		slog.Warn("fail task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	h.recordProjectAgentTaskActivity(r, task, "project_agent_task_failed", map[string]any{
+		"status":         task.Status,
+		"failure_reason": req.FailureReason,
+		"has_error":      strings.TrimSpace(req.Error) != "",
+		"has_workdir":    strings.TrimSpace(req.WorkDir) != "",
+	})
 
 	// Best-effort revoke of the mat_ task token minted at claim. Same
 	// rationale as CompleteTask — eager deletion shrinks the post-
@@ -1818,6 +1849,71 @@ func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("task failed", "task_id", taskID, "agent_id", uuidToString(task.AgentID), "task_error", req.Error, "failure_reason", req.FailureReason)
 	writeJSON(w, http.StatusOK, taskToResponse(*task))
+}
+
+func (h *Handler) recordProjectAgentTaskActivity(r *http.Request, task *db.AgentTaskQueue, action string, details map[string]any) {
+	if task == nil || !task.ProjectID.Valid {
+		return
+	}
+	project, err := h.Queries.GetProject(r.Context(), task.ProjectID)
+	if err != nil {
+		slog.Warn("project agent activity: failed to load project", "project_id", uuidToString(task.ProjectID), "task_id", uuidToString(task.ID), "error", err)
+		return
+	}
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["project_id"] = uuidToString(task.ProjectID)
+	details["task_id"] = uuidToString(task.ID)
+	details["agent_id"] = uuidToString(task.AgentID)
+	if runtimeID := uuidToString(task.RuntimeID); runtimeID != "" {
+		details["runtime_id"] = runtimeID
+	}
+	if issueID := uuidToString(task.IssueID); issueID != "" {
+		details["issue_id"] = issueID
+	}
+	if chatSessionID := uuidToString(task.ChatSessionID); chatSessionID != "" {
+		details["chat_session_id"] = chatSessionID
+	}
+	if autopilotRunID := uuidToString(task.AutopilotRunID); autopilotRunID != "" {
+		details["autopilot_run_id"] = autopilotRunID
+	}
+	details["task_kind"] = computeTaskKind(*task)
+
+	raw, err := json.Marshal(details)
+	if err != nil {
+		raw = []byte(`{}`)
+	}
+	activity, err := h.Queries.CreateActivity(r.Context(), db.CreateActivityParams{
+		WorkspaceID: project.WorkspaceID,
+		IssueID:     pgtype.UUID{Valid: false},
+		ActorType:   pgtype.Text{String: "agent", Valid: true},
+		ActorID:     task.AgentID,
+		Action:      action,
+		Details:     raw,
+	})
+	if err != nil {
+		slog.Warn("project agent activity: failed to create activity", "project_id", uuidToString(task.ProjectID), "task_id", uuidToString(task.ID), "action", action, "error", err)
+		return
+	}
+	h.publish(protocol.EventActivityCreated, uuidToString(project.WorkspaceID), "agent", uuidToString(task.AgentID), map[string]any{
+		"project_id": uuidToString(task.ProjectID),
+		"entry":      activityToEntry(activity),
+	})
+}
+
+func taskStoredWorkDir(task db.AgentTaskQueue, reportedWorkDir string) string {
+	if strings.TrimSpace(reportedWorkDir) == "" {
+		return ""
+	}
+	if task.ProjectID.Valid {
+		return projectTaskWorkDirMarker(uuidToString(task.ProjectID))
+	}
+	return reportedWorkDir
+}
+
+func projectTaskWorkDirMarker(projectID string) string {
+	return "project:" + projectID
 }
 
 // ---------------------------------------------------------------------------

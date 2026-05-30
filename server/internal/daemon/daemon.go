@@ -140,6 +140,9 @@ type Daemon struct {
 	projectTaskLocksMu sync.Mutex
 	projectTaskLocks   map[string]chan struct{} // project_id -> single writable task slot
 
+	projectFileLocksMu sync.Mutex
+	projectFileLocks   map[string]chan struct{} // worktree + relative path -> single Multica file write slot
+
 	// bgSyncs tracks background goroutines started by registerTaskRepos so
 	// callers (notably tests using t.TempDir-backed cache roots) can wait for
 	// them to drain before tearing the daemon down. Without this the bg
@@ -2289,7 +2292,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	resumeSessionID := task.PriorSessionID
 	if projectWorkDir != "" {
 		priorWorkDir = ""
-		if task.PriorWorkDir != projectWorkDir {
+		if task.PriorWorkDir != projectWorkDir && task.PriorWorkDir != projectTaskWorkDirMarker(task.ProjectID) {
 			resumeSessionID = ""
 		}
 	}
@@ -2357,9 +2360,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if projectWorkDir != "" {
 		executionCwd = projectWorkDir
 	}
-	// NOTE: No cleanup — workdir is preserved for reuse by future tasks on
-	// the same (agent, issue) pair. The work_dir path is stored in DB on
-	// task completion and passed back via PriorWorkDir on the next claim.
+	// NOTE: No cleanup — workdir is preserved for reuse by future tasks. For
+	// Project workspaces, the server stores only a project:<id> marker; the
+	// absolute path stays in the daemon profile.
 
 	prompt := BuildPrompt(task, provider)
 
@@ -2383,14 +2386,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentToken = d.client.Token()
 	}
 	agentEnv := map[string]string{
-		"MULTICA_TOKEN":        agentToken,
-		"MULTICA_SERVER_URL":   d.cfg.ServerBaseURL,
-		"MULTICA_DAEMON_PORT":  fmt.Sprintf("%d", d.cfg.HealthPort),
-		"MULTICA_WORKSPACE_ID": task.WorkspaceID,
-		"MULTICA_AGENT_NAME":   agentName,
-		"MULTICA_AGENT_ID":     task.AgentID,
-		"MULTICA_TASK_ID":      task.ID,
-		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
+		"MULTICA_TOKEN":                agentToken,
+		"MULTICA_SERVER_URL":           d.cfg.ServerBaseURL,
+		"MULTICA_DAEMON_PORT":          fmt.Sprintf("%d", d.cfg.HealthPort),
+		"MULTICA_WORKSPACE_ID":         task.WorkspaceID,
+		"MULTICA_AGENT_NAME":           agentName,
+		"MULTICA_AGENT_ID":             task.AgentID,
+		"MULTICA_TASK_ID":              task.ID,
+		"MULTICA_TASK_SLOT":            strconv.Itoa(slot),
+		"MULTICA_TASK_CONTEXT_WORKDIR": env.WorkDir,
 	}
 	if task.AutopilotRunID != "" {
 		agentEnv["MULTICA_AUTOPILOT_RUN_ID"] = task.AutopilotRunID
@@ -2398,6 +2402,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if projectWorkDir != "" {
 		agentEnv["MULTICA_PROJECT_WORKDIR"] = projectWorkDir
 		agentEnv["MULTICA_PROJECT_BRANCH"] = projectBranch
+	}
+	if task.ProjectID != "" {
+		agentEnv["MULTICA_PROJECT_RESOURCES_FILE"] = filepath.Join(env.WorkDir, ".multica", "project", "resources.json")
 	}
 	if task.AutopilotID != "" {
 		agentEnv["MULTICA_AUTOPILOT_ID"] = task.AutopilotID

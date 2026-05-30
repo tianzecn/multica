@@ -9,7 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,12 +22,15 @@ const githubPRReviewBodyLimit = 4 << 20
 
 type GitHubPRReviewFetcher interface {
 	FetchPullRequestReview(ctx context.Context, target GitHubPRReviewTarget) (GitHubPullRequestReviewData, error)
+	CreatePullRequestReviewComment(ctx context.Context, target GitHubPRReviewTarget, req CreateGitHubPullRequestReviewCommentRequest) (GitHubPullRequestReviewCommentResponse, error)
+	ResolvePullRequestReviewThread(ctx context.Context, target GitHubPRReviewTarget, commentID int64) (GitHubPullRequestReviewResolutionResponse, error)
 }
 
 type GitHubPRReviewTarget struct {
-	RepoOwner string
-	RepoName  string
-	Number    int32
+	InstallationID int64
+	RepoOwner      string
+	RepoName       string
+	Number         int32
 }
 
 type GitHubPullRequestReviewData struct {
@@ -40,6 +43,20 @@ type GitHubPullRequestReviewData struct {
 type GitHubPullRequestReviewResponse struct {
 	PullRequest GitHubPullRequestResponse `json:"pull_request"`
 	GitHubPullRequestReviewData
+}
+
+type CreateGitHubPullRequestReviewCommentRequest struct {
+	Body        string `json:"body"`
+	Path        string `json:"path,omitempty"`
+	CommitID    string `json:"commit_id,omitempty"`
+	Line        *int32 `json:"line,omitempty"`
+	Side        string `json:"side,omitempty"`
+	InReplyToID *int64 `json:"in_reply_to_id,omitempty"`
+}
+
+type GitHubPullRequestReviewResolutionResponse struct {
+	CommentID int64 `json:"comment_id"`
+	Resolved  bool  `json:"resolved"`
 }
 
 type GitHubPullRequestReviewFileResponse struct {
@@ -82,34 +99,28 @@ type GitHubPullRequestReviewSummaryResponse struct {
 }
 
 type envGitHubPRReviewFetcher struct {
-	client     *http.Client
-	token      string
-	apiBaseURL string
-	graphQLURL string
+	client      *http.Client
+	token       string
+	apiBaseURL  string
+	graphQLURL  string
+	tokenSource GitHubInstallationTokenSource
 }
 
 func NewEnvGitHubPRReviewFetcher() GitHubPRReviewFetcher {
-	token := strings.TrimSpace(os.Getenv("GITHUB_PR_REVIEW_TOKEN"))
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
-	}
-	apiBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("GITHUB_API_BASE_URL")), "/")
-	if apiBaseURL == "" {
-		apiBaseURL = "https://api.github.com"
-	}
-	graphQLURL := strings.TrimSpace(os.Getenv("GITHUB_GRAPHQL_URL"))
-	if graphQLURL == "" {
-		graphQLURL = "https://api.github.com/graphql"
-	}
 	return &envGitHubPRReviewFetcher{
-		client:     &http.Client{Timeout: 30 * time.Second},
-		token:      token,
-		apiBaseURL: apiBaseURL,
-		graphQLURL: graphQLURL,
+		client:      &http.Client{Timeout: 30 * time.Second},
+		token:       githubFallbackToken("GITHUB_PR_REVIEW_TOKEN"),
+		apiBaseURL:  githubAPIBaseURL(),
+		graphQLURL:  githubGraphQLURL(),
+		tokenSource: NewEnvGitHubInstallationTokenSource(),
 	}
 }
 
 func (f *envGitHubPRReviewFetcher) FetchPullRequestReview(ctx context.Context, target GitHubPRReviewTarget) (GitHubPullRequestReviewData, error) {
+	token, err := f.authToken(ctx, target.InstallationID)
+	if err != nil {
+		return GitHubPullRequestReviewData{}, err
+	}
 	base := fmt.Sprintf(
 		"%s/repos/%s/%s/pulls/%d",
 		f.apiBaseURL,
@@ -117,21 +128,21 @@ func (f *envGitHubPRReviewFetcher) FetchPullRequestReview(ctx context.Context, t
 		url.PathEscape(target.RepoName),
 		target.Number,
 	)
-	files, err := githubFetchAll[githubPRFilePayload](ctx, f.client, f.token, base+"/files")
+	files, err := githubFetchAll[githubPRFilePayload](ctx, f.client, token, base+"/files")
 	if err != nil {
 		return GitHubPullRequestReviewData{}, err
 	}
-	comments, err := githubFetchAll[githubPRReviewCommentPayload](ctx, f.client, f.token, base+"/comments")
+	comments, err := githubFetchAll[githubPRReviewCommentPayload](ctx, f.client, token, base+"/comments")
 	if err != nil {
 		return GitHubPullRequestReviewData{}, err
 	}
-	reviews, err := githubFetchAll[githubPRReviewPayload](ctx, f.client, f.token, base+"/reviews")
+	reviews, err := githubFetchAll[githubPRReviewPayload](ctx, f.client, token, base+"/reviews")
 	if err != nil {
 		return GitHubPullRequestReviewData{}, err
 	}
 	resolvedByCommentID := map[int64]*bool{}
-	if strings.TrimSpace(f.token) != "" {
-		if resolved, err := githubFetchPRReviewThreadResolution(ctx, f.client, f.token, f.graphQLURL, target); err == nil {
+	if strings.TrimSpace(token) != "" {
+		if resolved, err := githubFetchPRReviewThreadResolution(ctx, f.client, token, f.graphQLURL, target); err == nil {
 			resolvedByCommentID = resolved
 		}
 	}
@@ -144,35 +155,86 @@ func (f *envGitHubPRReviewFetcher) FetchPullRequestReview(ctx context.Context, t
 	}, nil
 }
 
-func (h *Handler) GetProjectPullRequestReview(w http.ResponseWriter, r *http.Request) {
-	project, ok := h.loadProjectForResource(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
-	prID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "pullRequestId"), "pull request id")
-	if !ok {
-		return
-	}
-	pr, err := h.Queries.GetPullRequestByProject(r.Context(), db.GetPullRequestByProjectParams{
-		ProjectID:     project.ID,
-		PullRequestID: prID,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "pull request not found")
-		return
-	}
+func (f *envGitHubPRReviewFetcher) CreatePullRequestReviewComment(ctx context.Context, target GitHubPRReviewTarget, req CreateGitHubPullRequestReviewCommentRequest) (GitHubPullRequestReviewCommentResponse, error) {
+	token, err := resolveGitHubAuthToken(ctx, f.tokenSource, f.token, target.InstallationID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load pull request")
+		return GitHubPullRequestReviewCommentResponse{}, err
+	}
+	if strings.TrimSpace(token) == "" {
+		return GitHubPullRequestReviewCommentResponse{}, errors.New("github token is required to create review comments")
+	}
+	base := fmt.Sprintf(
+		"%s/repos/%s/%s/pulls/%d/comments",
+		f.apiBaseURL,
+		url.PathEscape(target.RepoOwner),
+		url.PathEscape(target.RepoName),
+		target.Number,
+	)
+	payload := map[string]any{
+		"body": strings.TrimSpace(req.Body),
+	}
+	if req.InReplyToID != nil {
+		payload["in_reply_to"] = *req.InReplyToID
+	} else {
+		payload["commit_id"] = strings.TrimSpace(req.CommitID)
+		payload["path"] = strings.TrimSpace(req.Path)
+		payload["line"] = req.Line
+		payload["side"] = strings.TrimSpace(req.Side)
+	}
+	var comment githubPRReviewCommentPayload
+	if err := githubPostJSON(ctx, f.client, token, base, payload, &comment); err != nil {
+		return GitHubPullRequestReviewCommentResponse{}, err
+	}
+	items := githubPRReviewCommentsToResponse([]githubPRReviewCommentPayload{comment}, nil)
+	if len(items) == 0 {
+		return GitHubPullRequestReviewCommentResponse{}, errors.New("github returned an empty review comment response")
+	}
+	return items[0], nil
+}
+
+func (f *envGitHubPRReviewFetcher) ResolvePullRequestReviewThread(ctx context.Context, target GitHubPRReviewTarget, commentID int64) (GitHubPullRequestReviewResolutionResponse, error) {
+	token, err := resolveGitHubAuthToken(ctx, f.tokenSource, f.token, target.InstallationID)
+	if err != nil {
+		return GitHubPullRequestReviewResolutionResponse{}, err
+	}
+	if strings.TrimSpace(token) == "" {
+		return GitHubPullRequestReviewResolutionResponse{}, errors.New("github token is required to resolve review threads")
+	}
+	threads, err := githubFetchPRReviewThreadMetadata(ctx, f.client, token, f.graphQLURL, target)
+	if err != nil {
+		return GitHubPullRequestReviewResolutionResponse{}, err
+	}
+	thread, ok := threads[commentID]
+	if !ok || thread.ThreadID == "" {
+		return GitHubPullRequestReviewResolutionResponse{}, errors.New("review thread not found for comment")
+	}
+	if thread.Resolved {
+		return GitHubPullRequestReviewResolutionResponse{CommentID: commentID, Resolved: true}, nil
+	}
+	if err := githubResolvePRReviewThread(ctx, f.client, token, f.graphQLURL, thread.ThreadID); err != nil {
+		return GitHubPullRequestReviewResolutionResponse{}, err
+	}
+	return GitHubPullRequestReviewResolutionResponse{CommentID: commentID, Resolved: true}, nil
+}
+
+func (f *envGitHubPRReviewFetcher) authToken(ctx context.Context, installationID int64) (string, error) {
+	if installationID > 0 && f.tokenSource != nil && f.tokenSource.Configured() {
+		return f.tokenSource.InstallationToken(ctx, installationID)
+	}
+	return strings.TrimSpace(f.token), nil
+}
+
+func (h *Handler) GetProjectPullRequestReview(w http.ResponseWriter, r *http.Request) {
+	_, pr, ok := h.loadPullRequestForProject(w, r)
+	if !ok {
 		return
 	}
-	fetcher := h.GitHubPRReviewFetcher
-	if fetcher == nil {
-		fetcher = NewEnvGitHubPRReviewFetcher()
-	}
+	fetcher := h.githubPRReviewFetcher()
 	review, err := fetcher.FetchPullRequestReview(r.Context(), GitHubPRReviewTarget{
-		RepoOwner: pr.RepoOwner,
-		RepoName:  pr.RepoName,
-		Number:    pr.PrNumber,
+		InstallationID: pr.InstallationID,
+		RepoOwner:      pr.RepoOwner,
+		RepoName:       pr.RepoName,
+		Number:         pr.PrNumber,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -182,6 +244,143 @@ func (h *Handler) GetProjectPullRequestReview(w http.ResponseWriter, r *http.Req
 		PullRequest:                 githubPullRequestToResponse(pr),
 		GitHubPullRequestReviewData: review,
 	})
+}
+
+func (h *Handler) CreateProjectPullRequestReviewComment(w http.ResponseWriter, r *http.Request) {
+	project, pr, ok := h.loadPullRequestForProject(w, r)
+	if !ok {
+		return
+	}
+	var req CreateGitHubPullRequestReviewCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Body = strings.TrimSpace(req.Body)
+	req.Path = strings.TrimSpace(req.Path)
+	req.CommitID = strings.TrimSpace(req.CommitID)
+	req.Side = strings.ToUpper(strings.TrimSpace(req.Side))
+	if req.Side == "" {
+		req.Side = "RIGHT"
+	}
+	if req.Body == "" {
+		writeError(w, http.StatusBadRequest, "body is required")
+		return
+	}
+	if len(req.Body) > 64*1024 {
+		writeError(w, http.StatusBadRequest, "body is too large")
+		return
+	}
+	if req.InReplyToID == nil {
+		if req.Path == "" {
+			writeError(w, http.StatusBadRequest, "path is required")
+			return
+		}
+		if req.Line == nil || *req.Line <= 0 {
+			writeError(w, http.StatusBadRequest, "line is required")
+			return
+		}
+		if req.Side != "LEFT" && req.Side != "RIGHT" {
+			writeError(w, http.StatusBadRequest, "side must be LEFT or RIGHT")
+			return
+		}
+		if req.CommitID == "" {
+			req.CommitID = strings.TrimSpace(pr.HeadSha)
+		}
+		if req.CommitID == "" {
+			writeError(w, http.StatusBadRequest, "commit_id is required")
+			return
+		}
+	} else if *req.InReplyToID <= 0 {
+		writeError(w, http.StatusBadRequest, "in_reply_to_id must be positive")
+		return
+	}
+
+	comment, err := h.githubPRReviewFetcher().CreatePullRequestReviewComment(r.Context(), GitHubPRReviewTarget{
+		InstallationID: pr.InstallationID,
+		RepoOwner:      pr.RepoOwner,
+		RepoName:       pr.RepoName,
+		Number:         pr.PrNumber,
+	}, req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	h.recordProjectWorkspaceActivity(r, project.WorkspaceID, requestUserID(r), "github_pr_review_comment", map[string]any{
+		"project_id":       uuidToString(project.ID),
+		"pull_request_id":  uuidToString(pr.ID),
+		"pull_request_url": pr.HtmlUrl,
+		"repo":             pr.RepoOwner + "/" + pr.RepoName,
+		"number":           pr.PrNumber,
+		"path":             comment.Path,
+		"line":             comment.Line,
+		"comment_id":       comment.ID,
+		"comment_url":      comment.HTMLURL,
+	})
+	writeJSON(w, http.StatusCreated, comment)
+}
+
+func (h *Handler) ResolveProjectPullRequestReviewThread(w http.ResponseWriter, r *http.Request) {
+	project, pr, ok := h.loadPullRequestForProject(w, r)
+	if !ok {
+		return
+	}
+	commentID, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(r, "commentId")), 10, 64)
+	if err != nil || commentID <= 0 {
+		writeError(w, http.StatusBadRequest, "comment id must be positive")
+		return
+	}
+	resolved, err := h.githubPRReviewFetcher().ResolvePullRequestReviewThread(r.Context(), GitHubPRReviewTarget{
+		InstallationID: pr.InstallationID,
+		RepoOwner:      pr.RepoOwner,
+		RepoName:       pr.RepoName,
+		Number:         pr.PrNumber,
+	}, commentID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	h.recordProjectWorkspaceActivity(r, project.WorkspaceID, requestUserID(r), "github_pr_review_resolve", map[string]any{
+		"project_id":       uuidToString(project.ID),
+		"pull_request_id":  uuidToString(pr.ID),
+		"pull_request_url": pr.HtmlUrl,
+		"repo":             pr.RepoOwner + "/" + pr.RepoName,
+		"number":           pr.PrNumber,
+		"comment_id":       resolved.CommentID,
+		"resolved":         resolved.Resolved,
+	})
+	writeJSON(w, http.StatusOK, resolved)
+}
+
+func (h *Handler) loadPullRequestForProject(w http.ResponseWriter, r *http.Request) (db.Project, db.GithubPullRequest, bool) {
+	project, ok := h.loadProjectForResource(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return db.Project{}, db.GithubPullRequest{}, false
+	}
+	prID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "pullRequestId"), "pull request id")
+	if !ok {
+		return db.Project{}, db.GithubPullRequest{}, false
+	}
+	pr, err := h.Queries.GetPullRequestByProject(r.Context(), db.GetPullRequestByProjectParams{
+		ProjectID:     project.ID,
+		PullRequestID: prID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "pull request not found")
+		return db.Project{}, db.GithubPullRequest{}, false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load pull request")
+		return db.Project{}, db.GithubPullRequest{}, false
+	}
+	return project, pr, true
+}
+
+func (h *Handler) githubPRReviewFetcher() GitHubPRReviewFetcher {
+	if h.GitHubPRReviewFetcher != nil {
+		return h.GitHubPRReviewFetcher
+	}
+	return NewEnvGitHubPRReviewFetcher()
 }
 
 type githubPRFilePayload struct {
@@ -262,6 +461,43 @@ func githubFetchAll[T any](ctx context.Context, client *http.Client, token, endp
 	return out, nil
 }
 
+func githubPostJSON(ctx context.Context, client *http.Client, token, endpoint string, payload any, out any) error {
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(rawPayload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, githubPRReviewBodyLimit))
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(raw))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("github pull request review request failed: %s", msg)
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decode github pull request review response: %w", err)
+	}
+	return nil
+}
+
 func githubNextPage(linkHeader string) string {
 	for _, part := range strings.Split(linkHeader, ",") {
 		sections := strings.Split(strings.TrimSpace(part), ";")
@@ -280,7 +516,25 @@ func githubNextPage(linkHeader string) string {
 }
 
 func githubFetchPRReviewThreadResolution(ctx context.Context, client *http.Client, token, endpoint string, target GitHubPRReviewTarget) (map[int64]*bool, error) {
+	threads, err := githubFetchPRReviewThreadMetadata(ctx, client, token, endpoint, target)
+	if err != nil {
+		return nil, err
+	}
 	out := map[int64]*bool{}
+	for commentID, thread := range threads {
+		v := thread.Resolved
+		out[commentID] = &v
+	}
+	return out, nil
+}
+
+type githubPRReviewThreadMetadata struct {
+	ThreadID string
+	Resolved bool
+}
+
+func githubFetchPRReviewThreadMetadata(ctx context.Context, client *http.Client, token, endpoint string, target GitHubPRReviewTarget) (map[int64]githubPRReviewThreadMetadata, error) {
+	out := map[int64]githubPRReviewThreadMetadata{}
 	var cursor *string
 	for {
 		payload, _ := json.Marshal(map[string]any{
@@ -290,6 +544,7 @@ func githubFetchPRReviewThreadResolution(ctx context.Context, client *http.Clien
       reviewThreads(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
+          id
           isResolved
           comments(first: 100) {
             nodes { databaseId }
@@ -331,13 +586,14 @@ func githubFetchPRReviewThreadResolution(ctx context.Context, client *http.Clien
 		}
 		threads := decoded.Data.Repository.PullRequest.ReviewThreads
 		for _, thread := range threads.Nodes {
-			resolved := thread.IsResolved
 			for _, comment := range thread.Comments.Nodes {
 				if comment.DatabaseID == 0 {
 					continue
 				}
-				v := resolved
-				out[comment.DatabaseID] = &v
+				out[comment.DatabaseID] = githubPRReviewThreadMetadata{
+					ThreadID: thread.ID,
+					Resolved: thread.IsResolved,
+				}
 			}
 		}
 		if !threads.PageInfo.HasNextPage {
@@ -346,6 +602,31 @@ func githubFetchPRReviewThreadResolution(ctx context.Context, client *http.Clien
 		cursor = threads.PageInfo.EndCursor
 	}
 	return out, nil
+}
+
+func githubResolvePRReviewThread(ctx context.Context, client *http.Client, token, endpoint, threadID string) error {
+	payload := map[string]any{
+		"query": `mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}`,
+		"variables": map[string]any{"threadId": threadID},
+	}
+	var decoded githubGraphQLErrorResponse
+	if err := githubPostJSON(ctx, client, token, endpoint, payload, &decoded); err != nil {
+		return err
+	}
+	if len(decoded.Errors) > 0 {
+		return errors.New(decoded.Errors[0].Message)
+	}
+	return nil
+}
+
+type githubGraphQLErrorResponse struct {
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
 }
 
 type githubPRReviewThreadsGraphQLResponse struct {
@@ -361,7 +642,8 @@ type githubPRReviewThreadsGraphQLResponse struct {
 						EndCursor   *string `json:"endCursor"`
 					} `json:"pageInfo"`
 					Nodes []struct {
-						IsResolved bool `json:"isResolved"`
+						ID         string `json:"id"`
+						IsResolved bool   `json:"isResolved"`
 						Comments   struct {
 							Nodes []struct {
 								DatabaseID int64 `json:"databaseId"`

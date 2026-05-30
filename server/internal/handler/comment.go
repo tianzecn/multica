@@ -77,22 +77,26 @@ const commentHardCap = 2000
 //     comment plus every descendant. The anchor may be a root or any reply;
 //     the server walks up to the root via a recursive CTE, so callers do not
 //     need to know whether the id they have is a root.
+//
 //   - tail=<N> — only valid with thread. Cap the reply count at the N most
 //     recent replies (per (created_at, id)). The thread root is always
 //     returned, even when N=0, so the reader keeps the "what is this thread
 //     about" context. Without tail, thread returns the entire thread (the
 //     pre-MUL-2421 behavior).
+//
 //   - recent=<N> — return the N most recently active threads (root + every
 //     descendant per thread). A thread's recency is MAX(created_at) across
 //     the whole subtree, so a stale-but-recently-replied thread ranks ahead
 //     of an active-but-quiet one. Row-based "newest N comments" is
 //     deliberately NOT exposed — it surfaces unrelated thread tails and
 //     hides relevant history (#2340).
+//
 //   - before=<RFC3339> + before-id=<uuid> — cursor. The pair's meaning is
 //     context-dependent so the flag surface stays small:
 //
 //   - with recent: a *thread* cursor — (last_activity_at, root_id) — and
 //     the next page returns threads strictly less recent.
+//
 //   - with thread + tail: a *reply* cursor — (created_at, id) — and the
 //     next page returns replies in the same thread strictly older than
 //     that reply.
@@ -582,10 +586,11 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 }
 
 type CreateCommentRequest struct {
-	Content       string   `json:"content"`
-	Type          string   `json:"type"`
-	ParentID      *string  `json:"parent_id"`
-	AttachmentIDs []string `json:"attachment_ids"`
+	Content                string   `json:"content"`
+	Type                   string   `json:"type"`
+	ParentID               *string  `json:"parent_id"`
+	AttachmentIDs          []string `json:"attachment_ids"`
+	ProjectContinueOnDirty bool     `json:"project_continue_on_dirty,omitempty"`
 }
 
 func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
@@ -731,6 +736,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// the user is talking to someone else, not requesting work from the assignee.
 	// Also skip when replying in a member-started thread without mentioning the
 	// assignee — the user is continuing a member-to-member conversation.
+	taskOpts := service.EnqueueIssueTaskOptions{ProjectContinueOnDirty: req.ProjectContinueOnDirty}
 	if authorType == "member" && h.shouldEnqueueOnComment(r.Context(), issue) &&
 		!h.commentMentionsOthersButNotAssignee(comment.Content, issue) &&
 		!h.isReplyToMemberThread(r.Context(), parentComment, comment.Content, issue) {
@@ -739,7 +745,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		// thread grouping) is handled downstream by createAgentComment,
 		// which resolves parent_id to the thread root before posting. This
 		// mirrors the mention path's behavior (see enqueueMentionedAgentTasks).
-		if _, err := h.TaskService.EnqueueTaskForIssue(r.Context(), issue, comment.ID); err != nil {
+		if _, err := h.TaskService.EnqueueTaskForIssueWithOptions(r.Context(), issue, taskOpts, comment.ID); err != nil {
 			slog.Warn("enqueue agent task on comment failed", "issue_id", issueID, "error", err)
 		}
 	}
@@ -749,12 +755,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// when a member explicitly @mentions anyone (agent/member/squad/all) — that
 	// counts as deliberate routing and the leader stays out.
 	if h.shouldEnqueueSquadLeaderOnComment(r.Context(), issue, comment.Content, authorType, authorID) {
-		h.enqueueSquadLeaderTask(r.Context(), issue, comment.ID, authorType, authorID)
+		h.enqueueSquadLeaderTask(r.Context(), issue, comment.ID, authorType, authorID, taskOpts)
 	}
 
 	// Trigger @mentioned agents: parse agent mentions and enqueue tasks for each.
 	// Pass parentComment so that replies inherit mentions from the thread root.
-	h.enqueueMentionedAgentTasks(r.Context(), issue, comment, parentComment, authorType, authorID)
+	h.enqueueMentionedAgentTasks(r.Context(), issue, comment, parentComment, authorType, authorID, taskOpts)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -894,7 +900,11 @@ func shouldInheritParentMentions(parentComment *db.Comment, replyMentions []util
 // dedupe and the natural queued/dispatched coalescing of the task queue.
 // Note: no status gate here — @mention is an explicit action and should work
 // even on done/cancelled issues (the agent can reopen the issue if needed).
-func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, authorType, authorID string) {
+func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, authorType, authorID string, opts ...service.EnqueueIssueTaskOptions) {
+	var taskOpts service.EnqueueIssueTaskOptions
+	if len(opts) > 0 {
+		taskOpts = opts[0]
+	}
 	wsID := uuidToString(issue.WorkspaceID)
 	mentions := util.ParseMentions(comment.Content)
 	if shouldInheritParentMentions(parentComment, mentions, authorType) {
@@ -940,7 +950,7 @@ func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue
 			if err != nil || hasPending {
 				continue
 			}
-			if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, leaderID, comment.ID); err != nil {
+			if _, err := h.TaskService.EnqueueTaskForSquadLeaderWithOptions(ctx, issue, leaderID, comment.ID, taskOpts); err != nil {
 				slog.Warn("enqueue squad leader mention task failed", "issue_id", uuidToString(issue.ID), "squad_id", m.ID, "error", err)
 			}
 			continue
@@ -977,7 +987,7 @@ func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue
 		}
 		// Always use the current comment as the trigger so the agent reads the
 		// actual reply that mentioned it, not the thread root.
-		if _, err := h.TaskService.EnqueueTaskForMention(ctx, issue, agentUUID, comment.ID); err != nil {
+		if _, err := h.TaskService.EnqueueTaskForMentionWithOptions(ctx, issue, agentUUID, comment.ID, taskOpts); err != nil {
 			slog.Warn("enqueue mention agent task failed", "issue_id", uuidToString(issue.ID), "agent_id", m.ID, "error", err)
 		}
 	}

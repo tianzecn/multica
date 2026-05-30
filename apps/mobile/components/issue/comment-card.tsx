@@ -32,7 +32,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
-import type { Reaction, TimelineEntry } from "@multica/core/types";
+import type { Issue, Reaction, TimelineEntry } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
@@ -55,6 +55,7 @@ import { cn } from "@/lib/utils";
 import { ReactionBar } from "./reaction-bar";
 import { useCommentLongPress } from "./comment-context-menu";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+import { useIssueProjectDirtyWorktreeConsent } from "@/lib/use-project-dirty-worktree-consent";
 
 interface Props {
   entry: TimelineEntry;
@@ -64,6 +65,7 @@ interface Props {
   /** Plumbed through so each CommentBody can wire its reaction toggle to
    *  the correct issue's mutation key. */
   issueId: string;
+  issue: Issue;
   /** Human-readable identifier (e.g. `MUL-123`) used to build the shareable
    *  web URL for the long-press "Copy Link" item. Optional — that item
    *  hides when missing. */
@@ -79,6 +81,7 @@ export function CommentCard({
   entry,
   replies = [],
   issueId,
+  issue,
   issueIdentifier,
   highlightedCommentId,
 }: Props) {
@@ -168,6 +171,7 @@ export function CommentCard({
           <CommentBody
             entry={entry}
             issueId={issueId}
+            issue={issue}
             issueIdentifier={issueIdentifier}
             onPressChange={handlePressChange}
           />
@@ -176,6 +180,7 @@ export function CommentCard({
               <CommentBody
                 entry={reply}
                 issueId={issueId}
+                issue={issue}
                 issueIdentifier={issueIdentifier}
                 onPressChange={handlePressChange}
               />
@@ -374,11 +379,13 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
 function CommentBody({
   entry,
   issueId,
+  issue,
   issueIdentifier,
   onPressChange,
 }: {
   entry: TimelineEntry;
   issueId: string;
+  issue: Issue;
   issueIdentifier: string | undefined;
   onPressChange?: (entryId: string, pressed: boolean) => void;
 }) {
@@ -396,6 +403,8 @@ function CommentBody({
   const toggle = useToggleCommentReaction(issueId);
   const qc = useQueryClient();
   const createComment = useCreateComment(issueId);
+  const { confirmProjectCommentDirtyContinue } =
+    useIssueProjectDirtyWorktreeConsent(issue);
   // Failed-comment state for THIS entry — undefined when the entry is a
   // normal server-backed comment OR an in-flight optimistic. Only set when
   // the matching `useCreateComment` mutation errored and the entry was
@@ -433,8 +442,10 @@ function CommentBody({
     [reactions, userId, toggle, entry.id],
   );
 
-  const handleRetry = useCallback(() => {
+  const handleRetry = useCallback(async () => {
     if (!failed || !wsId) return;
+    const dirtyChoice = await confirmProjectCommentDirtyContinue(failed.content);
+    if (!dirtyChoice.proceed) return;
     // Remove the stale optimistic + failed marker BEFORE re-firing so the
     // mutation's own optimistic insert lands on a clean slate instead of
     // creating a duplicate row. The new attempt mints a fresh optimistic id.
@@ -443,8 +454,17 @@ function CommentBody({
       content: failed.content,
       parentId: failed.parentId,
       attachmentIds: failed.attachmentIds,
+      projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
     });
-  }, [failed, qc, wsId, issueId, entry.id, createComment]);
+  }, [
+    failed,
+    qc,
+    wsId,
+    issueId,
+    entry.id,
+    createComment,
+    confirmProjectCommentDirtyContinue,
+  ]);
 
   const handleDiscard = useCallback(() => {
     if (!wsId) return;

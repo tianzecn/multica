@@ -1,11 +1,13 @@
 ---
 title: GitHub integration
-description: Connect a GitHub App once, then PRs whose branch, title, or body reference an issue identifier auto-attach to that issue — and merging the PR moves the issue to Done.
+description: Connect a GitHub App once for PR ↔ issue automation plus Project repo creation, PR creation, and PR-level review from Multica.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
 Connect a GitHub account or organization once in **Settings → GitHub**. After that, any pull request whose branch name, title, or body contains an issue identifier (for example `MUL-123`) is **auto-linked** to that [issue](/issues), appears under **Pull requests** in the issue sidebar, and — when the PR is merged — moves the issue to **Done**.
+
+Projects use the same installation for the explicit sync workflow: creating a private GitHub repo, binding it as the Project's primary repository, opening PRs from pushed task branches, and reviewing PR files/comments without leaving the Project page.
 
 There is no per-issue setup. The whole flow is identifier-driven.
 
@@ -15,10 +17,14 @@ There is no per-issue setup. The whole flow is identifier-driven.
 |---|---|
 | **Settings → GitHub** | Workspace admins see the GitHub tab with a master toggle, **Connect GitHub** button, and feature switches (PR sidebar, Co-authored-by, auto-link). After install you bounce back to the GitHub tab. |
 | **Issue sidebar → Pull requests** | Every PR auto-linked to this issue, with title, repo, state (`Open` / `Draft` / `Merged` / `Closed`), and author. Click a row to jump to the PR on GitHub. |
+| **Project → Workspace** | Project owners/admins can create a GitHub repo under a selected connected owner. The default visibility is private, GitHub initializes the README/default branch remotely, and Multica then clones or binds a local workspace through the daemon. |
+| **Project → Sync plan** | Multica can create a PR from the current pushed task branch against the Project base branch. Commit and push remain explicit Git operations; creating the PR never commits local changes for you. |
+| **Project → Pull requests** | Linked Project PRs show file stats, check summary counts, review files/hunks, review comments, review summaries, and unresolved/resolved state where GitHub exposes it. Members can add line comments and resolve review threads through the connected installation. |
 | **Webhook (background)** | On every `pull_request` event, Multica upserts the PR row, scans the PR for issue identifiers, and (re)builds the link rows. Idempotent — replaying a delivery is a no-op. |
+| **Check suite webhook (background)** | Completed `check_suite` deliveries update PR check summary counts when the suite references an already mirrored PR. |
 | **Auto-status on merge** | When a PR transitions to `merged`, every linked issue not already `Done` or `Cancelled` is moved to `Done`. The status change is timeline-logged with source `github_pr_merged`. |
 
-Only the PR itself is mirrored. Commits, branch refs without an open PR, and CI check states are **not** modeled. The integration is intentionally narrow.
+Multica mirrors PR metadata, Project/issue link rows, review data fetched for the PR review panel, and aggregate check-suite summaries. It does **not** mirror standalone commits, branch refs without an open PR, full CI logs, or every historical review event into its own timeline row.
 
 ## How identifiers are matched
 
@@ -51,8 +57,8 @@ The action is attributed to the `system` actor on the timeline. Subscribers of t
 
 - **Identifiers in commit messages** — only branch / title / body are scanned. A commit titled `MUL-123: fix login` does not auto-link unless the same string also appears in the PR title or body.
 - **Identifiers in PR comments** — only the PR's own metadata is scanned; later GitHub comments are ignored.
-- **PRs in repos the App isn't installed on** — without the App, Multica never receives the webhook.
-- **Manually linking a PR to an issue** — there is no UI for this yet. If your team's convention puts identifiers in a place Multica isn't reading, add them to the PR title or body.
+- **PRs in repos the App isn't installed on** — without the App, Multica never receives the webhook and cannot use installation auth for Project PR actions.
+- **Manual PR → issue linking from the issue page** — automatic identifier linking and Project-created PR linking are supported; a generic "paste any PR URL onto any issue" UI is not part of this surface yet.
 
 ## Disconnecting
 
@@ -67,13 +73,14 @@ After disconnect, mirrored PR rows stay in the database so historical issue side
 
 - **Connect / disconnect** require workspace **owner or admin**. Members see the card description but no Connect button.
 - The **Pull requests** sidebar on an issue is visible to anyone who can read the issue — same permissions as the rest of issue detail.
-- The GitHub App requests **read-only** access to pull requests and metadata. Multica never pushes commits, comments, or status checks back to GitHub.
+- Project repo creation requires workspace **owner or admin**. Project PR creation and review actions require a member who can access the Project plus a connected GitHub owner for the primary repo.
+- Multica never pushes Git commits from the server. Git commit/push happens only through the user's selected Project daemon and only after explicit user action.
 
 ## Self-host setup
 
 If you're running Multica on Multica Cloud, the integration is already configured — skip this section.
 
-For self-host, you create one GitHub App, point it at your server, and set two environment variables. The whole flow is below.
+For self-host, you create one GitHub App, point it at your server, and set the GitHub App environment variables. The whole flow is below.
 
 ### 1. Create a GitHub App
 
@@ -93,14 +100,18 @@ Fill in:
 | **Webhook → Active** | Enabled. |
 | **Webhook URL** | `https://<api-host>/api/webhooks/github`. |
 | **Webhook secret** | Generate a long random string (e.g. `openssl rand -hex 32`). You'll paste the same value into Multica's env in step 2. |
-| **Permissions → Repository → Pull requests** | **Read-only**. |
+| **Permissions → Repository → Pull requests** | **Read and write** for Project PR creation and review comments. Read-only is enough only for the auto-link/sidebar subset. |
 | **Permissions → Repository → Metadata** | Read-only (mandatory). |
-| **Subscribe to events** | Tick **Pull request**. |
+| **Permissions → Repository → Checks** | Read-only, if you want PR check summary counts in Multica. |
+| **Repository creation** | Allow the App/installation to create repositories for the selected owner if you want Project repo creation. If your organization disables App-created repositories, bind or clone an existing repo instead. |
+| **Subscribe to events** | Tick **Pull request**, **Check suite**, and **Installation**. |
 | **Where can this GitHub App be installed?** | Your choice. `Only on this account` is fine for single-org setups. |
 
 After **Create GitHub App**, note two things from the App's detail page:
 
 - The **public link** at the top — its tail is the slug. `https://github.com/apps/multica-acme` → slug = `multica-acme`.
+- The numeric **App ID**.
+- Generate and save a **private key** (`.pem`) for server-side Project GitHub actions.
 - The **webhook secret** you just generated (you can't read it back from GitHub later — save it now).
 
 <Callout type="warning">
@@ -113,13 +124,17 @@ On the API server:
 
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_B64=<base64 encoded .pem>
 GITHUB_WEBHOOK_SECRET=<the webhook secret you generated>
 ```
 
-Both variables are required. If either is missing:
+`GITHUB_APP_SLUG` and `GITHUB_WEBHOOK_SECRET` are required for Connect GitHub and webhooks. If either is missing:
 
 - `Connect GitHub` in Settings is **disabled** and shows a "not configured" hint.
 - The `/api/webhooks/github` endpoint returns **`503 github webhooks not configured`** — Multica refuses to process events with no secret, rather than silently treating every signature as valid.
+
+`GITHUB_APP_ID` plus one private-key source (`GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_PRIVATE_KEY_B64`, or `GITHUB_APP_PRIVATE_KEY_PATH`) lets Multica mint installation-scoped tokens for Project repo creation, PR creation, and PR review actions. Development can fall back to `GITHUB_REPO_CREATE_TOKEN`, `GITHUB_PR_CREATE_TOKEN`, `GITHUB_PR_REVIEW_TOKEN`, or `GITHUB_TOKEN`; production should use GitHub App installation auth.
 
 `FRONTEND_ORIGIN` must also be set (it already is for any production self-host); the setup callback bounces the user back to `<FRONTEND_ORIGIN>/settings?tab=github` after install.
 
@@ -127,13 +142,13 @@ Restart the API after setting the env vars.
 
 ### 3. Run migrations
 
-The integration ships its tables in migration `079_github_integration`. If you're upgrading an older deployment:
+The integration's base tables ship in migration `079_github_integration`; Project workspace bindings and Project PR links are added by later migrations such as `116_project_workspace_bindings` and `117_project_pull_requests`. If you're upgrading an older deployment:
 
 ```bash
 make migrate-up
 ```
 
-Three tables get created: `github_installation`, `github_pull_request`, `issue_pull_request`. They cascade-delete with their workspace, so removing a workspace cleans them up automatically.
+The GitHub tables include `github_installation`, `github_pull_request`, `issue_pull_request`, and `project_pull_request`. They cascade-delete with their workspace or Project, so removing a workspace or Project cleans the corresponding history automatically.
 
 ### 4. Connect from the UI
 
@@ -171,8 +186,9 @@ curl -i -X POST https://<api-host>/api/webhooks/github \
 
 A few rough edges to be aware of today:
 
-- **No manual link UI yet** — the only way to link a PR is to have the identifier in its branch, title, or body.
-- **No CI / check state** — only the PR itself is mirrored. Build status, review comments, and reviewers are not surfaced in Multica.
+- **No generic manual PR URL attach UI yet** — identifier auto-linking and Project-created PR linking are supported, but there is no issue-level "paste any PR URL" control.
+- **Check summaries are aggregate-only** — Multica stores counts/conclusion from completed check suites, not full job logs or per-step output.
+- **Project review is PR-level, not a full GitHub inbox** — the Project page shows files, hunks, review comments, review summaries, and resolve state for linked PRs; it does not replace every GitHub notification/reviewer workflow.
 - **No workspace-level config** for the merge → Done rule — it's a fixed default (`merged → done`, unless `cancelled`). Workspace-customizable mappings are a future addition.
 - **Multi-PR-to-one-issue is conservative on merge** — if two PRs both reference `MUL-123` and the first one merges, the issue is moved to `Done` immediately. A follow-up change to wait for all linked PRs to resolve before advancing is in progress.
 

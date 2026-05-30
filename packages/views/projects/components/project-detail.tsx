@@ -80,6 +80,7 @@ import {
 import { useT } from "../../i18n";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { useProjectDirtyWorktreeConsentForIssue } from "../use-project-dirty-worktree-consent";
 
 // ---------------------------------------------------------------------------
 // Property row — sidebar property display
@@ -128,6 +129,7 @@ function ProjectIssuesContent({
   ganttIssues: Issue[];
 }) {
   const { t } = useT("projects");
+  const { t: tIssues } = useT("issues");
   const wsId = useWorkspaceId();
   const viewMode = useViewStore((s) => s.viewMode);
   const statusFilters = useViewStore((s) => s.statusFilters);
@@ -164,21 +166,35 @@ function ProjectIssuesContent({
   );
 
   const updateIssueMutation = useUpdateIssue();
+  const { confirmProjectDirtyContinue } =
+    useProjectDirtyWorktreeConsentForIssue({
+      message: tIssues(($) => $.detail.dirty_snapshot_confirm),
+    });
   const handleMoveIssue = useCallback(
-    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
-      updateIssueMutation.mutate(
-        { id: issueId, ...updates },
-        {
-          onError: (err) =>
-            toast.error(
-              err instanceof Error && err.message
-                ? err.message
-                : t(($) => $.detail.toast_move_issue_failed),
-            ),
-        },
-      );
+    (issue: Issue, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
+      void (async () => {
+        const dirtyChoice = await confirmProjectDirtyContinue(issue, updates);
+        if (!dirtyChoice.proceed) return;
+        updateIssueMutation.mutate(
+          {
+            id: issue.id,
+            ...updates,
+            ...(dirtyChoice.projectContinueOnDirty
+              ? { project_continue_on_dirty: true }
+              : {}),
+          },
+          {
+            onError: (err) =>
+              toast.error(
+                err instanceof Error && err.message
+                  ? err.message
+                  : t(($) => $.detail.toast_move_issue_failed),
+              ),
+          },
+        );
+      })();
     },
-    [updateIssueMutation, t],
+    [confirmProjectDirtyContinue, updateIssueMutation, t],
   );
 
   // Gantt has its own data source (scheduled-only) and its own empty axis —

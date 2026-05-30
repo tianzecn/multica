@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 type ProjectRunScriptResponse struct {
@@ -68,6 +69,17 @@ type ProjectWorkspaceResponse struct {
 	Bindings       []ProjectDeviceBindingResponse `json:"bindings"`
 	ActiveTasks    []ProjectActiveTaskResponse    `json:"active_tasks"`
 }
+
+type ProjectActivityExportResponse struct {
+	ProjectID   string          `json:"project_id"`
+	WorkspaceID string          `json:"workspace_id"`
+	ExportedAt  string          `json:"exported_at"`
+	Total       int             `json:"total"`
+	Truncated   bool            `json:"truncated"`
+	Activity    []TimelineEntry `json:"activity"`
+}
+
+const projectActivityExportLimit = 10000
 
 type UpdateProjectWorkspaceConfigRequest struct {
 	BaseBranch           *string                     `json:"base_branch"`
@@ -151,6 +163,38 @@ func (h *Handler) ListProjectActivity(w http.ResponseWriter, r *http.Request) {
 		out = append(out, activityToEntry(row))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) ExportProjectActivity(w http.ResponseWriter, r *http.Request) {
+	project, ok := h.loadProjectForResource(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	rows, err := h.Queries.ListActivitiesForProjectExport(r.Context(), db.ListActivitiesForProjectExportParams{
+		WorkspaceID: project.WorkspaceID,
+		ProjectID:   uuidToString(project.ID),
+		Limit:       projectActivityExportLimit + 1,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to export project activity")
+		return
+	}
+	truncated := len(rows) > projectActivityExportLimit
+	if truncated {
+		rows = rows[:projectActivityExportLimit]
+	}
+	activity := make([]TimelineEntry, 0, len(rows))
+	for _, row := range rows {
+		activity = append(activity, activityToEntry(row))
+	}
+	writeJSON(w, http.StatusOK, ProjectActivityExportResponse{
+		ProjectID:   uuidToString(project.ID),
+		WorkspaceID: uuidToString(project.WorkspaceID),
+		ExportedAt:  time.Now().UTC().Format(time.RFC3339),
+		Total:       len(activity),
+		Truncated:   truncated,
+		Activity:    activity,
+	})
 }
 
 func (h *Handler) UpdateProjectWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
@@ -252,22 +296,24 @@ func (h *Handler) UpsertProjectDeviceBinding(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	primaryRepoURL := strings.TrimSpace(req.PrimaryRepoURL)
-	if primaryRepoURL == "" {
+	requestedPrimaryRepoURL := strings.TrimSpace(req.PrimaryRepoURL)
+	if requestedPrimaryRepoURL == "" {
 		writeError(w, http.StatusBadRequest, "primary_repo_url is required")
 		return
 	}
-	if !isValidGitRepoURL(primaryRepoURL) {
+	if !isValidGitRepoURL(requestedPrimaryRepoURL) {
 		writeError(w, http.StatusBadRequest, "primary_repo_url must be a valid git URL")
 		return
 	}
-	if bound := h.primaryRepoURL(r.Context(), project.ID); bound == nil {
+	bound := h.primaryRepoURL(r.Context(), project.ID)
+	if bound == nil {
 		writeError(w, http.StatusBadRequest, "project must have a primary GitHub repository before binding a local device")
 		return
-	} else if *bound != primaryRepoURL {
+	} else if githubRepoURLKey(*bound) != githubRepoURLKey(requestedPrimaryRepoURL) {
 		writeError(w, http.StatusBadRequest, "primary_repo_url must match the project's primary repository")
 		return
 	}
+	primaryRepoURL := *bound
 
 	status := strings.TrimSpace(req.Status)
 	if status == "" {
@@ -498,7 +544,7 @@ func (h *Handler) recordProjectWorkspaceActivity(r *http.Request, workspaceID pg
 	if err != nil {
 		raw = []byte(`{}`)
 	}
-	_, _ = h.Queries.CreateActivity(r.Context(), db.CreateActivityParams{
+	activity, err := h.Queries.CreateActivity(r.Context(), db.CreateActivityParams{
 		WorkspaceID: workspaceID,
 		IssueID:     pgtype.UUID{Valid: false},
 		ActorType:   pgtype.Text{String: "member", Valid: true},
@@ -506,6 +552,15 @@ func (h *Handler) recordProjectWorkspaceActivity(r *http.Request, workspaceID pg
 		Action:      action,
 		Details:     raw,
 	})
+	if err != nil {
+		return
+	}
+	if projectID, ok := details["project_id"].(string); ok && projectID != "" {
+		h.publish(protocol.EventActivityCreated, uuidToString(workspaceID), "member", userID, map[string]any{
+			"project_id": projectID,
+			"entry":      activityToEntry(activity),
+		})
+	}
 }
 
 func normalizeGitBranch(raw string) (string, error) {

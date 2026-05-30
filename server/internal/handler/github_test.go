@@ -908,7 +908,9 @@ func TestListPullRequestsForProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
+	projectID := uuidToString(project.ID)
 	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE details->>'project_id' = $1`, projectID)
 		testPool.Exec(ctx, `UPDATE issue SET project_id = NULL WHERE id = $1`, created.ID)
 		testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, project.ID)
 	})
@@ -962,7 +964,9 @@ func TestGetProjectPullRequestReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
+	projectID := uuidToString(project.ID)
 	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE details->>'project_id' = $1`, projectID)
 		testPool.Exec(ctx, `UPDATE issue SET project_id = NULL WHERE id = $1`, created.ID)
 		testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, project.ID)
 	})
@@ -1019,7 +1023,7 @@ func TestGetProjectPullRequestReview(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(fetcher.targets) != 1 || fetcher.targets[0].RepoName != "review-repo" || fetcher.targets[0].Number != 72 {
+	if len(fetcher.targets) != 1 || fetcher.targets[0].InstallationID != installationID || fetcher.targets[0].RepoName != "review-repo" || fetcher.targets[0].Number != 72 {
 		t.Fatalf("unexpected fetch target: %+v", fetcher.targets)
 	}
 	if body.PullRequest.ID != uuidToString(rows[0].ID) {
@@ -1036,15 +1040,187 @@ func TestGetProjectPullRequestReview(t *testing.T) {
 	}
 }
 
+func TestCreateProjectPullRequestReviewComment(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	const secret = "project-pr-review-comment-secret"
+	created, installationID := setupPRTestIssue(t, ctx, secret)
+
+	project, err := testHandler.Queries.CreateProject(ctx, db.CreateProjectParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Title:       "Project PR review comment",
+		Status:      "in_progress",
+		Priority:    "none",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	projectID := uuidToString(project.ID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE details->>'project_id' = $1`, projectID)
+		testPool.Exec(ctx, `UPDATE issue SET project_id = NULL WHERE id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, project.ID)
+	})
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET project_id = $1 WHERE id = $2`, project.ID, created.ID); err != nil {
+		t.Fatalf("attach issue to project: %v", err)
+	}
+
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "review-comment-repo", 73, "opened", "commenthead", "clean")
+	rows, err := testHandler.Queries.ListPullRequestsByProject(ctx, project.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListPullRequestsByProject: rows=%d err=%v", len(rows), err)
+	}
+
+	fetcher := &fakeGitHubPRReviewFetcher{
+		comment: GitHubPullRequestReviewCommentResponse{
+			ID:        301,
+			Path:      "server/main.go",
+			Body:      "Please split this branch.",
+			UserLogin: "reviewer",
+		},
+	}
+	prev := testHandler.GitHubPRReviewFetcher
+	testHandler.GitHubPRReviewFetcher = fetcher
+	t.Cleanup(func() { testHandler.GitHubPRReviewFetcher = prev })
+
+	line := int32(12)
+	rec := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects/"+uuidToString(project.ID)+"/pull-requests/"+uuidToString(rows[0].ID)+"/review/comments", map[string]any{
+		"body": " Please split this branch. ",
+		"path": "server/main.go",
+		"line": line,
+	})
+	req = withURLParams(req, "id", uuidToString(project.ID), "pullRequestId", uuidToString(rows[0].ID))
+	testHandler.CreateProjectPullRequestReviewComment(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("CreateProjectPullRequestReviewComment: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(fetcher.commentTargets) != 1 || fetcher.commentTargets[0].InstallationID != installationID || fetcher.commentTargets[0].RepoName != "review-comment-repo" {
+		t.Fatalf("unexpected comment targets: %+v", fetcher.commentTargets)
+	}
+	if len(fetcher.commentRequests) != 1 {
+		t.Fatalf("expected one comment request, got %+v", fetcher.commentRequests)
+	}
+	got := fetcher.commentRequests[0]
+	if got.Body != "Please split this branch." || got.CommitID != "commenthead" || got.Path != "server/main.go" || got.Line == nil || *got.Line != line || got.Side != "RIGHT" {
+		t.Fatalf("unexpected comment request: %+v", got)
+	}
+	var activityPath, activityRepo, activityCommentID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT details->>'path', details->>'repo', details->>'comment_id'
+		FROM activity_log
+		WHERE workspace_id = $1
+		  AND action = 'github_pr_review_comment'
+		  AND details->>'project_id' = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, parseUUID(testWorkspaceID), projectID).Scan(&activityPath, &activityRepo, &activityCommentID); err != nil {
+		t.Fatalf("review comment activity: %v", err)
+	}
+	if activityPath != "server/main.go" || activityRepo != "acme/review-comment-repo" || activityCommentID != "301" {
+		t.Fatalf("unexpected review comment activity path=%q repo=%q comment=%q", activityPath, activityRepo, activityCommentID)
+	}
+}
+
+func TestResolveProjectPullRequestReviewThread(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	const secret = "project-pr-review-resolve-secret"
+	created, installationID := setupPRTestIssue(t, ctx, secret)
+
+	project, err := testHandler.Queries.CreateProject(ctx, db.CreateProjectParams{
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Title:       "Project PR review resolve",
+		Status:      "in_progress",
+		Priority:    "none",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	projectID := uuidToString(project.ID)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE details->>'project_id' = $1`, projectID)
+		testPool.Exec(ctx, `UPDATE issue SET project_id = NULL WHERE id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, project.ID)
+	})
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET project_id = $1 WHERE id = $2`, project.ID, created.ID); err != nil {
+		t.Fatalf("attach issue to project: %v", err)
+	}
+
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "review-resolve-repo", 74, "opened", "resolvehead", "clean")
+	rows, err := testHandler.Queries.ListPullRequestsByProject(ctx, project.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListPullRequestsByProject: rows=%d err=%v", len(rows), err)
+	}
+
+	fetcher := &fakeGitHubPRReviewFetcher{
+		resolution: GitHubPullRequestReviewResolutionResponse{CommentID: 401, Resolved: true},
+	}
+	prev := testHandler.GitHubPRReviewFetcher
+	testHandler.GitHubPRReviewFetcher = fetcher
+	t.Cleanup(func() { testHandler.GitHubPRReviewFetcher = prev })
+
+	rec := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects/"+uuidToString(project.ID)+"/pull-requests/"+uuidToString(rows[0].ID)+"/review/comments/401/resolve", nil)
+	req = withURLParams(req, "id", uuidToString(project.ID), "pullRequestId", uuidToString(rows[0].ID), "commentId", "401")
+	testHandler.ResolveProjectPullRequestReviewThread(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ResolveProjectPullRequestReviewThread: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(fetcher.resolveTargets) != 1 || fetcher.resolveTargets[0].InstallationID != installationID || fetcher.resolveTargets[0].RepoName != "review-resolve-repo" {
+		t.Fatalf("unexpected resolve targets: %+v", fetcher.resolveTargets)
+	}
+	if len(fetcher.resolveComments) != 1 || fetcher.resolveComments[0] != 401 {
+		t.Fatalf("unexpected resolve comments: %+v", fetcher.resolveComments)
+	}
+	var activityRepo, activityCommentID, activityResolved string
+	if err := testPool.QueryRow(ctx, `
+		SELECT details->>'repo', details->>'comment_id', details->>'resolved'
+		FROM activity_log
+		WHERE workspace_id = $1
+		  AND action = 'github_pr_review_resolve'
+		  AND details->>'project_id' = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, parseUUID(testWorkspaceID), projectID).Scan(&activityRepo, &activityCommentID, &activityResolved); err != nil {
+		t.Fatalf("review resolve activity: %v", err)
+	}
+	if activityRepo != "acme/review-resolve-repo" || activityCommentID != "401" || activityResolved != "true" {
+		t.Fatalf("unexpected review resolve activity repo=%q comment=%q resolved=%q", activityRepo, activityCommentID, activityResolved)
+	}
+}
+
 type fakeGitHubPRReviewFetcher struct {
-	targets []GitHubPRReviewTarget
-	data    GitHubPullRequestReviewData
-	err     error
+	targets         []GitHubPRReviewTarget
+	commentTargets  []GitHubPRReviewTarget
+	commentRequests []CreateGitHubPullRequestReviewCommentRequest
+	resolveTargets  []GitHubPRReviewTarget
+	resolveComments []int64
+	data            GitHubPullRequestReviewData
+	comment         GitHubPullRequestReviewCommentResponse
+	resolution      GitHubPullRequestReviewResolutionResponse
+	err             error
 }
 
 func (f *fakeGitHubPRReviewFetcher) FetchPullRequestReview(_ context.Context, target GitHubPRReviewTarget) (GitHubPullRequestReviewData, error) {
 	f.targets = append(f.targets, target)
 	return f.data, f.err
+}
+
+func (f *fakeGitHubPRReviewFetcher) CreatePullRequestReviewComment(_ context.Context, target GitHubPRReviewTarget, req CreateGitHubPullRequestReviewCommentRequest) (GitHubPullRequestReviewCommentResponse, error) {
+	f.commentTargets = append(f.commentTargets, target)
+	f.commentRequests = append(f.commentRequests, req)
+	return f.comment, f.err
+}
+
+func (f *fakeGitHubPRReviewFetcher) ResolvePullRequestReviewThread(_ context.Context, target GitHubPRReviewTarget, commentID int64) (GitHubPullRequestReviewResolutionResponse, error) {
+	f.resolveTargets = append(f.resolveTargets, target)
+	f.resolveComments = append(f.resolveComments, commentID)
+	return f.resolution, f.err
 }
 
 // TestWebhook_CheckSuite_OldHeadIgnored asserts that a late-arriving

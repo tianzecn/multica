@@ -17,7 +17,7 @@
  *   - Resources       (projectKeys.resources)    → `ProjectResource[]`
  */
 import type { QueryClient } from "@tanstack/react-query";
-import type { Project } from "@multica/core/types";
+import type { Project, PullRequestChangedPayload } from "@multica/core/types";
 import { projectKeys } from "@/data/queries/projects";
 
 export function patchProjectsList(
@@ -78,4 +78,26 @@ export function clearProjectDetail(
 ) {
   qc.removeQueries({ queryKey: projectKeys.detail(wsId, projectId) });
   qc.removeQueries({ queryKey: projectKeys.resources(wsId, projectId) });
+  qc.removeQueries({ queryKey: projectKeys.activity(wsId, projectId) });
+}
+
+export function invalidateProjectPullRequestCaches(
+  qc: QueryClient,
+  wsId: string,
+  projectId: string,
+  payload?: PullRequestChangedPayload,
+) {
+  if (payload) {
+    const projectIds = new Set(payload.project_ids ?? []);
+    if (payload.project_id) projectIds.add(payload.project_id);
+    if (projectIds.size > 0 && !projectIds.has(projectId)) return;
+  }
+
+  qc.invalidateQueries({ queryKey: projectKeys.pullRequests(wsId, projectId) });
+  const pullRequestId = payload?.pull_request?.id ?? null;
+  if (pullRequestId) {
+    qc.invalidateQueries({
+      queryKey: projectKeys.pullRequestReview(wsId, projectId, pullRequestId),
+    });
+  }
 }

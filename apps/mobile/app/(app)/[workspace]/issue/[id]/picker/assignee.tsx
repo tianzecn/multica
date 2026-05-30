@@ -11,6 +11,7 @@ import { issueDetailOptions } from "@/data/queries/issues";
 import { useUpdateIssue } from "@/data/mutations/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useNativeSearchBar } from "@/lib/use-native-search-bar";
+import { useIssueProjectDirtyWorktreeConsent } from "@/lib/use-project-dirty-worktree-consent";
 
 export default function IssueAssigneePickerRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -18,6 +19,8 @@ export default function IssueAssigneePickerRoute() {
   const { data: issue } = useQuery(issueDetailOptions(wsId, id));
   const updateIssue = useUpdateIssue(id);
   const query = useNativeSearchBar("Search people", { autoFocus: true });
+  const { confirmProjectDirtyContinue } =
+    useIssueProjectDirtyWorktreeConsent(issue);
 
   const value =
     issue?.assignee_type && issue?.assignee_id
@@ -29,15 +32,24 @@ export default function IssueAssigneePickerRoute() {
       value={value}
       query={query}
       onChange={(next) => {
-        if (next === null) {
-          updateIssue.mutate({ assignee_type: null, assignee_id: null });
-        } else {
+        void (async () => {
+          const patch =
+            next === null
+              ? { assignee_type: null, assignee_id: null }
+              : {
+                  assignee_type: next.type,
+                  assignee_id: next.id,
+                };
+          const dirtyChoice = await confirmProjectDirtyContinue(patch);
+          if (!dirtyChoice.proceed) return;
           updateIssue.mutate({
-            assignee_type: next.type,
-            assignee_id: next.id,
+            ...patch,
+            ...(dirtyChoice.projectContinueOnDirty
+              ? { project_continue_on_dirty: true }
+              : {}),
           });
-        }
-        router.back();
+          router.back();
+        })();
       }}
     />
   );

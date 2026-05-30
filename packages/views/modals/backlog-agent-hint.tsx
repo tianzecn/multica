@@ -1,9 +1,11 @@
 "use client";
 
-import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
 import { BacklogAgentHintDialog } from "../issues/components/backlog-agent-hint-dialog";
-import { useUpdateIssue } from "@multica/core/issues/mutations";
+import { issueDetailOptions } from "@multica/core/issues/queries";
+import { useWorkspaceId } from "@multica/core/hooks";
 import { useT } from "../i18n";
+import { useProjectAwareIssueUpdate } from "../issues/hooks/use-project-aware-issue-update";
 
 export function BacklogAgentHintModal({
   onClose,
@@ -14,7 +16,15 @@ export function BacklogAgentHintModal({
 }) {
   const { t } = useT("modals");
   const issueId = (data?.issueId as string) || "";
-  const updateIssue = useUpdateIssue();
+  const wsId = useWorkspaceId();
+  const { data: issue = null } = useQuery({
+    ...issueDetailOptions(wsId, issueId),
+    enabled: !!issueId,
+  });
+  const updateIssue = useProjectAwareIssueUpdate(
+    issue,
+    t(($) => $.backlog_hint.toast_status_failed),
+  );
 
   return (
     <BacklogAgentHintDialog
@@ -27,17 +37,7 @@ export function BacklogAgentHintModal({
       }}
       onMoveToTodo={() => {
         if (issueId) {
-          updateIssue.mutate(
-            { id: issueId, status: "todo" },
-            {
-              onError: (err) =>
-                toast.error(
-                  err instanceof Error && err.message
-                    ? err.message
-                    : t(($) => $.backlog_hint.toast_status_failed),
-                ),
-            },
-          );
+          updateIssue({ status: "todo" });
         }
         onClose();
       }}

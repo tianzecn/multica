@@ -44,6 +44,7 @@ export function useCreateProjectResource(wsId: string, projectId: string) {
       qc.invalidateQueries({
         queryKey: projectResourceKeys.list(wsId, projectId),
       });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
     },
   });
 }
@@ -72,6 +73,7 @@ export function useCreateProjectGitHubRepository(wsId: string, projectId: string
         queryKey: projectResourceKeys.list(wsId, projectId),
       });
       qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
     },
   });
 }
@@ -112,6 +114,7 @@ export function useDeleteProjectResource(wsId: string, projectId: string) {
       qc.invalidateQueries({
         queryKey: projectResourceKeys.list(wsId, projectId),
       });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
     },
   });
 }

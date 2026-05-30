@@ -30,12 +30,13 @@ type TaskAvailablePayload struct {
 // file or Git operations. Path is relative to the daemon's local
 // /project-workspaces/{project_id} handler and is allowlisted on both sides.
 type DaemonProjectWorkspaceRequestPayload struct {
-	RequestID string `json:"request_id"`
-	ProjectID string `json:"project_id"`
-	Method    string `json:"method"`
-	Path      string `json:"path"`
-	Query     string `json:"query,omitempty"`
-	Body      string `json:"body,omitempty"`
+	RequestID   string `json:"request_id"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	ProjectID   string `json:"project_id"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Query       string `json:"query,omitempty"`
+	Body        string `json:"body,omitempty"`
 }
 
 // DaemonProjectWorkspaceResponsePayload carries the daemon-local HTTP response

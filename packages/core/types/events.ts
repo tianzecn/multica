@@ -6,6 +6,7 @@ import type { TimelineEntry } from "./activity";
 import type { Workspace, MemberWithUser, Invitation } from "./workspace";
 import type { Project } from "./project";
 import type { Label } from "./label";
+import type { GitHubPullRequest } from "./github";
 
 // WebSocket event types (matching Go server protocol/events.go)
 export type WSEventType =
@@ -108,6 +109,13 @@ export interface IssueMetadataChangedPayload {
   metadata: IssueMetadata;
 }
 
+export interface PullRequestChangedPayload {
+  pull_request?: GitHubPullRequest;
+  linked_issue_ids?: string[];
+  project_id?: string | null;
+  project_ids?: string[];
+}
+
 export interface AgentStatusPayload {
   agent: Agent;
 }
@@ -207,7 +215,8 @@ export interface SubscriberRemovedPayload {
 }
 
 export interface ActivityCreatedPayload {
-  issue_id: string;
+  issue_id?: string | null;
+  project_id?: string | null;
   entry: TimelineEntry;
 }
 
@@ -442,9 +451,9 @@ export interface WSEventPayloadMap {
   "pin:reordered": unknown;
   "github_installation:created": unknown;
   "github_installation:deleted": unknown;
-  "pull_request:linked": unknown;
-  "pull_request:updated": unknown;
-  "pull_request:unlinked": unknown;
+  "pull_request:linked": PullRequestChangedPayload;
+  "pull_request:updated": PullRequestChangedPayload;
+  "pull_request:unlinked": PullRequestChangedPayload;
 }
 
 /**

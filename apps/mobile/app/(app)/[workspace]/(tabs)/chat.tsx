@@ -49,7 +49,11 @@ import type {
 import { api } from "@/data/api";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentListOptions } from "@/data/queries/agents";
-import { projectListOptions } from "@/data/queries/projects";
+import {
+  projectDeviceGitStatusOptions,
+  projectListOptions,
+  projectWorkspaceOptions,
+} from "@/data/queries/projects";
 import {
   chatKeys,
   chatMessagesOptions,
@@ -193,6 +197,54 @@ export default function ChatTab() {
   const isArchived = activeSession?.status === "archived";
   const sending = !!pendingTask?.task_id;
   const projectIdForContext = activeSession?.project_id ?? draftProjectId;
+  const { data: projectWorkspace } = useQuery(
+    projectWorkspaceOptions(wsId, projectIdForContext ?? ""),
+  );
+  const projectRuntimeBinding = useMemo(
+    () =>
+      projectWorkspace?.bindings.find(
+        (binding) =>
+          binding.runtime_id === currentAgent?.runtime_id &&
+          binding.status === "online",
+      ) ?? null,
+    [currentAgent?.runtime_id, projectWorkspace?.bindings],
+  );
+  const { data: projectGitStatus, refetch: refetchProjectGitStatus } = useQuery(
+    projectDeviceGitStatusOptions(
+      wsId,
+      projectIdForContext ?? "",
+      projectRuntimeBinding?.device_id ?? null,
+    ),
+  );
+
+  const confirmProjectDirtyContinue = useCallback(async () => {
+    if (!projectIdForContext || !currentAgent?.runtime_id || !projectRuntimeBinding?.device_id) {
+      return { proceed: true, projectContinueOnDirty: false };
+    }
+    const refreshed = await refetchProjectGitStatus({ throwOnError: false });
+    const status = refreshed.data ?? projectGitStatus;
+    if (!status?.has_uncommitted) {
+      return { proceed: true, projectContinueOnDirty: false };
+    }
+
+    const confirmed = await new Promise<boolean>((resolve) => {
+      Alert.alert(
+        "Create safety snapshot?",
+        "This Project working tree has uncommitted changes. Continue by creating a Multica safety snapshot first?",
+        [
+          { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+          { text: "Continue", onPress: () => resolve(true) },
+        ],
+      );
+    });
+    return { proceed: confirmed, projectContinueOnDirty: confirmed };
+  }, [
+    currentAgent?.runtime_id,
+    projectGitStatus,
+    projectIdForContext,
+    projectRuntimeBinding?.device_id,
+    refetchProjectGitStatus,
+  ]);
 
   // ── Drafts ─────────────────────────────────────────────────────────────
   const draftKey = activeSessionId ?? DRAFT_NEW_SESSION;
@@ -258,6 +310,8 @@ export default function ChatTab() {
   const handleSend = useCallback(
     async (content: string, attachmentIds: string[] = []) => {
       if (!currentAgent) return;
+      const dirtyChoice = await confirmProjectDirtyContinue();
+      if (!dirtyChoice.proceed) return;
 
       const isNewSession = !activeSessionId;
       const sessionId = await ensureSession(content);
@@ -289,6 +343,7 @@ export default function ChatTab() {
       try {
         const result = await api.sendChatMessage(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+          projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
         });
         qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
           task_id: result.task_id,
@@ -307,6 +362,7 @@ export default function ChatTab() {
     },
     [
       activeSessionId,
+      confirmProjectDirtyContinue,
       currentAgent,
       ensureSession,
       qc,

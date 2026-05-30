@@ -71,6 +71,8 @@ import type {
   ChatMessage,
   ChatPendingTask,
   InvitationCreatedPayload,
+  PullRequestChangedPayload,
+  TimelineEntry,
 } from "../types";
 
 const chatWsLogger = createLogger("chat.ws");
@@ -141,6 +143,75 @@ export function applyWorkspaceUpdatedToCache(
     }
   }
   qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+}
+
+function invalidateAllPullRequestQueries(qc: QueryClient): void {
+  qc.invalidateQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      return (
+        key[0] === "github" &&
+        (key[1] === "pull-requests" ||
+          key[1] === "project-pull-requests" ||
+          key[1] === "project-pull-request-review")
+      );
+    },
+  });
+}
+
+export function applyPullRequestChangedToCache(
+  qc: QueryClient,
+  payload: PullRequestChangedPayload,
+): void {
+  const linkedIssueIds = new Set(payload.linked_issue_ids ?? []);
+  const projectIds = new Set(payload.project_ids ?? []);
+  if (payload.project_id) projectIds.add(payload.project_id);
+
+  if (linkedIssueIds.size === 0 && projectIds.size === 0) {
+    invalidateAllPullRequestQueries(qc);
+    return;
+  }
+
+  for (const issueId of linkedIssueIds) {
+    qc.invalidateQueries({ queryKey: githubKeys.pullRequests(issueId) });
+  }
+
+  const pullRequestId = payload.pull_request?.id ?? null;
+  for (const projectId of projectIds) {
+    qc.invalidateQueries({ queryKey: githubKeys.projectPullRequests(projectId) });
+    if (pullRequestId) {
+      qc.invalidateQueries({
+        queryKey: githubKeys.projectPullRequestReview(projectId, pullRequestId),
+      });
+    }
+  }
+}
+
+export function applyActivityCreatedToCache(
+  qc: QueryClient,
+  wsId: string,
+  payload: ActivityCreatedPayload,
+): void {
+  if (payload.issue_id) {
+    qc.invalidateQueries({
+      queryKey: issueKeys.timeline(payload.issue_id),
+      refetchType: "none",
+    });
+  }
+  if (payload.project_id) {
+    qc.setQueryData<TimelineEntry[] | undefined>(
+      projectKeys.activity(wsId, payload.project_id),
+      (old) => {
+        if (!old) return old;
+        if (old.some((entry) => entry.id === payload.entry.id)) return old;
+        return [payload.entry, ...old];
+      },
+    );
+    qc.invalidateQueries({
+      queryKey: projectKeys.activity(wsId, payload.project_id),
+      refetchType: "none",
+    });
+  }
 }
 
 /**
@@ -381,6 +452,7 @@ export function useRealtimeSync(
       "issue_reaction:added", "issue_reaction:removed",
       "subscriber:added", "subscriber:removed",
       "daemon:heartbeat",
+      "pull_request:linked", "pull_request:updated", "pull_request:unlinked",
       // Chat events are handled explicitly below; do not double-invalidate.
       "chat:message", "chat:done", "chat:session_read", "chat:session_deleted",
       "chat:session_updated",
@@ -558,8 +630,8 @@ export function useRealtimeSync(
     });
 
     const unsubActivityCreated = ws.on("activity:created", (p) => {
-      const { issue_id } = p as ActivityCreatedPayload;
-      if (issue_id) invalidateTimeline(issue_id);
+      const wsId = getCurrentWsId();
+      if (wsId) applyActivityCreatedToCache(qc, wsId, p as ActivityCreatedPayload);
     });
 
     const unsubReactionAdded = ws.on("reaction:added", (p) => {
@@ -593,6 +665,13 @@ export function useRealtimeSync(
       const { issue_id } = p as SubscriberRemovedPayload;
       if (issue_id) qc.invalidateQueries({ queryKey: issueKeys.subscribers(issue_id) });
     });
+
+    const handlePullRequestChanged = (p: unknown) => {
+      applyPullRequestChangedToCache(qc, p as PullRequestChangedPayload);
+    };
+    const unsubPullRequestLinked = ws.on("pull_request:linked", handlePullRequestChanged);
+    const unsubPullRequestUpdated = ws.on("pull_request:updated", handlePullRequestChanged);
+    const unsubPullRequestUnlinked = ws.on("pull_request:unlinked", handlePullRequestChanged);
 
     // --- Side-effect handlers (toast, navigation) ---
 
@@ -964,6 +1043,9 @@ export function useRealtimeSync(
       unsubIssueReactionRemoved();
       unsubSubscriberAdded();
       unsubSubscriberRemoved();
+      unsubPullRequestLinked();
+      unsubPullRequestUpdated();
+      unsubPullRequestUnlinked();
       unsubWsUpdated();
       unsubWsDeleted();
       unsubMemberRemoved();

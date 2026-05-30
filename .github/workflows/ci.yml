@@ -42,7 +42,7 @@ jobs:
           git diff --exit-code -- packages/core/paths/reserved-slugs.ts
 
       - name: Build, type check, lint, and test
-        run: pnpm exec turbo build typecheck lint test --filter='!@multica/docs'
+        run: pnpm exec turbo build typecheck lint test --filter='!@multica/docs' --filter='!@multica/mobile'
 
   backend:
     runs-on: ubuntu-latest

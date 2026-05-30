@@ -23,6 +23,7 @@ import {
   TextInput,
 } from "react-native";
 import { Stack, router } from "expo-router";
+import type { Issue } from "@multica/core/types";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
@@ -30,6 +31,7 @@ import { DescriptionField } from "@/components/issue/description-field";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
+import { useIssueProjectDirtyWorktreeConsent } from "@/lib/use-project-dirty-worktree-consent";
 import { useMentionInput } from "@/lib/use-mention-input";
 
 export default function NewIssueModal() {
@@ -56,6 +58,17 @@ export default function NewIssueModal() {
 
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
+  const prospectiveProjectIssue =
+    project && assignee && (assignee.type === "agent" || assignee.type === "squad")
+      ? ({
+          project_id: project.id,
+          assignee_type: assignee.type,
+          assignee_id: assignee.id,
+          status,
+        } as Issue)
+      : null;
+  const { confirmProjectDirtyContinue } =
+    useIssueProjectDirtyWorktreeConsent(prospectiveProjectIssue);
 
   const canSubmit = !isSubmitting && title.trim().length > 0;
 
@@ -64,6 +77,15 @@ export default function NewIssueModal() {
     if (trimmedTitle.length === 0) return;
     const finalDescription = description.serialize().trim();
     try {
+      const dirtyChoice =
+        prospectiveProjectIssue && status !== "backlog"
+          ? await confirmProjectDirtyContinue({
+              assignee_type: assignee?.type,
+              assignee_id: assignee?.id,
+              status,
+            })
+          : { proceed: true, projectContinueOnDirty: false };
+      if (!dirtyChoice.proceed) return;
       await createIssue.mutateAsync({
         title: trimmedTitle,
         description: finalDescription || undefined,
@@ -74,6 +96,9 @@ export default function NewIssueModal() {
           : {}),
         ...(dueDate ? { due_date: dueDate } : {}),
         ...(project ? { project_id: project.id } : {}),
+        ...(dirtyChoice.projectContinueOnDirty
+          ? { project_continue_on_dirty: true }
+          : {}),
       });
       router.back();
     } catch (err) {
@@ -91,6 +116,8 @@ export default function NewIssueModal() {
     dueDate,
     project,
     createIssue,
+    prospectiveProjectIssue,
+    confirmProjectDirtyContinue,
   ]);
 
   const headerRight = useMemo(() => {

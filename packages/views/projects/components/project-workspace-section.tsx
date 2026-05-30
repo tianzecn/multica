@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -8,6 +8,7 @@ import {
   Circle,
   Clock3,
   Download,
+  ExternalLink,
   File,
   FileDiff,
   FileText,
@@ -32,21 +33,31 @@ import {
   projectActivityOptions,
   projectDeviceFileReadOptions,
   projectDeviceFileTreeOptions,
+  projectDeviceGitLogOptions,
   projectDeviceTerminalsOptions,
   projectKeys,
   projectWorkspaceOptions,
+  nextProjectDeviceId,
   useCreateProjectGitHubRepository,
+  useSetupProjectWorkspace,
   useUpdateProjectWorkspaceConfig,
   useWriteProjectDeviceFile,
 } from "@multica/core/projects";
+import { runtimeListOptions } from "@multica/core/runtimes";
 import {
+  githubKeys,
+  makePullRequestReviewHunkId,
+  parsePullRequestReviewHunks,
   githubInstallationsOptions,
   projectPullRequestReviewOptions,
   projectPullRequestsOptions,
+  type ProjectPullRequestReviewHunk,
 } from "@multica/core/github";
 import { useWorkspaceId } from "@multica/core/hooks";
 import type {
+  AgentRuntime,
   BindProjectLocalWorkspaceRequest,
+  CreateGitHubPullRequestRequest,
   GitHubPullRequest,
   GitHubPullRequestReviewComment,
   GitHubPullRequestReviewFile,
@@ -56,6 +67,7 @@ import type {
   ProjectDeviceBinding,
   ProjectFileEntry,
   ProjectGitOperation,
+  ProjectGitLogResponse,
   ProjectGitOperationRequest,
   ProjectGitStatus,
   ProjectLocalWorkspace,
@@ -79,6 +91,11 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { PullRequestRows } from "../../issues/components/pull-request-list";
 import { useT } from "../../i18n";
+import {
+  ProjectCodeEditor,
+  ProjectDiffViewer,
+  ProjectTerminalLog,
+} from "./project-ide-widgets";
 
 export function ProjectWorkspaceSection({
   projectId,
@@ -147,6 +164,12 @@ export function ProjectWorkspaceSection({
                 primaryRepoURL={primaryRepoURL}
                 baseBranch={baseBranch}
               />
+              {primaryRepoURL && onlineBindings.length === 0 && (
+                <RemoteWorkspaceSetupPanel
+                  projectId={projectId}
+                  workspaceId={data?.workspace_id ?? wsId}
+                />
+              )}
               <DeviceRelayGitPanel
                 projectId={projectId}
                 baseBranch={baseBranch}
@@ -195,7 +218,10 @@ function CreateGitHubRepoPanel({
   const daemon = getDesktopDaemonAPI();
   const queryClient = useQueryClient();
   const installationsQuery = useQuery(githubInstallationsOptions(workspaceId));
-  const installations = installationsQuery.data?.installations ?? [];
+  const installations = useMemo(
+    () => installationsQuery.data?.installations ?? [],
+    [installationsQuery.data?.installations],
+  );
   const createRepo = useCreateProjectGitHubRepository(workspaceId, projectId);
   const [owner, setOwner] = useState("");
   const [repoName, setRepoName] = useState(() =>
@@ -205,10 +231,8 @@ function CreateGitHubRepoPanel({
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    if (!owner && installations[0]) {
-      setOwner(installations[0].account_login);
-    } else if (owner && !installations.some((item) => item.account_login === owner)) {
-      setOwner(installations[0]?.account_login ?? "");
+    if (owner && !installations.some((item) => item.account_login === owner)) {
+      setOwner("");
     }
   }, [installations, owner]);
 
@@ -314,6 +338,9 @@ function CreateGitHubRepoPanel({
             value={owner}
             onChange={(event) => setOwner(event.target.value)}
           >
+            <option value="" disabled>
+              {t(($) => $.workspace.github_select_owner)}
+            </option>
             {installations.map((installation) => (
               <option key={installation.id} value={installation.account_login}>
                 {installation.account_login}
@@ -362,16 +389,6 @@ function CreateGitHubRepoPanel({
       </div>
     </div>
   );
-}
-
-function nextProjectDeviceId(current: string, bindings: ProjectDeviceBinding[]) {
-  if (current && bindings.some((binding) => binding.device_id === current)) {
-    return current;
-  }
-  if (bindings.length === 1) {
-    return bindings[0]?.device_id ?? "";
-  }
-  return "";
 }
 
 function ProjectDeviceOptions({
@@ -577,9 +594,25 @@ function ProjectScriptRunRow({
             <Square className="size-3" />
           </Button>
         )}
-      </div>
-      {run.log && (
-        <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap text-[10px] leading-4 text-muted-foreground">
+	      </div>
+	      {run.ports && run.ports.length > 0 && (
+	        <div className="mt-1 flex flex-wrap gap-1">
+	          {run.ports.map((port) => (
+	            <a
+	              key={`${run.id}:${port.port}`}
+	              href={port.url}
+	              target="_blank"
+	              rel="noreferrer"
+	              className="inline-flex h-6 items-center gap-1 rounded border border-border bg-muted/40 px-1.5 text-[10px] text-foreground hover:bg-muted"
+	            >
+	              <ExternalLink className="size-3" />
+	              :{port.port}
+	            </a>
+	          ))}
+	        </div>
+	      )}
+	      {run.log && (
+	        <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap text-[10px] leading-4 text-muted-foreground">
           {run.log}
         </pre>
       )}
@@ -785,9 +818,7 @@ function ProjectTerminalSessionView({
           {statusLabels[session.status] ?? session.status}
         </span>
       </div>
-      <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/90 p-2 font-mono text-[10px] leading-4 text-white">
-        {session.log || "$ "}
-      </pre>
+      <ProjectTerminalLog log={session.log || "$ "} />
     </div>
   );
 }
@@ -806,6 +837,7 @@ function DeviceRelayGitPanel({
   const queryClient = useQueryClient();
   const [deviceId, setDeviceId] = useState("");
   const [showDiff, setShowDiff] = useState(false);
+  const [showGraph, setShowGraph] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [lastOutput, setLastOutput] = useState("");
 
@@ -834,16 +866,21 @@ function DeviceRelayGitPanel({
   };
 
   const statusQuery = useQuery({
-    queryKey: ["projects", projectId, "device-workspace", deviceId, "git-status"],
+    queryKey: projectKeys.deviceGitStatus(wsId, projectId, deviceId),
     queryFn: () => api.getProjectDeviceGitStatus(projectId, deviceId),
     enabled: !!deviceId,
     retry: false,
     refetchInterval: 10_000,
   });
   const diffQuery = useQuery({
-    queryKey: ["projects", projectId, "device-workspace", deviceId, "git-diff"],
+    queryKey: projectKeys.deviceGitDiff(wsId, projectId, deviceId),
     queryFn: () => api.getProjectDeviceGitDiff(projectId, deviceId),
     enabled: !!deviceId && showDiff,
+    retry: false,
+  });
+  const logQuery = useQuery({
+    ...projectDeviceGitLogOptions(wsId, projectId, deviceId),
+    enabled: !!deviceId && showGraph,
     retry: false,
   });
   const snapshotsQuery = useQuery({
@@ -865,14 +902,17 @@ function DeviceRelayGitPanel({
       setLastOutput(data.output);
       if (vars.name === "commit") setCommitMessage("");
       queryClient.setQueryData(
-        ["projects", projectId, "device-workspace", deviceId, "git-status"],
+        projectKeys.deviceGitStatus(wsId, projectId, deviceId),
         data.status,
       );
       queryClient.invalidateQueries({
-        queryKey: ["projects", projectId, "device-workspace", deviceId],
+        queryKey: projectKeys.device(wsId, projectId, deviceId),
       });
       queryClient.invalidateQueries({
         queryKey: projectKeys.deviceGitSnapshots(wsId, projectId, deviceId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: projectKeys.deviceGitLog(wsId, projectId, deviceId),
       });
       queryClient.invalidateQueries({
         queryKey: projectKeys.activity(wsId, projectId),
@@ -948,12 +988,15 @@ function DeviceRelayGitPanel({
           </div>
           <GitStatusSummary git={git} />
           <GitControls
+            projectId={projectId}
             git={git}
             showDiff={showDiff}
+            showGraph={showGraph}
             operationPending={operation.isPending}
             commitMessage={commitMessage}
             onCommitMessageChange={setCommitMessage}
             onToggleDiff={() => setShowDiff((v) => !v)}
+            onToggleGraph={() => setShowGraph((v) => !v)}
             onRun={(name, payload) => operation.mutate({ name, payload })}
             baseBranch={baseBranch}
           />
@@ -962,6 +1005,12 @@ function DeviceRelayGitPanel({
               patch={diffQuery.data?.patch ?? ""}
               loading={diffQuery.isLoading || diffQuery.isFetching}
               truncated={!!diffQuery.data?.truncated}
+            />
+          )}
+          {showGraph && (
+            <GitLogGraph
+              graph={logQuery.data?.graph ?? ""}
+              loading={logQuery.isLoading || logQuery.isFetching}
             />
           )}
           <SafetySnapshotList
@@ -977,6 +1026,123 @@ function DeviceRelayGitPanel({
       ) : null}
     </div>
   );
+}
+
+function RemoteWorkspaceSetupPanel({
+  projectId,
+  workspaceId,
+}: {
+  projectId: string;
+  workspaceId: string;
+}) {
+  const { t } = useT("projects");
+  const queryClient = useQueryClient();
+  const { data: runtimes = [], isLoading } = useQuery(runtimeListOptions(workspaceId));
+  const candidates = useMemo(
+    () =>
+      runtimes.filter(
+        (runtime) =>
+          runtime.status === "online" &&
+          runtime.runtime_mode === "local" &&
+          !!runtime.daemon_id,
+      ),
+    [runtimes],
+  );
+  const [runtimeId, setRuntimeId] = useState("");
+  const [localPath, setLocalPath] = useState("");
+  const bind = useSetupProjectWorkspace(projectId, "bind");
+  const clone = useSetupProjectWorkspace(projectId, "clone");
+  const busy = bind.isPending || clone.isPending;
+
+  useEffect(() => {
+    if (runtimeId && !candidates.some((runtime) => runtime.id === runtimeId)) {
+      setRuntimeId("");
+      return;
+    }
+    if (!runtimeId && candidates.length === 1) {
+      setRuntimeId(candidates[0]?.id ?? "");
+    }
+  }, [candidates, runtimeId]);
+
+  const submit = (mode: "bind" | "clone") => {
+    const selected = candidates.find((runtime) => runtime.id === runtimeId);
+    if (!selected || !localPath.trim()) return;
+    const mutation = mode === "bind" ? bind : clone;
+    mutation.mutate(
+      {
+        runtimeId: selected.id,
+        data: { local_path: localPath.trim() },
+      },
+      {
+        onSuccess: () => {
+          setLocalPath("");
+          queryClient.invalidateQueries({
+            queryKey: projectKeys.workspace(workspaceId, projectId),
+          });
+          toast.success(t(($) => $.workspace.setup_success));
+        },
+        onError: (error) => {
+          toast.error(t(($) => $.workspace.setup_failed), {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        },
+      },
+    );
+  };
+
+  if (isLoading || candidates.length === 0) return null;
+
+  return (
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+      <div className="mb-2 flex items-center gap-2">
+        <HardDrive className="size-3.5 text-muted-foreground" />
+        <span className="font-medium">{t(($) => $.workspace.remote_setup_header)}</span>
+      </div>
+      <div className="space-y-2">
+        <select
+          className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+          value={runtimeId}
+          onChange={(event) => setRuntimeId(event.target.value)}
+          disabled={busy}
+        >
+          <option value="">{t(($) => $.workspace.remote_setup_runtime)}</option>
+          {candidates.map((runtime) => (
+            <option key={runtime.id} value={runtime.id}>
+              {runtimeLabel(runtime)}
+            </option>
+          ))}
+        </select>
+        <Input
+          value={localPath}
+          onChange={(event) => setLocalPath(event.target.value)}
+          placeholder={t(($) => $.workspace.remote_setup_path)}
+          disabled={busy}
+        />
+        <div className="grid grid-cols-2 gap-1">
+          <GitActionButton
+            label={bind.isPending ? t(($) => $.workspace.setting_up) : t(($) => $.workspace.bind_folder)}
+            icon={<FolderOpen className="size-3" />}
+            disabled={!runtimeId || !localPath.trim() || busy}
+            onClick={() => submit("bind")}
+          />
+          <GitActionButton
+            label={clone.isPending ? t(($) => $.workspace.setting_up) : t(($) => $.workspace.clone_repo)}
+            icon={<Download className="size-3" />}
+            disabled={!runtimeId || !localPath.trim() || busy}
+            onClick={() => submit("clone")}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function runtimeLabel(runtime: AgentRuntime) {
+  const device = runtime.device_info || runtime.daemon_id || runtime.name;
+  if (device && runtime.name && device !== runtime.name) {
+    return `${runtime.name} · ${device}`;
+  }
+  return runtime.name || device || runtime.id;
 }
 
 type DesktopDaemonAPI = {
@@ -1003,6 +1169,7 @@ type DesktopDaemonAPI = {
     patch: string;
     truncated: boolean;
   }>;
+  getProjectGitLog?: (projectId: string) => Promise<ProjectGitLogResponse>;
   getProjectGitSnapshots: (
     projectId: string,
   ) => Promise<ProjectSafetySnapshotListResponse>;
@@ -1033,6 +1200,7 @@ function DesktopGitPanel({
   const daemon = getDesktopDaemonAPI();
   const queryClient = useQueryClient();
   const [showDiff, setShowDiff] = useState(false);
+  const [showGraph, setShowGraph] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [lastOutput, setLastOutput] = useState("");
   const [setupAction, setSetupAction] = useState<"bind" | "clone" | null>(null);
@@ -1066,6 +1234,12 @@ function DesktopGitPanel({
     enabled: !!daemon && showDiff,
     retry: false,
   });
+  const logQuery = useQuery({
+    queryKey: localGitLogKey(projectId),
+    queryFn: () => daemon!.getProjectGitLog!(projectId),
+    enabled: !!daemon?.getProjectGitLog && showGraph && workspaceQuery.data?.bound === true,
+    retry: false,
+  });
   const snapshotsQuery = useQuery({
     queryKey: localGitSnapshotsKey(projectId),
     queryFn: () => daemon!.getProjectGitSnapshots(projectId),
@@ -1090,6 +1264,7 @@ function DesktopGitPanel({
       );
       queryClient.invalidateQueries({ queryKey: localWorkspaceKey(projectId) });
       queryClient.invalidateQueries({ queryKey: localGitDiffKey(projectId) });
+      queryClient.invalidateQueries({ queryKey: localGitLogKey(projectId) });
       queryClient.invalidateQueries({ queryKey: localGitSnapshotsKey(projectId) });
       toast.success(
         t(($) => $.workspace.operation_success, {
@@ -1210,6 +1385,7 @@ function DesktopGitPanel({
           <p className="leading-5 text-destructive">
             {t(($) => $.workspace.local_error)} {error}
           </p>
+          <ProjectWorkspaceRepairGuide error={error} />
           {setupActions}
         </div>
       ) : !localWorkspace?.bound ? (
@@ -1225,12 +1401,16 @@ function DesktopGitPanel({
         <div className="space-y-2">
           <GitStatusSummary git={git} />
           <GitControls
+            projectId={projectId}
             git={git}
             showDiff={showDiff}
+            showGraph={showGraph}
+            canShowGraph={!!daemon.getProjectGitLog}
             operationPending={operation.isPending}
             commitMessage={commitMessage}
             onCommitMessageChange={setCommitMessage}
             onToggleDiff={() => setShowDiff((v) => !v)}
+            onToggleGraph={() => setShowGraph((v) => !v)}
             onRun={(name, payload) => operation.mutate({ name, payload })}
             baseBranch={baseBranch}
           />
@@ -1239,6 +1419,12 @@ function DesktopGitPanel({
               patch={diffQuery.data?.patch ?? ""}
               loading={diffQuery.isLoading || diffQuery.isFetching}
               truncated={!!diffQuery.data?.truncated}
+            />
+          )}
+          {showGraph && daemon.getProjectGitLog && (
+            <GitLogGraph
+              graph={logQuery.data?.graph ?? ""}
+              loading={logQuery.isLoading || logQuery.isFetching}
             />
           )}
           <SafetySnapshotList
@@ -1256,6 +1442,84 @@ function DesktopGitPanel({
   );
 }
 
+function ProjectWorkspaceRepairGuide({ error }: { error: string }) {
+  const { t } = useT("projects");
+  const kind = projectWorkspaceRepairKind(error);
+  switch (kind) {
+    case "non_git":
+      return (
+        <RepairHint
+          title={t(($) => $.workspace.repair_non_git_title)}
+          body={t(($) => $.workspace.repair_non_git_body)}
+        />
+      );
+    case "remote_mismatch":
+      return (
+        <RepairHint
+          title={t(($) => $.workspace.repair_remote_title)}
+          body={t(($) => $.workspace.repair_remote_body)}
+        />
+      );
+    case "clone_existing":
+      return (
+        <RepairHint
+          title={t(($) => $.workspace.repair_clone_existing_title)}
+          body={t(($) => $.workspace.repair_clone_existing_body)}
+        />
+      );
+    case "clone_target":
+      return (
+        <RepairHint
+          title={t(($) => $.workspace.repair_clone_target_title)}
+          body={t(($) => $.workspace.repair_clone_target_body)}
+        />
+      );
+    default:
+      return (
+        <RepairHint
+          title={t(($) => $.workspace.repair_default_title)}
+          body={t(($) => $.workspace.repair_default_body)}
+        />
+      );
+  }
+}
+
+function RepairHint({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="rounded-md border border-border/60 bg-background p-2 leading-5">
+      <div className="font-medium text-foreground">{title}</div>
+      <div className="text-muted-foreground">{body}</div>
+    </div>
+  );
+}
+
+function projectWorkspaceRepairKind(error: string) {
+  const normalized = error.toLowerCase();
+  if (
+    normalized.includes("not an existing git working tree") ||
+    normalized.includes("no longer a git working tree") ||
+    normalized.includes("must be the git root") ||
+    normalized.includes("must have an origin remote") ||
+    normalized.includes("must keep an origin remote")
+  ) {
+    return "non_git";
+  }
+  if (
+    normalized.includes("does not match") ||
+    normalized.includes("no longer matches") ||
+    normalized.includes("primary_repo_url must match")
+  ) {
+    return "remote_mismatch";
+  }
+  if (normalized.includes("matching git repository")) {
+    return "clone_existing";
+  }
+  if (normalized.includes("target directory must be empty or nonexistent")) {
+    return "clone_target";
+  }
+  return "default";
+}
+
 function GitStatusSummary({ git }: { git: ProjectGitStatus }) {
   const { t } = useT("projects");
   const dirtyCount = git.dirty_count + git.untracked_count;
@@ -1263,6 +1527,9 @@ function GitStatusSummary({ git }: { git: ProjectGitStatus }) {
     <div className="space-y-1">
       <TinyRow icon={<GitBranch className="size-3.5" />} label={t(($) => $.workspace.branch)}>
         <span className="truncate">{git.branch || "-"}</span>
+      </TinyRow>
+      <TinyRow icon={<Workflow className="size-3.5" />} label={t(($) => $.workspace.remote)}>
+        <span className="truncate">{git.remote || "-"}</span>
       </TinyRow>
       <TinyRow icon={<FileDiff className="size-3.5" />} label={t(($) => $.workspace.dirty)}>
         <span className={dirtyCount > 0 ? "text-amber-600" : "text-muted-foreground"}>
@@ -1286,26 +1553,62 @@ function GitStatusSummary({ git }: { git: ProjectGitStatus }) {
             : t(($) => $.workspace.last_fetch_never)}
         </span>
       </TinyRow>
+      <GitRemoteList remotes={git.remotes ?? []} />
+    </div>
+  );
+}
+
+function GitRemoteList({
+  remotes,
+}: {
+  remotes: NonNullable<ProjectGitStatus["remotes"]>;
+}) {
+  const { t } = useT("projects");
+  if (remotes.length === 0) return null;
+  return (
+    <div className="space-y-1 rounded-sm bg-background/70 p-1.5">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        {t(($) => $.workspace.remotes_header)}
+      </div>
+      {remotes.map((remote) => (
+        <div key={remote.name} className="min-w-0 text-[10px] leading-4">
+          <div className="font-medium text-foreground">{remote.name}</div>
+          <div className="truncate text-muted-foreground">
+            {remote.fetch_url || remote.push_url}
+          </div>
+          {remote.push_url && remote.push_url !== remote.fetch_url ? (
+            <div className="truncate text-muted-foreground">{remote.push_url}</div>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }
 
 function GitControls({
+  projectId,
   git,
   showDiff,
+  showGraph,
+  canShowGraph = true,
   operationPending,
   commitMessage,
   onCommitMessageChange,
   onToggleDiff,
+  onToggleGraph,
   onRun,
   baseBranch,
 }: {
+  projectId: string;
   git: ProjectGitStatus;
   showDiff: boolean;
+  showGraph: boolean;
+  canShowGraph?: boolean;
   operationPending: boolean;
   commitMessage: string;
   onCommitMessageChange: (value: string) => void;
   onToggleDiff: () => void;
+  onToggleGraph: () => void;
   onRun: (name: ProjectGitOperation, payload?: ProjectGitOperationRequest) => void;
   baseBranch: string;
 }) {
@@ -1319,6 +1622,12 @@ function GitControls({
         onCommitMessageChange={onCommitMessageChange}
         onRun={onRun}
         baseBranch={baseBranch}
+      />
+      <CreatePullRequestBox
+        projectId={projectId}
+        git={git}
+        baseBranch={baseBranch}
+        operationPending={operationPending}
       />
       <div className="grid grid-cols-2 gap-1">
         <GitActionButton
@@ -1352,6 +1661,19 @@ function GitControls({
           onClick={onToggleDiff}
           className="col-span-2"
         />
+        {canShowGraph && (
+          <GitActionButton
+            label={
+              showGraph
+                ? t(($) => $.workspace.hide_commit_graph)
+                : t(($) => $.workspace.commit_graph)
+            }
+            icon={<GitCommitHorizontal className="size-3" />}
+            disabled={operationPending}
+            onClick={onToggleGraph}
+            className="col-span-2"
+          />
+        )}
         <GitActionButton
           label={t(($) => $.workspace.snapshot)}
           icon={<ShieldCheck className="size-3" />}
@@ -1380,13 +1702,19 @@ function GitSyncPlan({
   baseBranch: string;
 }) {
   const { t } = useT("projects");
-  const dirtyFiles = (git.files ?? []).filter((file) => file.path);
-  const dirtyFileKey = dirtyFiles.map((file) => file.path).join("\0");
+  const dirtyFiles = useMemo(
+    () => (git.files ?? []).filter((file) => file.path),
+    [git.files],
+  );
+  const dirtyPaths = useMemo(
+    () => dirtyFiles.map((file) => file.path),
+    [dirtyFiles],
+  );
   const [selectedCommitPaths, setSelectedCommitPaths] = useState<string[]>([]);
 
   useEffect(() => {
-    setSelectedCommitPaths(dirtyFiles.map((file) => file.path));
-  }, [dirtyFileKey]);
+    setSelectedCommitPaths(dirtyPaths);
+  }, [dirtyPaths]);
 
   const updateOperation: ProjectGitOperation =
     git.branch === baseBranch ? "pull" : "rebase";
@@ -1536,6 +1864,148 @@ function GitSyncPlan({
   );
 }
 
+function CreatePullRequestBox({
+  projectId,
+  git,
+  baseBranch,
+  operationPending,
+}: {
+  projectId: string;
+  git: ProjectGitStatus;
+  baseBranch: string;
+  operationPending: boolean;
+}) {
+  const { t } = useT("projects");
+  const wsId = useWorkspaceId();
+  const queryClient = useQueryClient();
+  const defaultTitle = git.branch
+    ? t(($) => $.workspace.create_pr_default_title, { branch: git.branch })
+    : "";
+  const [title, setTitle] = useState(defaultTitle);
+  const [body, setBody] = useState("");
+  const [issueId, setIssueId] = useState("");
+  const [draft, setDraft] = useState(false);
+
+  useEffect(() => {
+    setTitle((current) => (current.trim() ? current : defaultTitle));
+  }, [defaultTitle]);
+
+  const createPullRequest = useMutation({
+    mutationFn: (request: CreateGitHubPullRequestRequest) =>
+      api.createProjectPullRequest(projectId, request),
+    onSuccess: (resp) => {
+      queryClient.setQueryData<{ pull_requests: GitHubPullRequest[] }>(
+        githubKeys.projectPullRequests(projectId),
+        (old) => ({
+          pull_requests: old?.pull_requests
+            ? [
+                resp.pull_request,
+                ...old.pull_requests.filter((pr) => pr.id !== resp.pull_request.id),
+              ]
+            : [resp.pull_request],
+        }),
+      );
+      queryClient.invalidateQueries({
+        queryKey: githubKeys.projectPullRequests(projectId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: projectKeys.activity(wsId, projectId),
+      });
+      setBody("");
+      setIssueId("");
+      toast.success(t(($) => $.workspace.create_pr_success));
+    },
+    onError: (error) => {
+      toast.error(t(($) => $.workspace.create_pr_failed), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
+
+  const trimmedTitle = title.trim();
+  const hasBranch = !!git.branch;
+  const onBaseBranch = git.branch === baseBranch;
+  const canCreate =
+    hasBranch &&
+    !onBaseBranch &&
+    !git.has_uncommitted &&
+    git.ahead === 0 &&
+    trimmedTitle.length > 0 &&
+    !operationPending &&
+    !createPullRequest.isPending;
+  const hint = !hasBranch
+    ? t(($) => $.workspace.create_pr_needs_branch)
+    : onBaseBranch
+      ? t(($) => $.workspace.create_pr_base_branch_blocked)
+      : git.has_uncommitted
+        ? t(($) => $.workspace.create_pr_needs_clean)
+        : git.ahead > 0
+          ? t(($) => $.workspace.create_pr_needs_push)
+          : t(($) => $.workspace.create_pr_ready_hint);
+
+  return (
+    <div className="rounded bg-background/60 p-1.5">
+      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+        <GitPullRequestArrow className="size-3" />
+        {t(($) => $.workspace.create_pr_header)}
+      </div>
+      <div className="space-y-1">
+        <Input
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder={t(($) => $.workspace.create_pr_title)}
+          disabled={createPullRequest.isPending}
+        />
+        <Textarea
+          className="min-h-14 resize-none text-xs"
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
+          placeholder={t(($) => $.workspace.create_pr_body)}
+          disabled={createPullRequest.isPending}
+        />
+        <Input
+          value={issueId}
+          onChange={(event) => setIssueId(event.target.value)}
+          placeholder={t(($) => $.workspace.create_pr_issue)}
+          disabled={createPullRequest.isPending}
+        />
+        <div className="flex min-w-0 items-center gap-2">
+          <label className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={draft}
+              disabled={createPullRequest.isPending}
+              onChange={(event) => setDraft(event.target.checked)}
+            />
+            <span>{t(($) => $.workspace.create_pr_draft)}</span>
+          </label>
+          <Button
+            className="h-7 shrink-0 px-2 text-xs"
+            size="xs"
+            variant="outline"
+            disabled={!canCreate}
+            onClick={() =>
+              createPullRequest.mutate({
+                title: trimmedTitle,
+                body: body.trim() || undefined,
+                issue_id: issueId.trim() || undefined,
+                head: git.branch,
+                base: baseBranch,
+                draft,
+              })
+            }
+          >
+            {createPullRequest.isPending
+              ? t(($) => $.workspace.create_pr_creating)
+              : t(($) => $.workspace.create_pr_submit)}
+          </Button>
+        </div>
+        <p className="text-[10px] leading-4 text-muted-foreground">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
 function GitSyncStep({
   icon,
   title,
@@ -1661,10 +2131,32 @@ function GitDiffPreview({
   const { t } = useT("projects");
   if (loading) return <Skeleton className="h-20 w-full" />;
   return (
-    <pre className="max-h-52 overflow-auto rounded bg-background/80 p-2 text-[10px] leading-4 text-muted-foreground">
-      {patch || t(($) => $.workspace.diff_empty)}
-      {truncated ? "\n..." : ""}
-    </pre>
+    <ProjectDiffViewer
+      patch={`${patch || ""}${truncated ? "\n..." : ""}`}
+      emptyText={t(($) => $.workspace.diff_empty)}
+    />
+  );
+}
+
+function GitLogGraph({
+  graph,
+  loading,
+}: {
+  graph: string;
+  loading: boolean;
+}) {
+  const { t } = useT("projects");
+  if (loading) return <Skeleton className="h-24 w-full" />;
+  return (
+    <div className="space-y-1 rounded-md border border-border/70 bg-background/70 p-2">
+      <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        <GitCommitHorizontal className="size-3" />
+        <span>{t(($) => $.workspace.commit_graph_header)}</span>
+      </div>
+      <pre className="max-h-48 overflow-auto whitespace-pre rounded bg-background/80 p-2 text-[10px] leading-4 text-muted-foreground">
+        {graph || t(($) => $.workspace.commit_graph_empty)}
+      </pre>
+    </div>
   );
 }
 
@@ -1692,6 +2184,10 @@ function localWorkspaceKey(projectId: string) {
 
 function localGitDiffKey(projectId: string) {
   return ["projects", projectId, "local-diff"] as const;
+}
+
+function localGitLogKey(projectId: string) {
+  return ["projects", projectId, "local-log"] as const;
 }
 
 function localGitSnapshotsKey(projectId: string) {
@@ -1753,10 +2249,11 @@ function ProjectFilePanel({
     enabled: !!deviceId && !!selectedPath,
     retry: false,
   });
+  const fileData = fileQuery.data;
   const writeFile = useWriteProjectDeviceFile(projectId, deviceId);
 
   useEffect(() => {
-    const file = fileQuery.data;
+    const file = fileData;
     if (!file || file.binary) return;
     if (draftBase?.path === file.path && draftBase.hash === file.hash) return;
     setDraft(file.content ?? "");
@@ -1764,10 +2261,7 @@ function ProjectFilePanel({
   }, [
     draftBase?.hash,
     draftBase?.path,
-    fileQuery.data?.binary,
-    fileQuery.data?.content,
-    fileQuery.data?.hash,
-    fileQuery.data?.path,
+    fileData,
   ]);
 
   if (bindings.length === 0) return null;
@@ -1939,11 +2433,10 @@ function ProjectFilePanel({
                     {formatProjectFileSize(selectedFile.size)}
                   </span>
                 </div>
-                <Textarea
-                  className="min-h-44 resize-y font-mono text-[11px] leading-4"
+                <ProjectCodeEditor
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  spellCheck={false}
+                  path={selectedFile.path}
+                  onChange={setDraft}
                   disabled={writeFile.isPending}
                 />
                 <Button
@@ -2019,7 +2512,7 @@ function formatProjectFileSize(size: number) {
 function ProjectPullRequestPanel({ projectId }: { projectId: string }) {
   const { t } = useT("projects");
   const { data, isLoading } = useQuery(projectPullRequestsOptions(projectId));
-  const prs = data?.pull_requests ?? [];
+  const prs = useMemo(() => data?.pull_requests ?? [], [data?.pull_requests]);
   const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2105,16 +2598,103 @@ function ProjectPullRequestReviewDetail({
   pullRequestId: string | null;
 }) {
   const { t } = useT("projects");
+  const wsId = useWorkspaceId();
+  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery(
     projectPullRequestReviewOptions(projectId, pullRequestId),
   );
-  const files = data?.files ?? [];
+  const files = useMemo(() => data?.files ?? [], [data?.files]);
+  const fileReviewHunks = useMemo(
+    () =>
+      files.map((file) => ({
+        file,
+        hunks: parsePullRequestReviewHunks(file.patch),
+      })),
+    [files],
+  );
+  const allHunkIds = useMemo(
+    () =>
+      fileReviewHunks.flatMap(({ file, hunks }) =>
+        hunks.map((hunk) => makePullRequestReviewHunkId(file.filename, hunk)),
+      ),
+    [fileReviewHunks],
+  );
+  const allHunkIdSet = useMemo(() => new Set(allHunkIds), [allHunkIds]);
   const fileKey = files.map((file) => file.filename).join("\u0000");
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const hunkKey = allHunkIds.join("\u0001");
+  const [selectedHunkIds, setSelectedHunkIds] = useState<string[]>([]);
+  const [commentFile, setCommentFile] = useState("");
+  const [commentLine, setCommentLine] = useState("");
+  const [commentBody, setCommentBody] = useState("");
 
   useEffect(() => {
-    setSelectedFiles(files.map((file) => file.filename));
+    setSelectedHunkIds(allHunkIds);
+  }, [allHunkIds, hunkKey]);
+
+  useEffect(() => {
+    setCommentFile((current) => {
+      if (files.length === 0) return "";
+      if (current && files.some((file) => file.filename === current)) {
+        return current;
+      }
+      return files[0]?.filename ?? "";
+    });
   }, [fileKey, files]);
+
+  const commentLineNumber = Number.parseInt(commentLine.trim(), 10);
+  const reviewQueryKey = githubKeys.projectPullRequestReview(projectId, pullRequestId);
+  const createReviewComment = useMutation({
+    mutationFn: () => {
+      if (!pullRequestId) throw new Error("pullRequestId is required");
+      return api.createProjectPullRequestReviewComment(projectId, pullRequestId, {
+        body: commentBody.trim(),
+        path: commentFile,
+        line: commentLineNumber,
+        side: "RIGHT",
+      });
+    },
+    onSuccess: async () => {
+      setCommentBody("");
+      toast.success(t(($) => $.workspace.review_comment_added));
+      await queryClient.invalidateQueries({ queryKey: reviewQueryKey });
+      await queryClient.invalidateQueries({
+        queryKey: projectKeys.activity(wsId, projectId),
+      });
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t(($) => $.workspace.review_comment_failed),
+      );
+    },
+  });
+  const resolveReviewThread = useMutation({
+    mutationFn: (commentId: number) => {
+      if (!pullRequestId) throw new Error("pullRequestId is required");
+      return api.resolveProjectPullRequestReviewThread(projectId, pullRequestId, commentId);
+    },
+    onSuccess: async () => {
+      toast.success(t(($) => $.workspace.review_resolved_toast));
+      await queryClient.invalidateQueries({ queryKey: reviewQueryKey });
+      await queryClient.invalidateQueries({
+        queryKey: projectKeys.activity(wsId, projectId),
+      });
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t(($) => $.workspace.review_resolve_failed),
+      );
+    },
+  });
+  const canSubmitComment =
+    !!commentFile &&
+    Number.isInteger(commentLineNumber) &&
+    commentLineNumber > 0 &&
+    commentBody.trim().length > 0 &&
+    !createReviewComment.isPending;
 
   if (!pullRequestId) return null;
   if (isLoading) {
@@ -2134,7 +2714,53 @@ function ProjectPullRequestReviewDetail({
   }
   if (!data) return null;
 
-  const selectedSet = new Set(selectedFiles);
+  const selectedSet = new Set(selectedHunkIds);
+  const selectedHunkCount = selectedHunkIds.reduce(
+    (count, id) => count + (allHunkIdSet.has(id) ? 1 : 0),
+    0,
+  );
+  const toggleAllHunks = () => {
+    setSelectedHunkIds((current) => {
+      const currentSet = new Set(current);
+      const allSelected =
+        allHunkIds.length > 0 && allHunkIds.every((id) => currentSet.has(id));
+      return allSelected ? [] : allHunkIds;
+    });
+  };
+  const toggleFileHunks = (
+    file: GitHubPullRequestReviewFile,
+    hunks: ProjectPullRequestReviewHunk[],
+  ) => {
+    const fileHunkIds = hunks.map((hunk) =>
+      makePullRequestReviewHunkId(file.filename, hunk),
+    );
+    setSelectedHunkIds((current) => {
+      const next = new Set(current.filter((id) => allHunkIdSet.has(id)));
+      const fileSelected =
+        fileHunkIds.length > 0 && fileHunkIds.every((id) => next.has(id));
+      if (fileSelected) {
+        fileHunkIds.forEach((id) => next.delete(id));
+      } else {
+        fileHunkIds.forEach((id) => next.add(id));
+      }
+      return allHunkIds.filter((id) => next.has(id));
+    });
+  };
+  const toggleHunk = (
+    file: GitHubPullRequestReviewFile,
+    hunk: ProjectPullRequestReviewHunk,
+  ) => {
+    const hunkId = makePullRequestReviewHunkId(file.filename, hunk);
+    setSelectedHunkIds((current) => {
+      const next = new Set(current.filter((id) => allHunkIdSet.has(id)));
+      if (next.has(hunkId)) {
+        next.delete(hunkId);
+      } else {
+        next.add(hunkId);
+      }
+      return allHunkIds.filter((id) => next.has(id));
+    });
+  };
   return (
     <div className="space-y-2 rounded bg-background/70 p-2">
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
@@ -2143,43 +2769,95 @@ function ProjectPullRequestReviewDetail({
         <span>{t(($) => $.workspace.review_comments_count, { count: data.comments.length })}</span>
         <span>{t(($) => $.workspace.review_reviews_count, { count: data.reviews.length })}</span>
       </div>
+      <form
+        className="grid gap-2 rounded border border-border/70 p-1.5"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmitComment) createReviewComment.mutate();
+        }}
+      >
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_5rem]">
+          <label className="grid gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+            {t(($) => $.workspace.review_comment_file)}
+            <select
+              className="min-h-8 rounded-md border border-input bg-background px-2 text-[11px] normal-case text-foreground"
+              value={commentFile}
+              onChange={(event) => setCommentFile(event.target.value)}
+              disabled={files.length === 0 || createReviewComment.isPending}
+            >
+              {files.map((file) => (
+                <option key={file.filename} value={file.filename}>
+                  {file.filename}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+            {t(($) => $.workspace.review_comment_line)}
+            <Input
+              className="h-8 text-[11px]"
+              inputMode="numeric"
+              min={1}
+              type="number"
+              value={commentLine}
+              onChange={(event) => setCommentLine(event.target.value)}
+              disabled={createReviewComment.isPending}
+            />
+          </label>
+        </div>
+        <label className="grid gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          {t(($) => $.workspace.review_comment_body)}
+          <Textarea
+            className="min-h-20 text-[11px] normal-case text-foreground"
+            value={commentBody}
+            placeholder={t(($) => $.workspace.review_comment_placeholder)}
+            onChange={(event) => setCommentBody(event.target.value)}
+            disabled={createReviewComment.isPending}
+          />
+        </label>
+        <Button
+          type="submit"
+          size="sm"
+          className="h-7 justify-self-end text-xs"
+          disabled={!canSubmitComment}
+        >
+          {t(($) => $.workspace.review_comment_submit)}
+        </Button>
+      </form>
       <div className="rounded border border-border/70 p-1.5">
         <div className="mb-1 flex items-center gap-2">
           <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
             {t(($) => $.workspace.review_hunk_selection, {
-              selected: selectedFiles.length,
-              total: files.length,
+              selected: selectedHunkCount,
+              total: allHunkIds.length,
             })}
           </span>
           <button
             type="button"
             className="ml-auto rounded px-1.5 py-0.5 text-[10px] hover:bg-accent"
-            onClick={() =>
-              setSelectedFiles((current) =>
-                current.length === files.length
-                  ? []
-                  : files.map((file) => file.filename),
-              )
-            }
+            onClick={toggleAllHunks}
+            disabled={allHunkIds.length === 0}
           >
-            {selectedFiles.length === files.length
+            {selectedHunkCount === allHunkIds.length && allHunkIds.length > 0
               ? t(($) => $.workspace.commit_files_clear)
               : t(($) => $.workspace.commit_files_all)}
           </button>
         </div>
         <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
-          {files.map((file) => (
+          {fileReviewHunks.map(({ file, hunks }) => (
             <ProjectPullRequestFileReview
               key={file.filename}
               file={file}
-              selected={selectedSet.has(file.filename)}
-              onToggle={() =>
-                setSelectedFiles((current) =>
-                  current.includes(file.filename)
-                    ? current.filter((item) => item !== file.filename)
-                    : [...current, file.filename],
-                )
-              }
+              hunks={hunks}
+              selectedHunkIds={selectedSet}
+              onToggleFile={() => toggleFileHunks(file, hunks)}
+              onToggleHunk={(hunk) => toggleHunk(file, hunk)}
+              onCommentAtHunk={(hunk) => {
+                setCommentFile(file.filename);
+                if (hunk.startLine !== null) {
+                  setCommentLine(String(hunk.startLine));
+                }
+              }}
             />
           ))}
         </div>
@@ -2187,6 +2865,10 @@ function ProjectPullRequestReviewDetail({
       <ProjectPullRequestComments
         comments={data.comments}
         reviews={data.reviews}
+        onResolve={(commentId) => resolveReviewThread.mutate(commentId)}
+        resolvingCommentId={
+          resolveReviewThread.isPending ? (resolveReviewThread.variables ?? null) : null
+        }
       />
     </div>
   );
@@ -2194,34 +2876,93 @@ function ProjectPullRequestReviewDetail({
 
 function ProjectPullRequestFileReview({
   file,
-  selected,
-  onToggle,
+  hunks,
+  selectedHunkIds,
+  onToggleFile,
+  onToggleHunk,
+  onCommentAtHunk,
 }: {
   file: GitHubPullRequestReviewFile;
-  selected: boolean;
-  onToggle: () => void;
+  hunks: ProjectPullRequestReviewHunk[];
+  selectedHunkIds: ReadonlySet<string>;
+  onToggleFile: () => void;
+  onToggleHunk: (hunk: ProjectPullRequestReviewHunk) => void;
+  onCommentAtHunk: (hunk: ProjectPullRequestReviewHunk) => void;
 }) {
+  const { t } = useT("projects");
+  const hunkIds = hunks.map((hunk) => makePullRequestReviewHunkId(file.filename, hunk));
+  const selectedHunkCount = hunkIds.filter((id) => selectedHunkIds.has(id)).length;
+  const fileSelected = hunkIds.length > 0 && selectedHunkCount === hunkIds.length;
+  const filePartial = selectedHunkCount > 0 && !fileSelected;
+  const selectionMarker = fileSelected ? "[x]" : filePartial ? "[-]" : "[ ]";
+
   return (
     <div className="rounded border border-border/60 bg-muted/20">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left"
-        onClick={onToggle}
+        className="flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-60"
+        onClick={onToggleFile}
+        disabled={hunks.length === 0}
       >
         <span className="shrink-0 text-[10px]">
-          {selected ? "[x]" : "[ ]"}
+          {selectionMarker}
         </span>
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
           {file.filename}
         </span>
+        <span className="shrink-0 text-[10px] text-muted-foreground">
+          {selectedHunkCount}/{hunks.length}
+        </span>
         <span className="shrink-0 text-[10px] text-emerald-600">+{file.additions}</span>
         <span className="shrink-0 text-[10px] text-rose-600">-{file.deletions}</span>
       </button>
-      {selected && file.patch ? (
-        <pre className="max-h-52 overflow-auto border-t border-border/60 bg-background p-2 text-[10px] leading-4">
-          {file.patch}
-        </pre>
-      ) : null}
+      <div className="border-t border-border/60 bg-background">
+        {hunks.length === 0 ? (
+          <p className="p-2 text-[11px] text-muted-foreground">
+            {t(($) => $.workspace.review_hunks_empty)}
+          </p>
+        ) : (
+          <div className="space-y-1 p-1.5">
+            {hunks.map((hunk) => {
+              const hunkId = makePullRequestReviewHunkId(file.filename, hunk);
+              const selected = selectedHunkIds.has(hunkId);
+              return (
+                <div key={hunkId} className="rounded border border-border/50">
+                  <div className="flex min-w-0 items-center gap-1 px-1.5 py-1">
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                      onClick={() => onToggleHunk(hunk)}
+                    >
+                      <span className="shrink-0 text-[10px]">
+                        {selected ? "[x]" : "[ ]"}
+                      </span>
+                      <code className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
+                        {hunk.header}
+                      </code>
+                    </button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 shrink-0 px-2 text-[10px]"
+                      disabled={hunk.startLine === null}
+                      onClick={() => onCommentAtHunk(hunk)}
+                    >
+                      {t(($) => $.workspace.review_hunk_comment)}
+                    </Button>
+                  </div>
+                  {selected ? (
+                    <pre className="max-h-52 overflow-auto border-t border-border/50 p-2 text-[10px] leading-4">
+                      {hunk.patch}
+                    </pre>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2229,9 +2970,13 @@ function ProjectPullRequestFileReview({
 function ProjectPullRequestComments({
   comments,
   reviews,
+  onResolve,
+  resolvingCommentId,
 }: {
   comments: GitHubPullRequestReviewComment[];
   reviews: GitHubPullRequestReviewSummary[];
+  onResolve?: (commentId: number) => void;
+  resolvingCommentId?: number | null;
 }) {
   const { t } = useT("projects");
   return (
@@ -2245,7 +2990,12 @@ function ProjectPullRequestComments({
         ) : (
           <div className="space-y-1.5">
             {comments.slice(0, 8).map((comment) => (
-              <PullRequestCommentRow key={comment.id} comment={comment} />
+              <PullRequestCommentRow
+                key={comment.id}
+                comment={comment}
+                onResolve={onResolve}
+                resolving={resolvingCommentId === comment.id}
+              />
             ))}
           </div>
         )}
@@ -2284,7 +3034,15 @@ function ProjectPullRequestComments({
   );
 }
 
-function PullRequestCommentRow({ comment }: { comment: GitHubPullRequestReviewComment }) {
+function PullRequestCommentRow({
+  comment,
+  onResolve,
+  resolving,
+}: {
+  comment: GitHubPullRequestReviewComment;
+  onResolve?: (commentId: number) => void;
+  resolving?: boolean;
+}) {
   const { t } = useT("projects");
   const resolution =
     comment.resolved === true
@@ -2294,25 +3052,40 @@ function PullRequestCommentRow({ comment }: { comment: GitHubPullRequestReviewCo
         : t(($) => $.workspace.review_resolution_unknown);
 
   return (
-    <a
-      href={comment.html_url}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="block rounded-sm p-1 hover:bg-accent/60"
-    >
+    <div className="rounded-sm p-1 hover:bg-accent/60">
       <div className="flex items-center gap-1 text-[11px] font-medium">
-        <span className="min-w-0 flex-1 truncate">
+        <a
+          href={comment.html_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="min-w-0 flex-1 truncate hover:underline"
+        >
           {comment.path}
           {comment.line ? `:${comment.line}` : ""}
-        </span>
+        </a>
         <span className="shrink-0 rounded-sm border border-border/70 px-1 py-0.5 text-[10px] font-normal text-muted-foreground">
           {resolution}
         </span>
+        {comment.resolved === false && onResolve ? (
+          <button
+            type="button"
+            className="shrink-0 rounded-sm border border-border/70 px-1 py-0.5 text-[10px] font-normal text-foreground hover:bg-background disabled:opacity-60"
+            disabled={resolving}
+            onClick={() => onResolve(comment.id)}
+          >
+            {t(($) => $.workspace.review_resolve)}
+          </button>
+        ) : null}
       </div>
-      <div className="line-clamp-2 text-[11px] text-muted-foreground">
+      <a
+        href={comment.html_url}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="line-clamp-2 text-[11px] text-muted-foreground hover:underline"
+      >
         @{comment.user_login}: {comment.body}
-      </div>
-    </a>
+      </a>
+    </div>
   );
 }
 
@@ -2634,6 +3407,8 @@ function ProjectActivityRow({ entry }: { entry: TimelineEntry }) {
     project_workspace_config_updated: t(($) => $.workspace.activity.config),
     project_device_binding_upserted: t(($) => $.workspace.activity.binding),
     project_device_binding_deleted: t(($) => $.workspace.activity.unbinding),
+    project_workspace_bind: t(($) => $.workspace.activity.bind),
+    project_workspace_clone: t(($) => $.workspace.activity.clone),
     project_workspace_git_diff: t(($) => $.workspace.activity.git_diff),
     project_workspace_git_fetch: t(($) => $.workspace.activity.git_fetch),
     project_workspace_git_pull: t(($) => $.workspace.activity.git_pull),
@@ -2648,11 +3423,21 @@ function ProjectActivityRow({ entry }: { entry: TimelineEntry }) {
     project_workspace_terminal_start: t(($) => $.workspace.activity.terminal_start),
     project_workspace_terminal_input: t(($) => $.workspace.activity.terminal_input),
     project_workspace_terminal_stop: t(($) => $.workspace.activity.terminal_stop),
+    project_agent_task_started: t(($) => $.workspace.activity.agent_task_started),
+    project_agent_task_completed: t(($) => $.workspace.activity.agent_task_completed),
+    project_agent_task_failed: t(($) => $.workspace.activity.agent_task_failed),
+    project_resource_attached: t(($) => $.workspace.activity.project_resource_attached),
+    project_resource_detached: t(($) => $.workspace.activity.project_resource_detached),
+    github_repo_create: t(($) => $.workspace.activity.github_repo_create),
+    github_pr_create: t(($) => $.workspace.activity.github_pr_create),
+    github_pr_review_comment: t(($) => $.workspace.activity.github_pr_review_comment),
+    github_pr_review_resolve: t(($) => $.workspace.activity.github_pr_review_resolve),
   };
   const label =
     labels[action as keyof typeof labels] ??
     t(($) => $.workspace.activity.default);
   const subject = projectActivitySubject(details);
+  const detailText = projectActivityDetailText(details);
   const when = new Date(entry.created_at).toLocaleString();
   return (
     <div className="flex gap-2 rounded-sm py-0.5">
@@ -2663,9 +3448,110 @@ function ProjectActivityRow({ entry }: { entry: TimelineEntry }) {
           {subject ? <span className="text-muted-foreground"> · {subject}</span> : null}
         </div>
         <div className="truncate text-[10px] text-muted-foreground">{when}</div>
+        {detailText ? (
+          <pre className="mt-1 max-h-40 overflow-auto rounded-sm border border-border/60 bg-background p-2 text-[10px] leading-4 text-muted-foreground whitespace-pre-wrap">
+            {detailText}
+          </pre>
+        ) : null}
       </div>
     </div>
   );
+}
+
+function projectActivityDetailText(details: Record<string, unknown>) {
+  const portsText = projectActivityPortsText(details);
+  const repoURL = details.repo_url;
+  if (typeof repoURL === "string" && repoURL) {
+    const htmlURL = typeof details.html_url === "string" ? details.html_url : "";
+    const defaultBranch =
+      typeof details.default_branch === "string" ? details.default_branch : "";
+    const visibility = typeof details.visibility === "string" ? details.visibility : "";
+    const role = typeof details.repo_role === "string" ? details.repo_role : "";
+    const workspaceRepoAdded =
+      typeof details.workspace_repo_added === "boolean"
+        ? details.workspace_repo_added
+        : undefined;
+    return [
+      `Repository: ${repoURL}`,
+      htmlURL ? `GitHub: ${htmlURL}` : "",
+      role ? `Role: ${role}` : "",
+      defaultBranch ? `Default branch: ${defaultBranch}` : "",
+      visibility ? `Visibility: ${visibility}` : "",
+      typeof workspaceRepoAdded === "boolean"
+        ? `Workspace repo pool: ${workspaceRepoAdded ? "added" : "already present"}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  const commentURL = details.comment_url;
+  const commentID =
+    typeof details.comment_id === "number" || typeof details.comment_id === "string"
+      ? String(details.comment_id)
+      : "";
+  if ((typeof commentURL === "string" && commentURL) || commentID) {
+    const pullRequestURL =
+      typeof details.pull_request_url === "string" ? details.pull_request_url : "";
+    const line =
+      typeof details.line === "number" || typeof details.line === "string"
+        ? `Line: ${details.line}`
+        : "";
+    const resolved =
+      typeof details.resolved === "boolean"
+        ? `Resolved: ${details.resolved ? "yes" : "no"}`
+        : "";
+    const commentText =
+      typeof commentURL === "string" && commentURL
+        ? `Review comment: ${commentURL}`
+        : `Review comment: #${commentID}`;
+    return [
+      commentText,
+      pullRequestURL ? `Pull request: ${pullRequestURL}` : "",
+      line,
+      resolved,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  const pullRequestURL = details.pull_request_url;
+  if (typeof pullRequestURL === "string" && pullRequestURL) {
+    const head = typeof details.head === "string" ? details.head : "";
+    const base = typeof details.base === "string" ? details.base : "";
+    const draft = typeof details.draft === "boolean" ? details.draft : undefined;
+    const branchText = head && base ? `Branch: ${head} -> ${base}` : "";
+    const draftText = typeof draft === "boolean" ? `Draft: ${draft ? "yes" : "no"}` : "";
+    return [`Pull request: ${pullRequestURL}`, branchText, draftText].filter(Boolean).join("\n");
+  }
+  const diff = details.diff;
+  if (isRecord(diff) && typeof diff.patch === "string" && diff.patch.trim()) {
+    return diff.patch.trim();
+  }
+  for (const key of ["output", "log", "command", "new_content_preview"]) {
+    const value = details[key];
+    if (isRecord(value) && typeof value.text === "string" && value.text.trim()) {
+      return [portsText, value.text.trim()].filter(Boolean).join("\n");
+    }
+  }
+  return portsText;
+}
+
+function projectActivityPortsText(details: Record<string, unknown>) {
+  const ports = details.ports;
+  if (!Array.isArray(ports)) return "";
+  const labels = ports
+    .map((port) => {
+      if (!isRecord(port)) return "";
+      const portNumber =
+        typeof port.port === "number" || typeof port.port === "string"
+          ? String(port.port)
+          : "";
+      if (!portNumber) return "";
+      const url = typeof port.url === "string" && port.url ? ` ${port.url}` : "";
+      return `:${portNumber}${url}`;
+    })
+    .filter(Boolean);
+  if (labels.length === 0) return "";
+  return `Preview ports: ${labels.join(", ")}`;
 }
 
 function projectActivitySubject(details: Record<string, unknown>) {
@@ -2683,6 +3569,10 @@ function projectActivitySubject(details: Record<string, unknown>) {
   }
   const script = details.script;
   if (typeof script === "string" && script) return script;
+  const taskKind = details.task_kind;
+  if (typeof taskKind === "string" && taskKind) return taskKind;
+  const repo = details.repo;
+  if (typeof repo === "string" && repo) return repo;
   const deviceId = details.device_id;
   if (typeof deviceId === "string" && deviceId) return deviceId;
   return "";

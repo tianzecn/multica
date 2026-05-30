@@ -28,6 +28,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import type { MentionItem } from "../../editor";
 import { useNavigation } from "../../navigation";
 import { ProjectIcon } from "../../projects/components/project-icon";
+import { useProjectDirtyWorktreeConsent } from "../../projects/use-project-dirty-worktree-consent";
 import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { ChatInput } from "../../chat/components/chat-input";
@@ -156,6 +157,11 @@ export function ConversationsPage({
   const createSession = useCreateChatSession();
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
   const projectIdForContext = currentSession?.project_id ?? draftProjectId;
+  const { confirmProjectDirtyContinue } = useProjectDirtyWorktreeConsent({
+    projectId: projectIdForContext,
+    runtimeId: activeAgent?.runtime_id,
+    message: t(($) => $.conversations.dirty_snapshot_confirm),
+  });
   const ensureSession = useCallback(
     async (titleSeed: string): Promise<string | null> => {
       if (currentSession?.id) return currentSession.id;
@@ -203,6 +209,8 @@ export function ConversationsPage({
   const handleSend = useCallback(
     async (content: string, attachmentIds?: string[]) => {
       if (!activeAgent) return;
+      const dirtyChoice = await confirmProjectDirtyContinue();
+      if (!dirtyChoice.proceed) return;
       const newSessionId = await ensureSession(content);
       if (!newSessionId) return;
 
@@ -226,7 +234,10 @@ export function ConversationsPage({
       setActiveSession(newSessionId);
       if (!currentSession?.id) push(p.conversationDetail(newSessionId));
 
-      const result = await api.sendChatMessage(newSessionId, content, attachmentIds);
+      const result = await api.sendChatMessage(newSessionId, content, {
+        attachmentIds,
+        projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
+      });
       qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(newSessionId), {
         task_id: result.task_id,
         status: "queued",
@@ -235,7 +246,17 @@ export function ConversationsPage({
       qc.invalidateQueries({ queryKey: chatKeys.messages(newSessionId) });
       qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
     },
-    [activeAgent, currentSession?.id, ensureSession, p, push, qc, setActiveSession, wsId],
+    [
+      activeAgent,
+      confirmProjectDirtyContinue,
+      currentSession?.id,
+      ensureSession,
+      p,
+      push,
+      qc,
+      setActiveSession,
+      wsId,
+    ],
   );
 
   const handleStop = useCallback(() => {

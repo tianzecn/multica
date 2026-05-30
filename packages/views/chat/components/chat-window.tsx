@@ -60,6 +60,7 @@ import {
 } from "./context-anchor";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatResize } from "./use-chat-resize";
+import { useProjectDirtyWorktreeConsent } from "../../projects/use-project-dirty-worktree-consent";
 import { createLogger } from "@multica/core/logger";
 import type { Agent, ChatMessage, ChatPendingTask, ChatSession, Project } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -188,6 +189,11 @@ export function ChatWindow() {
   const { candidate: anchorCandidate } = useRouteAnchorCandidate(wsId);
 
   const { uploadWithToast } = useFileUpload(api);
+  const { confirmProjectDirtyContinue } = useProjectDirtyWorktreeConsent({
+    projectId: currentSession?.project_id,
+    runtimeId: activeAgent?.runtime_id,
+    message: t(($) => $.window.dirty_snapshot_confirm),
+  });
 
   // Lazy-creates a chat_session the first time the user needs an id —
   // either to send a message or to attach an uploaded file. Pulled out of
@@ -268,6 +274,14 @@ export function ChatWindow() {
         : content;
 
       const isNewSession = !activeSessionId;
+      const dirtyChoice = await confirmProjectDirtyContinue();
+      if (!dirtyChoice.proceed) {
+        apiLogger.info("sendChatMessage.cancelled_dirty_worktree", {
+          sessionId: activeSessionId,
+          agentId: activeAgent.id,
+        });
+        return;
+      }
 
       apiLogger.info("sendChatMessage.start", {
         sessionId: activeSessionId,
@@ -323,7 +337,10 @@ export function ChatWindow() {
       setActiveSession(sessionId);
       apiLogger.debug("sendChatMessage.optimistic", { sessionId, optimisticId: optimistic.id });
 
-      const result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
+      const result = await api.sendChatMessage(sessionId, finalContent, {
+        attachmentIds,
+        projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
+      });
       apiLogger.info("sendChatMessage.success", {
         sessionId,
         messageId: result.message_id,
@@ -343,6 +360,7 @@ export function ChatWindow() {
       activeSessionId,
       activeAgent,
       anchorCandidate,
+      confirmProjectDirtyContinue,
       ensureSession,
       qc,
       setActiveSession,

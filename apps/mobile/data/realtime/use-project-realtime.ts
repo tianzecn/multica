@@ -24,12 +24,13 @@
  * `project:created` is not relevant to the per-record hook (no id match).
  */
 import { useQueryClient } from "@tanstack/react-query";
-import type { Issue } from "@multica/core/types";
+import type { Issue, PullRequestChangedPayload } from "@multica/core/types";
 import { issueKeys } from "@/data/queries/issue-keys";
 import { projectKeys } from "@/data/queries/projects";
 import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   clearProjectDetail,
+  invalidateProjectPullRequestCaches,
   patchProjectDetail,
   removeFromProjectsList,
 } from "./project-ws-updaters";
@@ -55,7 +56,9 @@ export function useProjectRealtime(
         qc.invalidateQueries({
           queryKey: projectKeys.resources(wsId, projectId),
         });
+        qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
         qc.invalidateQueries({ queryKey: issueListKey });
+        invalidateProjectPullRequestCaches(qc, wsId, projectId);
       };
 
       return [
@@ -103,6 +106,34 @@ export function useProjectRealtime(
         ws.on("issue:deleted", (payload) => {
           qc.setQueryData<Issue[]>(issueListKey, (old) =>
             old ? old.filter((i) => i.id !== payload.issue_id) : old,
+          );
+        }),
+        ws.on("activity:created", (payload) => {
+          if (payload.project_id !== projectId) return;
+          qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
+        }),
+        ws.on("pull_request:linked", (payload) => {
+          invalidateProjectPullRequestCaches(
+            qc,
+            wsId,
+            projectId,
+            payload as PullRequestChangedPayload,
+          );
+        }),
+        ws.on("pull_request:updated", (payload) => {
+          invalidateProjectPullRequestCaches(
+            qc,
+            wsId,
+            projectId,
+            payload as PullRequestChangedPayload,
+          );
+        }),
+        ws.on("pull_request:unlinked", (payload) => {
+          invalidateProjectPullRequestCaches(
+            qc,
+            wsId,
+            projectId,
+            payload as PullRequestChangedPayload,
           );
         }),
 

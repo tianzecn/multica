@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { toast } from "sonner";
 import { ChevronRight, ListTodo } from "lucide-react";
-import type { UpdateIssueRequest } from "@multica/core/types";
+import type { Issue, UpdateIssueRequest } from "@multica/core/types";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useAuthStore } from "@multica/core/auth";
 import { useCurrentWorkspace } from "@multica/core/paths";
@@ -26,9 +26,11 @@ import { myIssuesViewStore } from "@multica/core/issues/stores/my-issues-view-st
 import { PageHeader } from "../../layout/page-header";
 import { useT } from "../../i18n";
 import { MyIssuesHeader } from "./my-issues-header";
+import { useProjectDirtyWorktreeConsentForIssue } from "../../projects/use-project-dirty-worktree-consent";
 
 export function MyIssuesPage() {
   const { t } = useT("my-issues");
+  const { t: tIssues } = useT("issues");
   const user = useAuthStore((s) => s.user);
   const workspace = useCurrentWorkspace();
   const wsId = useWorkspaceId();
@@ -148,21 +150,35 @@ export function MyIssuesPage() {
   }, [visibleStatuses]);
 
   const updateIssueMutation = useUpdateIssue();
+  const { confirmProjectDirtyContinue } =
+    useProjectDirtyWorktreeConsentForIssue({
+      message: tIssues(($) => $.detail.dirty_snapshot_confirm),
+    });
   const handleMoveIssue = useCallback(
-    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
-      updateIssueMutation.mutate(
-        { id: issueId, ...updates },
-        {
-          onError: (err) =>
-            toast.error(
-              err instanceof Error && err.message
-                ? err.message
-                : t(($) => $.errors.move_failed),
-            ),
-        },
-      );
+    (issue: Issue, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
+      void (async () => {
+        const dirtyChoice = await confirmProjectDirtyContinue(issue, updates);
+        if (!dirtyChoice.proceed) return;
+        updateIssueMutation.mutate(
+          {
+            id: issue.id,
+            ...updates,
+            ...(dirtyChoice.projectContinueOnDirty
+              ? { project_continue_on_dirty: true }
+              : {}),
+          },
+          {
+            onError: (err) =>
+              toast.error(
+                err instanceof Error && err.message
+                  ? err.message
+                  : t(($) => $.errors.move_failed),
+              ),
+          },
+        );
+      })();
     },
-    [updateIssueMutation, t],
+    [confirmProjectDirtyContinue, updateIssueMutation, t],
   );
 
   if (loading) {

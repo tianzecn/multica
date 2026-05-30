@@ -245,8 +245,13 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	// Inject available repositories section.
 	if len(ctx.Repos) > 0 {
 		b.WriteString("## Repositories\n\n")
-		b.WriteString("The following code repositories are available in this workspace.\n")
-		b.WriteString("Use `multica repo checkout <url>` to check out a repository into your working directory. Add `--ref <branch-or-sha>` when you need an exact branch, tag, or commit.\n\n")
+		if ctx.ProjectID != "" {
+			b.WriteString("The Project primary repository is already checked out as the current working directory for this run. Work directly in that directory with normal file and Git commands; do not run `multica repo checkout` for the primary Project repo unless you intentionally need a separate reference checkout.\n\n")
+			b.WriteString("Primary writable repository:\n")
+		} else {
+			b.WriteString("The following code repositories are available in this workspace.\n")
+			b.WriteString("Use `multica repo checkout <url>` to check out a repository into your working directory. Add `--ref <branch-or-sha>` when you need an exact branch, tag, or commit.\n\n")
+		}
 		for _, repo := range ctx.Repos {
 			if repo.Description != "" {
 				fmt.Fprintf(&b, "- %s — %s\n", repo.URL, repo.Description)
@@ -254,7 +259,11 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 				fmt.Fprintf(&b, "- %s\n", repo.URL)
 			}
 		}
-		b.WriteString("\nThe checkout command creates a git worktree with a dedicated branch. You can check out one or more repos as needed, and can pass `--ref` for review/QA on a non-default branch or commit.\n\n")
+		if ctx.ProjectID != "" {
+			b.WriteString("\nRelated repositories, when present in Project resources, are reference context by default. Open them only when the task explicitly needs them.\n\n")
+		} else {
+			b.WriteString("\nThe checkout command creates a git worktree with a dedicated branch. You can check out one or more repos as needed, and can pass `--ref` for review/QA on a non-default branch or commit.\n\n")
+		}
 	}
 
 	// Inject project-scoped context (resources attached to the issue's project).
@@ -266,12 +275,16 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 			fmt.Fprintf(&b, "This issue belongs to **%s**.\n\n", ctx.ProjectTitle)
 		}
 		if len(ctx.ProjectResources) > 0 {
-			b.WriteString("Project resources (also written to `.multica/project/resources.json`):\n\n")
+			b.WriteString("Project resources (also written to `$MULTICA_PROJECT_RESOURCES_FILE` when that environment variable is set; otherwise to `.multica/project/resources.json` in the isolated task context):\n\n")
 			for _, r := range ctx.ProjectResources {
 				fmt.Fprintf(&b, "- %s\n", formatProjectResource(r))
 			}
 			b.WriteString("\nResources are pointers — open them only when relevant to the task. ")
-			b.WriteString("For `github_repo` resources, use `multica repo checkout <url>` to fetch the code. Add `--ref <branch-or-sha>` when a task or handoff names an exact revision.\n\n")
+			if ctx.ProjectID != "" && len(ctx.Repos) > 0 {
+				b.WriteString("For `github_repo` resources, treat the primary repo as the current working directory; use `multica repo checkout <url>` only when you intentionally need a separate checkout for a related/reference repo or an exact revision.\n\n")
+			} else {
+				b.WriteString("For `github_repo` resources, use `multica repo checkout <url>` to fetch the code. Add `--ref <branch-or-sha>` when a task or handoff names an exact revision.\n\n")
+			}
 		} else {
 			b.WriteString("This project has no resources attached yet.\n\n")
 		}
@@ -302,7 +315,11 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		b.WriteString("- If asked about issues, use `multica issue list --output json` or `multica issue get <id> --output json`\n")
 		b.WriteString("- If asked about the workspace, use `multica workspace get --output json`\n")
 		b.WriteString("- If asked to perform actions (create issues, update status, etc.), use the appropriate CLI commands\n")
-		b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first. Use `--ref <branch-or-sha>` when you need an exact revision\n")
+		if ctx.ProjectID != "" && len(ctx.Repos) > 0 {
+			b.WriteString("- If the task requires code changes, work in the current Project directory; Multica already prepared the primary repo and task branch for this run\n")
+		} else {
+			b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first. Use `--ref <branch-or-sha>` when you need an exact revision\n")
+		}
 		b.WriteString("- Keep responses concise and direct\n\n")
 	} else if ctx.QuickCreatePrompt != "" {
 		// Quick-create task: detailed field / output rules live in the

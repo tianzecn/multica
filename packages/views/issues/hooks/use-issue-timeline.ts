@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import type {
   Comment,
+  Issue,
   TimelineEntry,
   Reaction,
 } from "@multica/core/types";
@@ -37,6 +38,7 @@ import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
 import { useWSEvent, useWSReconnect } from "@multica/core/realtime";
 import { toast } from "sonner";
 import { useT } from "../../i18n";
+import { useIssueProjectDirtyWorktreeConsent } from "../../projects/use-project-dirty-worktree-consent";
 
 type TLCache = TimelineEntry[];
 
@@ -59,9 +61,14 @@ function commentToTimelineEntry(c: Comment): TimelineEntry {
   };
 }
 
-export function useIssueTimeline(issueId: string, userId?: string) {
+export function useIssueTimeline(issueId: string, userId?: string, issue?: Issue | null) {
   const { t } = useT("issues");
   const qc = useQueryClient();
+  const { confirmProjectCommentDirtyContinue } =
+    useIssueProjectDirtyWorktreeConsent({
+      issue,
+      message: t(($) => $.detail.dirty_snapshot_confirm),
+    });
 
   const query = useQuery(issueTimelineOptions(issueId));
   const { data, isLoading: loading } = query;
@@ -265,7 +272,13 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       if (!content.trim() || submitting || !userId) return;
       setSubmitting(true);
       try {
-        await createComment({ content, attachmentIds });
+        const dirtyChoice = await confirmProjectCommentDirtyContinue(content);
+        if (!dirtyChoice.proceed) return;
+        await createComment({
+          content,
+          attachmentIds,
+          projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
+        });
       } catch (err) {
         toast.error(
           err instanceof Error && err.message
@@ -276,18 +289,21 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         setSubmitting(false);
       }
     },
-    [userId, submitting, createComment, t],
+    [userId, submitting, createComment, confirmProjectCommentDirtyContinue, t],
   );
 
   const submitReply = useCallback(
     async (parentId: string, content: string, attachmentIds?: string[]) => {
       if (!content.trim() || !userId) return;
       try {
+        const dirtyChoice = await confirmProjectCommentDirtyContinue(content);
+        if (!dirtyChoice.proceed) return;
         await createComment({
           content,
           type: "comment",
           parentId,
           attachmentIds,
+          projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
         });
       } catch (err) {
         toast.error(
@@ -297,7 +313,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         );
       }
     },
-    [userId, createComment, t],
+    [userId, createComment, confirmProjectCommentDirtyContinue, t],
   );
 
   const editComment = useCallback(

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -28,9 +30,77 @@ func (f *fakeGitHubRepoCreator) CreateRepository(_ context.Context, input Create
 	return f.repo, nil
 }
 
+func TestEnvGitHubRepoCreatorInitializesRemoteRepository(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode github repo create request: %v", err)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"name":"widget",
+			"full_name":"acme/widget",
+			"html_url":"https://github.com/acme/widget",
+			"clone_url":"https://github.com/acme/widget.git",
+			"ssh_url":"git@github.com:acme/widget.git",
+			"default_branch":"main",
+			"visibility":"private",
+			"private":true,
+			"owner":{"login":"acme"}
+		}`))
+	}))
+	defer server.Close()
+
+	creator := &envGitHubRepoCreator{
+		client:     server.Client(),
+		token:      "repo-create-token",
+		apiBaseURL: server.URL,
+	}
+
+	created, err := creator.CreateRepository(context.Background(), CreateGitHubRepositoryInput{
+		InstallationID: 940101,
+		Owner:          "acme",
+		OwnerType:      "organization",
+		Name:           "widget",
+		Description:    "Project workspace repo",
+		Visibility:     "private",
+	})
+	if err != nil {
+		t.Fatalf("CreateRepository failed: %v", err)
+	}
+
+	if gotPath != "/orgs/acme/repos" {
+		t.Fatalf("path = %q, want /orgs/acme/repos", gotPath)
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") || !strings.Contains(gotAuth, "repo-create-token") {
+		t.Fatalf("authorization header = %q", gotAuth)
+	}
+	if gotBody["auto_init"] != true {
+		t.Fatalf("auto_init = %#v, want true", gotBody["auto_init"])
+	}
+	if gotBody["private"] != true {
+		t.Fatalf("private = %#v, want true", gotBody["private"])
+	}
+	if gotBody["name"] != "widget" || gotBody["description"] != "Project workspace repo" {
+		t.Fatalf("unexpected request body: %#v", gotBody)
+	}
+	if created.DefaultBranch != "main" || created.CloneURL != "https://github.com/acme/widget.git" {
+		t.Fatalf("created repository = %+v", created)
+	}
+}
+
 func TestCreateProjectGitHubRepositoryCreatesPrimaryResourceAndWorkspaceRepo(t *testing.T) {
 	resetWorkspaceRepos(t)
 	project := createProjectForGitHubRepoTest(t, "Create GitHub repo")
+	connectGitHubOwnerForRepoCreateTest(t, 940001, "acme", "Organization")
 	fake := &fakeGitHubRepoCreator{
 		repo: CreatedGitHubRepository{
 			Owner:         "acme",
@@ -65,6 +135,9 @@ func TestCreateProjectGitHubRepositoryCreatesPrimaryResourceAndWorkspaceRepo(t *
 	if fake.input.Visibility != "private" {
 		t.Fatalf("visibility = %q, want private", fake.input.Visibility)
 	}
+	if fake.input.InstallationID != 940001 {
+		t.Fatalf("installation_id = %d, want connected owner installation", fake.input.InstallationID)
+	}
 	if fake.input.Owner != "acme" || fake.input.OwnerType != "organization" || fake.input.Name != "widget" {
 		t.Fatalf("creator input = %+v", fake.input)
 	}
@@ -98,11 +171,27 @@ func TestCreateProjectGitHubRepositoryCreatesPrimaryResourceAndWorkspaceRepo(t *
 	if len(repos) != 1 || repos[0].URL != "https://github.com/acme/widget.git" {
 		t.Fatalf("workspace repos = %+v", repos)
 	}
+	var activityRepo, activityVisibility string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT details->>'repo', details->>'visibility'
+		FROM activity_log
+		WHERE workspace_id = $1
+		  AND action = 'github_repo_create'
+		  AND details->>'project_id' = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, parseUUID(testWorkspaceID), project.ID).Scan(&activityRepo, &activityVisibility); err != nil {
+		t.Fatalf("github repo create activity: %v", err)
+	}
+	if activityRepo != "acme/widget" || activityVisibility != "private" {
+		t.Fatalf("unexpected repo activity repo=%q visibility=%q", activityRepo, activityVisibility)
+	}
 }
 
 func TestCreateProjectGitHubRepositoryRejectsPrimaryConflictBeforeRemoteCreate(t *testing.T) {
 	resetWorkspaceRepos(t)
 	project := createProjectForGitHubRepoTest(t, "GitHub repo primary conflict")
+	connectGitHubOwnerForRepoCreateTest(t, 940002, "acme", "Organization")
 	attachPrimaryProjectRepo(t, project.ID, "https://github.com/acme/existing.git")
 	fake := &fakeGitHubRepoCreator{
 		err: errors.New("remote create must not be called"),
@@ -123,6 +212,31 @@ func TestCreateProjectGitHubRepositoryRejectsPrimaryConflictBeforeRemoteCreate(t
 	}
 	if fake.called {
 		t.Fatal("remote create was called despite primary conflict")
+	}
+}
+
+func TestCreateProjectGitHubRepositoryRejectsUnconnectedOwnerBeforeRemoteCreate(t *testing.T) {
+	resetWorkspaceRepos(t)
+	project := createProjectForGitHubRepoTest(t, "GitHub repo unconnected owner")
+	fake := &fakeGitHubRepoCreator{
+		err: errors.New("remote create must not be called"),
+	}
+	withGitHubRepoCreator(t, fake)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects/"+project.ID+"/github/repos", map[string]any{
+		"owner":      "unconnected",
+		"owner_type": "organization",
+		"name":       "new-repo",
+	})
+	req = withURLParam(req, "id", project.ID)
+	req = withOwnerMemberContext(t, req)
+	testHandler.CreateProjectGitHubRepository(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 before remote create, got %d: %s", w.Code, w.Body.String())
+	}
+	if fake.called {
+		t.Fatal("remote create was called despite unconnected owner")
 	}
 }
 
@@ -194,6 +308,28 @@ func withGitHubRepoCreator(t *testing.T, creator GitHubRepoCreator) {
 	testHandler.GitHubRepoCreator = creator
 	t.Cleanup(func() {
 		testHandler.GitHubRepoCreator = prev
+	})
+}
+
+func connectGitHubOwnerForRepoCreateTest(t *testing.T, installationID int64, login, accountType string) {
+	t.Helper()
+	ctx := context.Background()
+	installation, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:      parseUUID(testWorkspaceID),
+		InstallationID:   installationID,
+		AccountLogin:     login,
+		AccountType:      accountType,
+		AccountAvatarUrl: pgtype.Text{},
+		ConnectedByID:    parseUUID(testUserID),
+	})
+	if err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = testHandler.Queries.DeleteGitHubInstallation(context.Background(), db.DeleteGitHubInstallationParams{
+			ID:          installation.ID,
+			WorkspaceID: parseUUID(testWorkspaceID),
+		})
 	})
 }
 

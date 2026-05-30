@@ -28,6 +28,8 @@ export const projectKeys = {
     [...projectKeys.all(wsId), "detail", id, "resources"] as const,
   workspace: (wsId: string | null, id: string) =>
     [...projectKeys.all(wsId), "detail", id, "workspace"] as const,
+  activity: (wsId: string | null, id: string) =>
+    [...projectKeys.all(wsId), "detail", id, "activity"] as const,
   pullRequests: (wsId: string | null, id: string) =>
     [...projectKeys.all(wsId), "detail", id, "pull-requests"] as const,
   pullRequestReview: (
@@ -40,8 +42,12 @@ export const projectKeys = {
     [...projectKeys.workspace(wsId, id), "device", deviceId ?? ""] as const,
   deviceGitStatus: (wsId: string | null, id: string, deviceId: string | null) =>
     [...projectKeys.device(wsId, id, deviceId), "git", "status"] as const,
+  deviceGitLog: (wsId: string | null, id: string, deviceId: string | null) =>
+    [...projectKeys.device(wsId, id, deviceId), "git", "log"] as const,
   deviceGitSnapshots: (wsId: string | null, id: string, deviceId: string | null) =>
     [...projectKeys.device(wsId, id, deviceId), "git", "snapshots"] as const,
+  deviceScripts: (wsId: string | null, id: string, deviceId: string | null) =>
+    [...projectKeys.device(wsId, id, deviceId), "scripts"] as const,
   deviceFileTree: (
     wsId: string | null,
     id: string,
@@ -94,6 +100,13 @@ export const projectWorkspaceOptions = (wsId: string | null, id: string) =>
     enabled: !!wsId && !!id,
   });
 
+export const projectActivityOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: projectKeys.activity(wsId, id),
+    queryFn: ({ signal }) => api.listProjectActivity(id, { signal }),
+    enabled: !!wsId && !!id,
+  });
+
 export const projectPullRequestsOptions = (wsId: string | null, id: string) =>
   queryOptions({
     queryKey: projectKeys.pullRequests(wsId, id),
@@ -132,6 +145,20 @@ export const projectDeviceGitStatusOptions = (
     enabled: !!wsId && !!id && !!deviceId,
   });
 
+export const projectDeviceGitLogOptions = (
+  wsId: string | null,
+  id: string,
+  deviceId: string | null,
+) =>
+  queryOptions({
+    queryKey: projectKeys.deviceGitLog(wsId, id, deviceId),
+    queryFn: ({ signal }) => {
+      if (!deviceId) throw new Error("deviceId is required");
+      return api.getProjectDeviceGitLog(id, deviceId, { signal });
+    },
+    enabled: !!wsId && !!id && !!deviceId,
+  });
+
 export const projectDeviceGitSnapshotsOptions = (
   wsId: string | null,
   id: string,
@@ -142,6 +169,20 @@ export const projectDeviceGitSnapshotsOptions = (
     queryFn: ({ signal }) => {
       if (!deviceId) throw new Error("deviceId is required");
       return api.getProjectDeviceSafetySnapshots(id, deviceId, { signal });
+    },
+    enabled: !!wsId && !!id && !!deviceId,
+  });
+
+export const projectDeviceScriptsOptions = (
+  wsId: string | null,
+  id: string,
+  deviceId: string | null,
+) =>
+  queryOptions({
+    queryKey: projectKeys.deviceScripts(wsId, id, deviceId),
+    queryFn: ({ signal }) => {
+      if (!deviceId) throw new Error("deviceId is required");
+      return api.listProjectDeviceScripts(id, deviceId, { signal });
     },
     enabled: !!wsId && !!id && !!deviceId,
   });

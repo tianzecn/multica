@@ -60,6 +60,7 @@
     "my_agents": "我的智能体",
     "others": "其他",
     "no_agents": "暂无智能体",
+    "dirty_snapshot_confirm": "这个 Project 工作区有未提交改动。是否先创建 Multica 安全快照再继续？",
     "active_group": "进行中",
     "archived_group_other": "{{count}} 条已归档"
   },
@@ -110,6 +111,7 @@
     "restore": "恢复",
     "archived_banner": "此对话已归档，恢复后可以继续对话。",
     "no_project": "未归属项目",
+    "dirty_snapshot_confirm": "这个 Project 工作区有未提交改动。是否先创建 Multica 安全快照再继续？",
     "project_picker": "项目",
     "ai_coworkers": "AI 同事",
     "insert_ai_coworker": "插入 @{{name}}"

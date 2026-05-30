@@ -165,6 +165,7 @@
       "squads_group": "Squads",
       "version_missing": "This agent's daemon doesn't report a CLI version. Create with agent needs multica CLI ≥ {{min}}. Upgrade the daemon and reconnect, or switch to manual create.",
       "version_below": "This agent's daemon CLI is {{current}} — Create with agent needs ≥ {{min}}. Upgrade the daemon, or switch to manual create.",
+      "dirty_snapshot_confirm": "The selected agent's Project working tree has uncommitted changes. Continue by creating a Multica safety snapshot first?",
       "prompt_placeholder": "Tell the agent what to do, e.g. \"let Bohan fix the inbox loading slowness in the Web project\"",
       "submit": "Create",
       "sending": "Sending…",

@@ -17,6 +17,7 @@ export interface CreateIssueRequest {
   start_date?: string;
   due_date?: string;
   attachment_ids?: string[];
+  project_continue_on_dirty?: boolean;
 }
 
 export interface UpdateIssueRequest {
@@ -35,6 +36,7 @@ export interface UpdateIssueRequest {
    *  Used by the description editor to register newly uploaded files so they
    *  surface in `issueAttachments` and keep their preview Eye on refresh. */
   attachment_ids?: string[];
+  project_continue_on_dirty?: boolean;
 }
 
 export interface ListIssuesParams {

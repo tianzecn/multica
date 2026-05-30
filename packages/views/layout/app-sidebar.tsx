@@ -1342,17 +1342,20 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
           <Collapsible defaultOpen>
             <SidebarGroup className="group/projects">
               <SidebarGroupLabel
-                render={<CollapsibleTrigger />}
-                className="group/trigger cursor-pointer hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+                className="px-1 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
               >
+                <CollapsibleTrigger
+                  className="group/trigger flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  aria-label={t(($) => $.nav.projects)}
+                >
+                  <ChevronRight className="!size-3 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
+                </CollapsibleTrigger>
                 <AppLink
                   href={p.projects()}
-                  className="flex min-w-0 flex-1 items-center gap-1"
-                  onClick={(event) => event.stopPropagation()}
+                  className="flex min-w-0 flex-1 items-center gap-1 rounded-sm px-1 py-1"
                 >
                   <span>{t(($) => $.nav.projects)}</span>
                 </AppLink>
-                <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
                 <Tooltip>
                   <TooltipTrigger
                     render={<button type="button" />}

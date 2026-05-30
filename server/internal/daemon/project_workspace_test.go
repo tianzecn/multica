@@ -61,10 +61,23 @@ func TestBindProjectWorkspaceStoresLocalPathInProfile(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceRelayAllowsSetupRoutes(t *testing.T) {
+	if !isProjectWorkspaceRelayRouteAllowed(http.MethodPut, "") {
+		t.Fatal("expected bind setup route to be allowed")
+	}
+	if !isProjectWorkspaceRelayRouteAllowed(http.MethodPost, "/clone") {
+		t.Fatal("expected clone setup route to be allowed")
+	}
+	if isProjectWorkspaceRelayRouteAllowed(http.MethodGet, "/clone") {
+		t.Fatal("clone setup route must require POST")
+	}
+}
+
 func TestProjectWorkspaceHandlerReturnsGitStatus(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	repoPath := initTestProjectRepo(t, "https://github.com/acme/widget.git")
+	runGit(t, repoPath, "remote", "add", "upstream", "https://github.com/acme/upstream.git")
 	if err := os.WriteFile(filepath.Join(repoPath, "draft.txt"), []byte("draft\n"), 0o644); err != nil {
 		t.Fatalf("write draft: %v", err)
 	}
@@ -108,6 +121,15 @@ func TestProjectWorkspaceHandlerReturnsGitStatus(t *testing.T) {
 	}
 	if len(gitStatus.Files) != 1 || gitStatus.Files[0].Path != "draft.txt" || gitStatus.Files[0].Status != "??" {
 		t.Fatalf("git status files = %#v, want draft.txt untracked", gitStatus.Files)
+	}
+	if len(gitStatus.Remotes) != 2 {
+		t.Fatalf("git remotes = %#v, want origin and upstream", gitStatus.Remotes)
+	}
+	if gitStatus.Remotes[0].Name != "origin" || gitStatus.Remotes[0].FetchURL != "https://github.com/acme/widget.git" || gitStatus.Remotes[0].PushURL != "https://github.com/acme/widget.git" {
+		t.Fatalf("origin remote = %#v", gitStatus.Remotes[0])
+	}
+	if gitStatus.Remotes[1].Name != "upstream" || gitStatus.Remotes[1].FetchURL != "https://github.com/acme/upstream.git" || gitStatus.Remotes[1].PushURL != "https://github.com/acme/upstream.git" {
+		t.Fatalf("upstream remote = %#v", gitStatus.Remotes[1])
 	}
 }
 
@@ -190,10 +212,11 @@ func TestProjectWorkspaceRelayExecutesAllowlistedRoute(t *testing.T) {
 	}
 
 	resp := d.executeProjectWorkspaceRelayRequest(context.Background(), protocol.DaemonProjectWorkspaceRequestPayload{
-		RequestID: "req-1",
-		ProjectID: "proj-1",
-		Method:    http.MethodGet,
-		Path:      "/git/status",
+		RequestID:   "req-1",
+		WorkspaceID: "ws-1",
+		ProjectID:   "proj-1",
+		Method:      http.MethodGet,
+		Path:        "/git/status",
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("relay status = %d, body = %s, error = %s", resp.StatusCode, resp.Body, resp.Error)
@@ -203,13 +226,41 @@ func TestProjectWorkspaceRelayExecutesAllowlistedRoute(t *testing.T) {
 	}
 
 	blocked := d.executeProjectWorkspaceRelayRequest(context.Background(), protocol.DaemonProjectWorkspaceRequestPayload{
-		RequestID: "req-2",
-		ProjectID: "proj-1",
-		Method:    http.MethodDelete,
-		Path:      "/files/write",
+		RequestID:   "req-2",
+		WorkspaceID: "ws-1",
+		ProjectID:   "proj-1",
+		Method:      http.MethodDelete,
+		Path:        "/files/write",
 	})
 	if blocked.StatusCode != http.StatusNotFound {
 		t.Fatalf("blocked status = %d, want 404", blocked.StatusCode)
+	}
+}
+
+func TestProjectWorkspaceRelayRejectsWorkspaceMismatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoPath := initTestProjectRepo(t, "https://github.com/acme/widget.git")
+	d := &Daemon{cfg: Config{Profile: "relay-workspace-profile"}}
+	if _, err := bindProjectWorkspace(context.Background(), "relay-workspace-profile", "proj-1", projectWorkspaceBindRequest{
+		WorkspaceID:    "ws-1",
+		PrimaryRepoURL: "https://github.com/acme/widget.git",
+		LocalPath:      repoPath,
+	}); err != nil {
+		t.Fatalf("bindProjectWorkspace: %v", err)
+	}
+
+	resp := d.executeProjectWorkspaceRelayRequest(context.Background(), protocol.DaemonProjectWorkspaceRequestPayload{
+		RequestID:   "req-workspace-mismatch",
+		WorkspaceID: "ws-2",
+		ProjectID:   "proj-1",
+		Method:      http.MethodGet,
+		Path:        "/git/status",
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("relay status = %d, want 409; body = %s, error = %s", resp.StatusCode, resp.Body, resp.Error)
+	}
+	if !strings.Contains(resp.Error, "requested workspace") {
+		t.Fatalf("relay error = %q, want requested workspace", resp.Error)
 	}
 }
 
@@ -267,6 +318,65 @@ func TestProjectTaskLockDoesNotBlockDifferentProjects(t *testing.T) {
 	releaseSecond()
 }
 
+func TestProjectFileLockSerializesSameCanonicalPath(t *testing.T) {
+	d := &Daemon{}
+	ctx := context.Background()
+	worktree := t.TempDir()
+
+	releaseFirst, err := d.acquireProjectFileLock(ctx, worktree, "README.md")
+	if err != nil {
+		t.Fatalf("first file lock: %v", err)
+	}
+
+	acquiredSecond := make(chan func(), 1)
+	errs := make(chan error, 1)
+	go func() {
+		release, err := d.acquireProjectFileLock(ctx, filepath.Join(worktree, "."), "./README.md")
+		if err != nil {
+			errs <- err
+			return
+		}
+		acquiredSecond <- release
+	}()
+
+	select {
+	case err := <-errs:
+		t.Fatalf("second file lock: %v", err)
+	case release := <-acquiredSecond:
+		release()
+		t.Fatal("second same-file lock acquired before the first released")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	releaseFirst()
+	select {
+	case err := <-errs:
+		t.Fatalf("second file lock after release: %v", err)
+	case release := <-acquiredSecond:
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("second same-file lock did not acquire after release")
+	}
+}
+
+func TestProjectFileLockDoesNotBlockDifferentFiles(t *testing.T) {
+	d := &Daemon{}
+	ctx := context.Background()
+	worktree := t.TempDir()
+
+	releaseFirst, err := d.acquireProjectFileLock(ctx, worktree, "README.md")
+	if err != nil {
+		t.Fatalf("first file lock: %v", err)
+	}
+	defer releaseFirst()
+
+	releaseSecond, err := d.acquireProjectFileLock(ctx, worktree, "CHANGELOG.md")
+	if err != nil {
+		t.Fatalf("different file lock: %v", err)
+	}
+	releaseSecond()
+}
+
 func TestBindProjectWorkspaceRejectsRemoteMismatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repoPath := initTestProjectRepo(t, "https://github.com/acme/widget.git")
@@ -306,6 +416,70 @@ func TestProjectWorkspaceGitDiffShowsTrackedChanges(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceGitDiffIncludesUntrackedTextFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoPath := initTestProjectRepo(t, "https://github.com/acme/widget.git")
+	if err := os.WriteFile(filepath.Join(repoPath, "notes.txt"), []byte("new note\n"), 0o644); err != nil {
+		t.Fatalf("write untracked notes: %v", err)
+	}
+	handler := boundProjectWorkspaceHandler(t, "diff-untracked-profile", repoPath, "https://github.com/acme/widget.git")
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/project-workspaces/proj-1/git/diff", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET git diff = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var diff projectGitDiffResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &diff); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if diff.Status.UntrackedCount != 1 {
+		t.Fatalf("UntrackedCount = %d, want 1", diff.Status.UntrackedCount)
+	}
+	for _, want := range []string{"--- /dev/null", "+++ b/notes.txt", "+new note"} {
+		if !strings.Contains(diff.Patch, want) {
+			t.Fatalf("untracked diff missing %q:\n%s", want, diff.Patch)
+		}
+	}
+}
+
+func TestProjectWorkspaceGitDiffSummarizesUntrackedBinaryAndLargeFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoPath := initTestProjectRepo(t, "https://github.com/acme/widget.git")
+	if err := os.WriteFile(filepath.Join(repoPath, "image.bin"), []byte{0x00, 0x01, 0x02}, 0o644); err != nil {
+		t.Fatalf("write binary file: %v", err)
+	}
+	largeContent := bytes.Repeat([]byte("x"), projectFileMaxBytes+1)
+	if err := os.WriteFile(filepath.Join(repoPath, "large.txt"), largeContent, 0o644); err != nil {
+		t.Fatalf("write large file: %v", err)
+	}
+	handler := boundProjectWorkspaceHandler(t, "diff-untracked-summary-profile", repoPath, "https://github.com/acme/widget.git")
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/project-workspaces/proj-1/git/diff", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET git diff = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var diff projectGitDiffResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &diff); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if diff.Status.UntrackedCount != 2 {
+		t.Fatalf("UntrackedCount = %d, want 2", diff.Status.UntrackedCount)
+	}
+	for _, want := range []string{
+		"# untracked binary file: image.bin",
+		"# untracked file too large to preview: large.txt",
+	} {
+		if !strings.Contains(diff.Patch, want) {
+			t.Fatalf("untracked summary missing %q:\n%s", want, diff.Patch)
+		}
+	}
+	if strings.Contains(diff.Patch, strings.Repeat("x", 1024)) {
+		t.Fatalf("large untracked file content should not be embedded in diff")
+	}
+}
+
 func TestProjectWorkspaceGitCommitDoesNotPush(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -331,6 +505,38 @@ func TestProjectWorkspaceGitCommitDoesNotPush(t *testing.T) {
 	subject := strings.TrimSpace(gitOutputForTest(t, repoPath, "log", "-1", "--pretty=%s"))
 	if subject != "add local feature" {
 		t.Fatalf("commit subject = %q, want add local feature", subject)
+	}
+}
+
+func TestProjectWorkspaceGitCommitSelectedPathsIgnoresPreStagedFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoPath := initTestProjectRepo(t, "https://github.com/acme/widget.git")
+	if err := os.WriteFile(filepath.Join(repoPath, "selected.txt"), []byte("selected\n"), 0o644); err != nil {
+		t.Fatalf("write selected: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "staged-only.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatalf("write staged-only: %v", err)
+	}
+	runGit(t, repoPath, "add", "staged-only.txt")
+	handler := boundProjectWorkspaceHandler(t, "commit-selected-profile", repoPath, "https://github.com/acme/widget.git")
+
+	body := bytes.NewBufferString(`{"message":"commit selected","paths":["selected.txt"]}`)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/project-workspaces/proj-1/git/commit", body))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST git commit selected = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	changed := gitOutputForTest(t, repoPath, "show", "--name-only", "--pretty=format:", "HEAD")
+	if !strings.Contains(changed, "selected.txt") {
+		t.Fatalf("commit should include selected.txt, got:\n%s", changed)
+	}
+	if strings.Contains(changed, "staged-only.txt") {
+		t.Fatalf("commit included pre-staged file despite selected paths:\n%s", changed)
+	}
+	status := gitOutputForTest(t, repoPath, "status", "--short", "--", "staged-only.txt")
+	if !strings.Contains(status, "staged-only.txt") {
+		t.Fatalf("pre-staged file should remain uncommitted, status:\n%s", status)
 	}
 }
 
@@ -613,6 +819,39 @@ func TestProjectWorkspaceScriptRunCapturesLog(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceScriptRunDetectsPreviewPorts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell command")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repoPath := initTestProjectRepo(t, "https://github.com/acme/widget.git")
+	handler := boundProjectWorkspaceHandler(t, "script-port-profile", repoPath, "https://github.com/acme/widget.git")
+
+	body := bytes.NewBufferString(`{"name":"dev","command":"printf 'ready on http://127.0.0.1:5173\\nbackup port 3000\\n'"}`)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/project-workspaces/proj-1/scripts/run", body))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("run script = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	var run projectScriptRunResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run response: %v", err)
+	}
+
+	got := waitForProjectScript(t, handler, run.ID, func(script projectScriptRunResponse) bool {
+		return script.Status == projectScriptStatusExited && len(script.Ports) == 2
+	})
+	if len(got.Ports) != 2 {
+		t.Fatalf("ports = %#v, want 2 detected ports", got.Ports)
+	}
+	if got.Ports[0].Port != 3000 || got.Ports[0].URL != "http://localhost:3000" {
+		t.Fatalf("first port = %#v", got.Ports[0])
+	}
+	if got.Ports[1].Port != 5173 || got.Ports[1].URL != "http://localhost:5173" {
+		t.Fatalf("second port = %#v", got.Ports[1])
+	}
+}
+
 func TestProjectWorkspaceScriptStopCancelsProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell command")
@@ -864,6 +1103,50 @@ func TestPrepareProjectTaskWorkspaceRejectsDirtyRepo(t *testing.T) {
 	})
 	if !errors.Is(err, errProjectWorkspaceDirty) {
 		t.Fatalf("error = %v, want errProjectWorkspaceDirty", err)
+	}
+}
+
+func TestPrepareProjectTaskWorkspaceSnapshotsDirtyRepoWhenExplicitlyAllowed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	remotePath := cloneTestProjectRemote(t)
+	repoPath := filepath.Join(t.TempDir(), "local")
+	cloneGitRepoForTest(t, remotePath, repoPath)
+	d := &Daemon{cfg: Config{Profile: "agent-dirty-snapshot-profile"}}
+	if _, err := bindProjectWorkspace(context.Background(), "agent-dirty-snapshot-profile", "proj-dirty-snapshot", projectWorkspaceBindRequest{
+		WorkspaceID:    "ws-1",
+		PrimaryRepoURL: remotePath,
+		LocalPath:      repoPath,
+	}); err != nil {
+		t.Fatalf("bindProjectWorkspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	_, branch, err := d.prepareProjectTaskWorkspace(context.Background(), Task{
+		ID:                     "task-dirty-snapshot",
+		ProjectID:              "proj-dirty-snapshot",
+		ProjectContinueOnDirty: true,
+		Repos:                  []RepoData{{URL: remotePath}},
+	})
+	if err != nil {
+		t.Fatalf("prepareProjectTaskWorkspace: %v", err)
+	}
+	if branch != projectTaskBranchName("proj-dirty-snapshot", "task-dirty-snapshot") {
+		t.Fatalf("branch = %q", branch)
+	}
+	if dirty := strings.TrimSpace(gitOutputForTest(t, repoPath, "status", "--porcelain=v1")); dirty != "" {
+		t.Fatalf("worktree should be clean after safety snapshot, got:\n%s", dirty)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "dirty.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dirty.txt should be stashed away, stat err = %v", err)
+	}
+	snapshots, err := listProjectSafetySnapshots(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("listProjectSafetySnapshots: %v", err)
+	}
+	if len(snapshots.Snapshots) != 1 || !strings.Contains(snapshots.Snapshots[0].Message, "Multica safety snapshot") {
+		t.Fatalf("snapshots = %#v", snapshots.Snapshots)
 	}
 }
 

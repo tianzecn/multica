@@ -22,6 +22,8 @@ NEXT_PUBLIC_WS_URL ?= ws://localhost:$(PORT)/ws
 GOOGLE_REDIRECT_URI ?= $(FRONTEND_ORIGIN)/auth/callback
 MULTICA_SERVER_URL ?= ws://localhost:$(PORT)/ws
 LOCAL_UPLOAD_BASE_URL ?= http://localhost:$(PORT)
+SQLC_VERSION ?= v1.31.1
+SQLC ?= $(shell command -v sqlc 2>/dev/null || echo "go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)")
 
 export
 
@@ -302,7 +304,7 @@ migrate-down: ## Create the target DB if needed, then roll back database migrati
 	cd server && go run ./cmd/migrate down
 
 sqlc: ## Regenerate sqlc code
-	cd server && sqlc generate
+	cd server && $(SQLC) generate
 
 # Cleanup
 ##@ Cleanup

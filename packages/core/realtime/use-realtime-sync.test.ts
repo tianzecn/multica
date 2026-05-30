@@ -1,16 +1,21 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { chatKeys } from "../chat/queries";
+import { githubKeys } from "../github/queries";
 import { issueKeys } from "../issues/queries";
+import { projectKeys } from "../projects/queries";
 import { workspaceKeys } from "../workspace/queries";
 import type {
   ChatDonePayload,
   ChatMessage,
   ChatPendingTask,
+  GitHubPullRequest,
   Workspace,
 } from "../types";
 import {
+  applyActivityCreatedToCache,
   applyChatDoneToCache,
+  applyPullRequestChangedToCache,
   applyWorkspaceUpdatedToCache,
 } from "./use-realtime-sync";
 
@@ -197,6 +202,91 @@ describe("applyWorkspaceUpdatedToCache", () => {
 
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: issueKeys.all(wsId),
+    });
+  });
+});
+
+describe("applyPullRequestChangedToCache", () => {
+  it("invalidates issue and project pull request caches from the event payload", () => {
+    const qc = createQueryClient();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    applyPullRequestChangedToCache(qc, {
+      pull_request: { id: "pr-1" } as unknown as GitHubPullRequest,
+      linked_issue_ids: ["issue-1"],
+      project_id: "project-1",
+      project_ids: ["project-2"],
+    });
+
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: githubKeys.pullRequests("issue-1"),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: githubKeys.projectPullRequests("project-1"),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: githubKeys.projectPullRequests("project-2"),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: githubKeys.projectPullRequestReview("project-1", "pr-1"),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: githubKeys.projectPullRequestReview("project-2", "pr-1"),
+    });
+  });
+
+  it("falls back to all pull request caches for legacy payloads without ids", () => {
+    const qc = createQueryClient();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    applyPullRequestChangedToCache(qc, {});
+
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(invalidate.mock.calls[0]?.[0]).toMatchObject({
+      predicate: expect.any(Function),
+    });
+  });
+});
+
+describe("applyActivityCreatedToCache", () => {
+  it("invalidates both issue timeline and project activity when ids are present", () => {
+    const qc = createQueryClient();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    qc.setQueryData(projectKeys.activity("ws-1", "project-1"), [
+      {
+        type: "activity",
+        id: "activity-old",
+        actor_type: "member",
+        actor_id: "user-1",
+        created_at: "2026-05-27T00:00:00Z",
+        action: "project_workspace_git_diff",
+      },
+    ]);
+
+    applyActivityCreatedToCache(qc, "ws-1", {
+      issue_id: "issue-1",
+      project_id: "project-1",
+      entry: {
+        type: "activity",
+        id: "activity-1",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        created_at: "2026-05-28T00:00:00Z",
+        action: "project_agent_task_completed",
+      },
+    });
+
+    expect(qc.getQueryData(projectKeys.activity("ws-1", "project-1"))).toMatchObject([
+      { id: "activity-1" },
+      { id: "activity-old" },
+    ]);
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: issueKeys.timeline("issue-1"),
+      refetchType: "none",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: projectKeys.activity("ws-1", "project-1"),
+      refetchType: "none",
     });
   });
 });

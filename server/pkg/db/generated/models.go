@@ -661,6 +661,14 @@ type ProjectDeviceBinding struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ProjectPullRequest struct {
+	ProjectID     pgtype.UUID        `json:"project_id"`
+	PullRequestID pgtype.UUID        `json:"pull_request_id"`
+	LinkedByType  pgtype.Text        `json:"linked_by_type"`
+	LinkedByID    pgtype.UUID        `json:"linked_by_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type ProjectResource struct {
 	ID           pgtype.UUID        `json:"id"`
 	ProjectID    pgtype.UUID        `json:"project_id"`

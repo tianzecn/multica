@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { ChevronRight, ListTodo } from "lucide-react";
-import type { UpdateIssueRequest } from "@multica/core/types";
+import type { Issue, UpdateIssueRequest } from "@multica/core/types";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { useIssueViewStore, useClearFiltersOnWorkspaceChange } from "@multica/core/issues/stores/view-store";
@@ -24,6 +24,7 @@ import { BoardView } from "./board-view";
 import { ListView } from "./list-view";
 import { BatchActionToolbar } from "./batch-action-toolbar";
 import { useT } from "../../i18n";
+import { useProjectDirtyWorktreeConsentForIssue } from "../../projects/use-project-dirty-worktree-consent";
 
 interface IssuesPageProps {
   projectId?: string;
@@ -144,21 +145,35 @@ export function IssuesPage({ projectId, projectTitle }: IssuesPageProps = {}) {
   }, [visibleStatuses]);
 
   const updateIssueMutation = useUpdateIssue();
+  const { confirmProjectDirtyContinue } =
+    useProjectDirtyWorktreeConsentForIssue({
+      message: t(($) => $.detail.dirty_snapshot_confirm),
+    });
   const handleMoveIssue = useCallback(
-    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
-      updateIssueMutation.mutate(
-        { id: issueId, ...updates },
-        {
-          onError: (err) =>
-            toast.error(
-              err instanceof Error && err.message
-                ? err.message
-                : t(($) => $.page.move_failed),
-            ),
-        },
-      );
+    (issue: Issue, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
+      void (async () => {
+        const dirtyChoice = await confirmProjectDirtyContinue(issue, updates);
+        if (!dirtyChoice.proceed) return;
+        updateIssueMutation.mutate(
+          {
+            id: issue.id,
+            ...updates,
+            ...(dirtyChoice.projectContinueOnDirty
+              ? { project_continue_on_dirty: true }
+              : {}),
+          },
+          {
+            onError: (err) =>
+              toast.error(
+                err instanceof Error && err.message
+                  ? err.message
+                  : t(($) => $.page.move_failed),
+              ),
+          },
+        );
+      })();
     },
-    [updateIssueMutation, t],
+    [confirmProjectDirtyContinue, updateIssueMutation, t],
   );
 
   if (loading) {

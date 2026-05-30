@@ -85,3 +85,58 @@ func TestUpdateChatSessionPersistsProjectID(t *testing.T) {
 		t.Fatalf("stored project_id = %v, want %q", storedProjectID, projectID)
 	}
 }
+
+func TestSendChatMessagePersistsProjectContinueOnDirty(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	projectID := createChannelTestProject(t, "chat dirty project "+t.Name())
+	agentID := createHandlerTestAgent(t, "chat-dirty-agent-"+t.Name(), nil)
+
+	var sessionID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, project_id)
+		VALUES ($1, $2, $3, $4, 'active', $5)
+		RETURNING id
+	`, testWorkspaceID, agentID, testUserID, "Project dirty chat", projectID).Scan(&sessionID); err != nil {
+		t.Fatalf("create chat session: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/chat/sessions/"+sessionID+"/messages", map[string]any{
+		"content":                   "continue with a safety snapshot",
+		"project_continue_on_dirty": true,
+	})
+	req = withURLParam(req, "sessionId", sessionID)
+	req = withChatTestWorkspaceCtx(t, req)
+	testHandler.SendChatMessage(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("SendChatMessage: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp SendChatMessageResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, resp.TaskID)
+	})
+	var rawContext []byte
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT context FROM agent_task_queue WHERE id = $1
+	`, resp.TaskID).Scan(&rawContext); err != nil {
+		t.Fatalf("load task context: %v", err)
+	}
+	var contextPayload struct {
+		ProjectContinueOnDirty bool `json:"project_continue_on_dirty"`
+	}
+	if err := json.Unmarshal(rawContext, &contextPayload); err != nil {
+		t.Fatalf("decode task context: %v", err)
+	}
+	if !contextPayload.ProjectContinueOnDirty {
+		t.Fatal("expected project_continue_on_dirty in task context")
+	}
+}

@@ -63,6 +63,7 @@
     "my_agents": "My agents",
     "others": "Others",
     "no_agents": "No agents",
+    "dirty_snapshot_confirm": "This Project working tree has uncommitted changes. Continue by creating a Multica safety snapshot first?",
     "active_group": "Active",
     "archived_group_one": "{{count}} archived chat",
     "archived_group_other": "{{count}} archived chats"
@@ -114,6 +115,7 @@
     "restore": "Restore",
     "archived_banner": "This conversation is archived. Restore it to continue chatting.",
     "no_project": "No project",
+    "dirty_snapshot_confirm": "This Project working tree has uncommitted changes. Continue by creating a Multica safety snapshot first?",
     "project_picker": "Project",
     "ai_coworkers": "AI teammates",
     "insert_ai_coworker": "Insert @{{name}}"

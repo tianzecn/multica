@@ -110,11 +110,11 @@ LIMIT 10;
 -- name: CreateAgentTask :one
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
-    trigger_summary, force_fresh_session, is_leader_task, project_id
+    trigger_summary, context, force_fresh_session, is_leader_task, project_id
 )
 VALUES (
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
-    sqlc.narg(trigger_summary),
+    sqlc.narg(trigger_summary), sqlc.narg('context'),
     COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
     COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
     (SELECT project_id FROM issue WHERE id = $3)

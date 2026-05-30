@@ -292,6 +292,8 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 
 	creator, _ := h.parseUserUUIDOrZero(userID)
 	resourceRows := make([]db.ProjectResource, 0, len(req.Resources))
+	var updatedWorkspace db.Workspace
+	workspaceRepoAdded := false
 	for i, res := range req.Resources {
 		var label pgtype.Text
 		if res.Label != nil && strings.TrimSpace(*res.Label) != "" {
@@ -319,6 +321,26 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resourceRows = append(resourceRows, row)
+		if res.ResourceType == "github_repo" {
+			ref, ok := parseGithubRepoRef(normalizedRefs[i])
+			if ok && ref.Role == githubRepoRolePrimary {
+				workspace, added, err := appendWorkspaceRepoIfMissing(
+					r.Context(),
+					qtx,
+					project.WorkspaceID,
+					ref.URL,
+					workspaceRepoDescriptionForGitURL(ref.URL),
+				)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to update workspace repositories")
+					return
+				}
+				if added {
+					updatedWorkspace = workspace
+					workspaceRepoAdded = true
+				}
+			}
+		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit project create")
@@ -337,6 +359,30 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			"resource":   rr,
 			"project_id": resp.ID,
 		})
+	}
+	for _, row := range resourceRows {
+		workspaceRepoAddedForResource := false
+		if row.ResourceType == "github_repo" {
+			if ref, ok := parseGithubRepoRef(row.ResourceRef); ok && ref.Role == githubRepoRolePrimary {
+				workspaceRepoAddedForResource = workspaceRepoAdded
+			}
+		}
+		h.recordProjectWorkspaceActivity(
+			r,
+			project.WorkspaceID,
+			userID,
+			"project_resource_attached",
+			projectResourceActivityDetails(project, row, workspaceRepoAddedForResource),
+		)
+	}
+	if workspaceRepoAdded {
+		h.publish(
+			protocol.EventWorkspaceUpdated,
+			workspaceID,
+			"member",
+			userID,
+			map[string]any{"workspace": workspaceToResponse(updatedWorkspace)},
+		)
 	}
 	// One-shot create echo: the parent ProjectResponse fields plus the just-
 	// created resources. This is a transient creation echo, not a contract for

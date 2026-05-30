@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -579,8 +580,9 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type SendChatMessageRequest struct {
-	Content       string   `json:"content"`
-	AttachmentIDs []string `json:"attachment_ids"`
+	Content                string   `json:"content"`
+	AttachmentIDs          []string `json:"attachment_ids"`
+	ProjectContinueOnDirty bool     `json:"project_continue_on_dirty,omitempty"`
 }
 
 type SendChatMessageResponse struct {
@@ -666,7 +668,9 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enqueue a chat task after the message exists.
-	task, err := h.TaskService.EnqueueChatTask(r.Context(), session)
+	task, err := h.TaskService.EnqueueChatTask(r.Context(), session, service.EnqueueChatTaskOptions{
+		ProjectContinueOnDirty: req.ProjectContinueOnDirty,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to enqueue chat task: "+err.Error())
 		return

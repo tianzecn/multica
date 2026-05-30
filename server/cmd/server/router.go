@@ -38,13 +38,26 @@ var defaultOrigins = []string{
 
 func allowedOrigins() []string {
 	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN"))
+	if raw != "" {
+		return parseOriginList(raw)
 	}
+
+	raw = strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN"))
 	if raw == "" {
 		return defaultOrigins
 	}
 
+	origins := parseOriginList(raw)
+	if len(origins) == 0 {
+		return defaultOrigins
+	}
+	if os.Getenv("APP_ENV") != "production" {
+		origins = appendMissingOrigins(origins, defaultOrigins...)
+	}
+	return origins
+}
+
+func parseOriginList(raw string) []string {
 	parts := strings.Split(raw, ",")
 	origins := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -53,8 +66,20 @@ func allowedOrigins() []string {
 			origins = append(origins, origin)
 		}
 	}
-	if len(origins) == 0 {
-		return defaultOrigins
+	return origins
+}
+
+func appendMissingOrigins(origins []string, candidates ...string) []string {
+	seen := make(map[string]struct{}, len(origins)+len(candidates))
+	for _, origin := range origins {
+		seen[origin] = struct{}{}
+	}
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		origins = append(origins, candidate)
+		seen[candidate] = struct{}{}
 	}
 	return origins
 }
@@ -452,10 +477,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)
 					r.Post("/github/repos", h.CreateProjectGitHubRepository)
 					r.Get("/pull-requests", h.ListPullRequestsForProject)
+					r.Post("/pull-requests", h.CreateProjectPullRequest)
 					r.Get("/pull-requests/{pullRequestId}/review", h.GetProjectPullRequestReview)
+					r.Post("/pull-requests/{pullRequestId}/review/comments", h.CreateProjectPullRequestReviewComment)
+					r.Post("/pull-requests/{pullRequestId}/review/comments/{commentId}/resolve", h.ResolveProjectPullRequestReviewThread)
 					r.Get("/activity", h.ListProjectActivity)
+					r.Get("/activity/export", h.ExportProjectActivity)
 					r.Get("/workspace", h.GetProjectWorkspace)
 					r.Put("/workspace/config", h.UpdateProjectWorkspaceConfig)
+					r.Post("/workspace/runtimes/{runtimeId}/bind", h.RelayProjectWorkspaceBind)
+					r.Post("/workspace/runtimes/{runtimeId}/clone", h.RelayProjectWorkspaceClone)
 					r.Put("/workspace/bindings/{deviceId}", h.UpsertProjectDeviceBinding)
 					r.Delete("/workspace/bindings/{deviceId}", h.DeleteProjectDeviceBinding)
 					r.Get("/workspace/bindings/{deviceId}/git/status", h.RelayProjectWorkspaceGitStatus)

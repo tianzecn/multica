@@ -12,6 +12,10 @@ import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { pinListOptions, useCreatePin, useDeletePin } from "@multica/core/pins";
 import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
+import {
+  issueUpdateMayStartProjectTask,
+  useIssueProjectDirtyWorktreeConsent,
+} from "../../projects/use-project-dirty-worktree-consent";
 
 const BACKLOG_HINT_LS_KEY = "multica:backlog-agent-hint-dismissed";
 
@@ -59,21 +63,42 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
   const issueStatus = issue?.status ?? null;
   const issueIdentifier = issue?.identifier ?? null;
   const issueProjectId = issue?.project_id ?? null;
+  const { confirmProjectDirtyContinue } = useIssueProjectDirtyWorktreeConsent({
+    issue,
+    message: t(($) => $.detail.dirty_snapshot_confirm),
+  });
 
   const updateField = useCallback(
     (updates: Partial<UpdateIssueRequest>) => {
       if (!issueId) return;
-      updateIssue.mutate(
-        { id: issueId, ...updates },
-        {
-          onError: (err) =>
-            toast.error(
-              err instanceof Error && err.message
-                ? err.message
-                : t(($) => $.detail.update_failed),
-            ),
-        },
-      );
+      const enqueueUpdate = (projectContinueOnDirty: boolean) => {
+        updateIssue.mutate(
+          {
+            id: issueId,
+            ...updates,
+            ...(projectContinueOnDirty
+              ? { project_continue_on_dirty: true }
+              : {}),
+          },
+          {
+            onError: (err) =>
+              toast.error(
+                err instanceof Error && err.message
+                  ? err.message
+                  : t(($) => $.detail.update_failed),
+              ),
+          },
+        );
+      };
+      if (!issueUpdateMayStartProjectTask(issue, updates)) {
+        enqueueUpdate(false);
+      } else {
+        void (async () => {
+          const dirtyChoice = await confirmProjectDirtyContinue(updates);
+          if (!dirtyChoice.proceed) return;
+          enqueueUpdate(dirtyChoice.projectContinueOnDirty);
+        })();
+      }
       // Hint: assigning an agent to a backlog issue won't trigger execution
       // until the issue is moved to an active status.
       if (
@@ -86,7 +111,15 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
         openModal("issue-backlog-agent-hint", { issueId });
       }
     },
-    [issueId, issueStatus, updateIssue, openModal, t],
+    [
+      confirmProjectDirtyContinue,
+      issue,
+      issueId,
+      issueStatus,
+      openModal,
+      t,
+      updateIssue,
+    ],
   );
 
   const togglePin = useCallback(() => {

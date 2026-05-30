@@ -32,6 +32,13 @@ const mockProjectsQuery = vi.hoisted(() => ({
   data: [] as Array<{ id: string; title: string; icon: string | null }>,
   isSuccess: true,
 }));
+const mockProjectWorkspaceQuery = vi.hoisted(() => ({
+  data: { bindings: [] as Array<{ runtime_id: string | null; device_id: string; status: string }> },
+}));
+const mockProjectGitStatusQuery = vi.hoisted(() => ({
+  data: { has_uncommitted: false },
+  refetch: vi.fn().mockResolvedValue({ data: { has_uncommitted: false } }),
+}));
 
 // Per-test override for the squads list so we can flip between "squads
 // exist and one's leader is reachable" and "no squads" cases without
@@ -58,6 +65,10 @@ vi.mock("@tanstack/react-query", () => ({
         return { data: [{ id: "runtime-1", metadata: { cli_version: "1.2.3" } }] };
       case "projects":
         return mockProjectsQuery;
+      case "project-workspace":
+        return mockProjectWorkspaceQuery;
+      case "project-git-status":
+        return mockProjectGitStatusQuery;
       default:
         return { data: [] };
     }
@@ -91,6 +102,8 @@ vi.mock("@multica/core/workspace/queries", () => ({
 
 vi.mock("@multica/core/projects/queries", () => ({
   projectListOptions: () => ({ queryKey: ["projects"] }),
+  projectWorkspaceOptions: () => ({ queryKey: ["project-workspace"] }),
+  projectDeviceGitStatusOptions: () => ({ queryKey: ["project-git-status"] }),
 }));
 
 vi.mock("@multica/core/issues/stores/quick-create-store", () => ({
@@ -285,6 +298,9 @@ describe("AgentCreatePanel", () => {
     mockQuickCreateStore.keepOpen = false;
     mockProjectsQuery.data = [];
     mockProjectsQuery.isSuccess = true;
+    mockProjectWorkspaceQuery.data = { bindings: [] };
+    mockProjectGitStatusQuery.data = { has_uncommitted: false };
+    mockProjectGitStatusQuery.refetch.mockResolvedValue({ data: { has_uncommitted: false } });
     mockSquadsData.list = [];
     mockQuickCreateIssue.mockResolvedValue(undefined);
     mockSetKeepOpen.mockImplementation((value: boolean) => {
@@ -368,6 +384,46 @@ describe("AgentCreatePanel", () => {
       });
     });
     expect(mockSetLastActor).toHaveBeenCalledWith("squad", "squad-1");
+  });
+
+  it("asks before continuing a dirty project worktree and sends explicit consent", async () => {
+    mockQuickCreateStore.lastProjectId = "project-1";
+    mockProjectsQuery.data = [{ id: "project-1", title: "Project", icon: null }];
+    mockProjectWorkspaceQuery.data = {
+      bindings: [{ runtime_id: "runtime-1", device_id: "device-1", status: "online" }],
+    };
+    mockProjectGitStatusQuery.data = { has_uncommitted: true };
+    mockProjectGitStatusQuery.refetch.mockResolvedValue({
+      data: { has_uncommitted: true },
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+
+    try {
+      renderPanel({ onClose: vi.fn(), isExpanded: false, setIsExpanded: vi.fn() });
+
+      const editor = screen.getByPlaceholderText(
+        'Tell the agent what to do, e.g. "let Bohan fix the inbox loading slowness in the Web project"',
+      );
+      await user.clear(editor);
+      await user.type(editor, "Continue on dirty worktree");
+
+      await user.click(screen.getByRole("button", { name: /^Create \(/i }));
+
+      await waitFor(() => {
+        expect(confirmSpy).toHaveBeenCalledWith(
+          "The selected agent's Project working tree has uncommitted changes. Continue by creating a Multica safety snapshot first?",
+        );
+        expect(mockQuickCreateIssue).toHaveBeenCalledWith({
+          agent_id: "agent-1",
+          prompt: "Continue on dirty worktree",
+          project_id: "project-1",
+          project_continue_on_dirty: true,
+        });
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 
   // Squads whose leader agent isn't visible (archived, private, etc.) must

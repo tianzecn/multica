@@ -1,16 +1,14 @@
 "use client";
 
-import { useCallback, memo } from "react";
+import { memo } from "react";
 import { AppLink } from "../../navigation";
 import { useSortable, defaultAnimateLayoutChanges } from "@dnd-kit/sortable";
 import type { AnimateLayoutChanges } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { toast } from "sonner";
-import type { Issue, UpdateIssueRequest } from "@multica/core/types";
+import type { Issue } from "@multica/core/types";
 import { CalendarClock, CalendarDays } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -26,6 +24,7 @@ import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { useT } from "../../i18n";
+import { useProjectAwareIssueUpdate } from "../hooks/use-project-aware-issue-update";
 
 function formatDate(date: string): string {
   return new Date(date).toLocaleDateString("en-US", {
@@ -78,22 +77,9 @@ export const BoardCardContent = memo(function BoardCardContent({
   const project = issue.project_id ? projects.find((p) => p.id === issue.project_id) : undefined;
   const labels = issue.labels ?? [];
 
-  const updateIssueMutation = useUpdateIssue();
-  const handleUpdate = useCallback(
-    (updates: Partial<UpdateIssueRequest>) => {
-      updateIssueMutation.mutate(
-        { id: issue.id, ...updates },
-        {
-          onError: (err) =>
-            toast.error(
-              err instanceof Error && err.message
-                ? err.message
-                : t(($) => $.card.update_failed),
-            ),
-        },
-      );
-    },
-    [issue.id, updateIssueMutation, t],
+  const handleUpdate = useProjectAwareIssueUpdate(
+    issue,
+    t(($) => $.card.update_failed),
   );
 
   const showPriority = storeProperties.priority;

@@ -42,9 +42,8 @@ import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, Command
 import { AvatarGroup, AvatarGroupCount } from "@multica/ui/components/ui/avatar";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { PropRow } from "../../common/prop-row";
-import type { Attachment, Issue, IssueStatus, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
+import type { Attachment, Issue, IssueStatus, IssuePriority, TimelineEntry } from "@multica/core/types";
 import { STATUS_CONFIG, PRIORITY_CONFIG } from "@multica/core/issues/config";
-import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { toast } from "sonner";
 import { StatusIcon, PriorityIcon, StatusPicker, PriorityPicker, StartDatePicker, DueDatePicker, AssigneePicker, LabelPicker } from ".";
 import { IssueActionsDropdown, useIssueActions } from "../actions";
@@ -73,6 +72,7 @@ import { BatchActionToolbar } from "./batch-action-toolbar";
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
+import { useProjectAwareIssueUpdate } from "../hooks/use-project-aware-issue-update";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { api } from "@multica/core/api";
@@ -533,26 +533,13 @@ function ActivityBlock({
 function SubIssueRow({ child }: { child: Issue }) {
   const { t } = useT("issues");
   const paths = useWorkspacePaths();
-  const updateIssue = useUpdateIssue();
   const selected = useIssueSelectionStore((s) => s.selectedIds.has(child.id));
   const toggleSelected = useIssueSelectionStore((s) => s.toggle);
   const isDone = child.status === "done" || child.status === "cancelled";
 
-  const handleUpdate = useCallback(
-    (updates: Partial<UpdateIssueRequest>) => {
-      updateIssue.mutate(
-        { id: child.id, ...updates },
-        {
-          onError: (err) =>
-            toast.error(
-              err instanceof Error && err.message
-                ? err.message
-                : t(($) => $.detail.update_failed),
-            ),
-        },
-      );
-    },
-    [child.id, updateIssue, t],
+  const handleUpdate = useProjectAwareIssueUpdate(
+    child,
+    t(($) => $.detail.update_failed),
   );
 
   // AppLink wraps only the title/identifier area. Pickers and checkbox are
@@ -843,7 +830,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     timeline, loading: timelineLoading,
     submitComment, submitReply,
     editComment, deleteComment, toggleResolveComment, toggleReaction: handleToggleReaction,
-  } = useIssueTimeline(id, user?.id);
+  } = useIssueTimeline(id, user?.id, issue);
 
   // Resolve / unresolve must always clear the per-session expand entry so
   // re-resolving an already-expanded thread folds it back to the bar (the

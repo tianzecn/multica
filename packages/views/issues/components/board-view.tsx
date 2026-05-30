@@ -230,7 +230,7 @@ export function BoardView({
   assigneeGroupFilter?: AssigneeGroupedIssuesFilter;
   visibleStatuses: IssueStatus[];
   hiddenStatuses: IssueStatus[];
-  onMoveIssue: (issueId: string, updates: BoardMoveUpdates) => void;
+  onMoveIssue: (issue: Issue, updates: BoardMoveUpdates) => void;
   childProgressMap?: Map<string, ChildProgress>;
   /** When set, per-status load-more targets the scoped cache instead of the workspace one. */
   myIssuesScope?: string;
@@ -454,7 +454,9 @@ export function BoardView({
         return;
       }
 
-      onMoveIssue(activeId, getMoveUpdates(finalGroup, newPosition));
+      if (currentIssue) {
+        onMoveIssue(currentIssue, getMoveUpdates(finalGroup, newPosition));
+      }
     },
     [groupedIssues, groups, grouping, sortBy, sortDirection, onMoveIssue, groupIds, groupMap],
   );

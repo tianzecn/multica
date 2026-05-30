@@ -165,6 +165,7 @@
       "squads_group": "小队",
       "version_missing": "该智能体的守护进程没有报告 CLI 版本。通过智能体创建需要 multica CLI ≥ {{min}}。请升级守护进程并重连，或切换到手动创建。",
       "version_below": "该智能体的守护进程 CLI 是 {{current}}——通过智能体创建需要 ≥ {{min}}。请升级守护进程，或切换到手动创建。",
+      "dirty_snapshot_confirm": "所选智能体所在设备的 Project 工作区有未提交改动。是否先创建 Multica 安全快照再继续？",
       "prompt_placeholder": "告诉智能体要做什么，例如：\"让 Bohan 修一下 Web 项目里收件箱加载慢的问题\"",
       "submit": "创建",
       "sending": "发送中...",

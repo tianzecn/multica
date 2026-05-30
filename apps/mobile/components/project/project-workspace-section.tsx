@@ -13,6 +13,9 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  CreateProjectGitHubRepositoryRequest,
+  CreateGitHubPullRequestRequest,
+  GitHubInstallation,
   GitHubPullRequest,
   GitHubPullRequestReviewComment,
   GitHubPullRequestReviewFile,
@@ -24,37 +27,59 @@ import type {
   ProjectGitOperationRequest,
   ProjectGitStatus,
   ProjectRunScript,
+  ProjectScriptRun,
   ProjectTerminalSession,
   ProjectWorkspaceConfig,
+  RuntimeDevice,
+  TimelineEntry,
 } from "@multica/core/types";
+import {
+  makePullRequestReviewHunkId,
+  parsePullRequestReviewHunks,
+  type ProjectPullRequestReviewHunk,
+} from "@multica/core/github";
+import { nextProjectDeviceId } from "@multica/core/projects";
 import { Button } from "@/components/ui/button";
 import { Text } from "@/components/ui/text";
 import { api } from "@/data/api";
 import {
   projectDeviceFileReadOptions,
   projectDeviceFileTreeOptions,
+  projectDeviceGitLogOptions,
   projectDeviceGitSnapshotsOptions,
   projectDeviceGitStatusOptions,
+  projectDeviceScriptsOptions,
   projectDeviceTerminalsOptions,
+  projectActivityOptions,
   projectKeys,
   projectPullRequestReviewOptions,
   projectPullRequestsOptions,
   projectWorkspaceOptions,
 } from "@/data/queries/projects";
+import { githubInstallationsOptions } from "@/data/queries/github";
+import { runtimeListOptions } from "@/data/queries/runtimes";
 import {
+  useCreateProjectGitHubRepository,
+  useCreateProjectPullRequest,
   useRunProjectDeviceGitOperation,
+  useSetupProjectWorkspace,
   useUpdateProjectWorkspaceConfig,
   useWriteProjectDeviceFile,
 } from "@/data/mutations/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import {
+  isOnlineProjectBinding,
+  projectDeviceLabel,
+} from "@/lib/project-workspace-device";
 import { THEME } from "@/lib/theme";
 
 interface Props {
   projectId: string;
+  projectTitle?: string;
 }
 
-export function ProjectWorkspaceSection({ projectId }: Props) {
+export function ProjectWorkspaceSection({ projectId, projectTitle }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { colorScheme } = useColorScheme();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
@@ -63,21 +88,15 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
   const workspace = workspaceQuery.data;
   const bindings = useMemo(() => workspace?.bindings ?? [], [workspace?.bindings]);
   const onlineBindings = useMemo(
-    () => bindings.filter((b) => isOnlineBinding(b)),
+    () => bindings.filter((b) => isOnlineProjectBinding(b)),
     [bindings],
   );
   const onlineDeviceKey = onlineBindings.map((b) => b.device_id).join("\u0000");
 
   useEffect(() => {
-    const selectedStillOnline = onlineBindings.some(
-      (b) => b.device_id === selectedDeviceId,
-    );
-    if (selectedDeviceId && !selectedStillOnline) {
-      setSelectedDeviceId(null);
-      return;
-    }
-    if (!selectedDeviceId && onlineBindings.length === 1) {
-      setSelectedDeviceId(onlineBindings[0]?.device_id ?? null);
+    const nextDeviceId = nextProjectDeviceId(selectedDeviceId, onlineBindings);
+    if (nextDeviceId !== (selectedDeviceId ?? "")) {
+      setSelectedDeviceId(nextDeviceId || null);
     }
   }, [onlineDeviceKey, onlineBindings, selectedDeviceId]);
 
@@ -90,11 +109,15 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
   const statusQuery = useQuery(
     projectDeviceGitStatusOptions(wsId, projectId, targetDeviceId),
   );
+  const logQuery = useQuery(
+    projectDeviceGitLogOptions(wsId, projectId, targetDeviceId),
+  );
   const snapshotsQuery = useQuery(
     projectDeviceGitSnapshotsOptions(wsId, projectId, targetDeviceId),
   );
   const pullRequestsQuery = useQuery(projectPullRequestsOptions(wsId, projectId));
   const operation = useRunProjectDeviceGitOperation(projectId, targetDeviceId);
+  const createPullRequest = useCreateProjectPullRequest(projectId);
   const git = statusQuery.data;
 
   const refetch = async () => {
@@ -102,6 +125,7 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
       workspaceQuery.refetch(),
       pullRequestsQuery.refetch(),
       targetDeviceId ? statusQuery.refetch() : Promise.resolve(),
+      targetDeviceId ? logQuery.refetch() : Promise.resolve(),
       targetDeviceId ? snapshotsQuery.refetch() : Promise.resolve(),
     ]);
   };
@@ -118,7 +142,7 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
       setSelectedDeviceId(onlineBindings[0]?.device_id ?? null);
       return;
     }
-    const options = ["Cancel", ...onlineBindings.map(deviceLabel)];
+    const options = ["Cancel", ...onlineBindings.map(projectDeviceLabel)];
     ActionSheetIOS.showActionSheetWithOptions(
       { options, cancelButtonIndex: 0 },
       (index) => {
@@ -205,11 +229,18 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
           <ActivityIndicator size="small" />
         </View>
       ) : !workspace?.primary_repo_url ? (
-        <EmptyState
-          icon="git-branch-outline"
-          title="No primary repository"
-          body="Bind a primary GitHub repo before using a local Project workspace."
-        />
+        <View>
+          <EmptyState
+            icon="git-branch-outline"
+            title="No primary repository"
+            body="Create or bind a primary GitHub repo before using a local Project workspace."
+          />
+          <CreateGitHubRepoPanel
+            projectId={projectId}
+            projectTitle={projectTitle}
+          />
+          <ProjectActivityList projectId={projectId} />
+        </View>
       ) : onlineBindings.length === 0 ? (
         <View>
           <EmptyState
@@ -222,6 +253,8 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
             config={workspace.config}
             primaryRepoURL={workspace.primary_repo_url}
           />
+          <DeviceBindingList bindings={bindings} />
+          <RemoteWorkspaceSetupCard projectId={projectId} />
           <ProjectPullRequestPanel
             projectId={projectId}
             pullRequests={pullRequestsQuery.data ?? []}
@@ -229,6 +262,7 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
             error={pullRequestsQuery.error}
             onRefresh={() => pullRequestsQuery.refetch()}
           />
+          <ProjectActivityList projectId={projectId} />
         </View>
       ) : (
         <View>
@@ -239,6 +273,16 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
             needsChoice={needsDeviceChoice}
             onPress={chooseDevice}
           />
+          {onlineBindings.length > 1 ? (
+            <DeviceChoiceList
+              bindings={onlineBindings}
+              selectedDeviceId={targetDeviceId}
+              onSelect={setSelectedDeviceId}
+            />
+          ) : null}
+          {bindings.length > onlineBindings.length ? (
+            <DeviceBindingList bindings={bindings} selectedDeviceId={targetDeviceId} />
+          ) : null}
           {needsDeviceChoice ? (
             <View className="px-4 pb-3">
               <Text className="text-sm text-warning">
@@ -292,6 +336,25 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
                   })
                 }
               />
+              <CreatePullRequestPanel
+                git={git}
+                baseBranch={workspace.config.base_branch}
+                isBusy={isBusy || createPullRequest.isPending}
+                onCreate={(request) =>
+                  createPullRequest.mutate(request, {
+                    onSuccess: (resp) => {
+                      Alert.alert(
+                        "Pull request created",
+                        `#${resp.pull_request.number} ${resp.pull_request.title}`,
+                      );
+                    },
+                    onError: (err) => {
+                      Alert.alert("Could not create pull request", errorMessage(err));
+                    },
+                  })
+                }
+              />
+              <GitLogGraph graph={logQuery.data?.graph ?? ""} loading={logQuery.isLoading} />
               <SnapshotList
                 snapshots={snapshotsQuery.data?.snapshots ?? []}
                 loading={snapshotsQuery.isLoading}
@@ -303,10 +366,17 @@ export function ProjectWorkspaceSection({ projectId }: Props) {
                 error={pullRequestsQuery.error}
                 onRefresh={() => pullRequestsQuery.refetch()}
               />
+              <ProjectActivityList projectId={projectId} />
               <ProjectFilePanel
                 projectId={projectId}
                 targetDeviceId={targetDeviceId}
                 binding={selectedBinding}
+              />
+              <ProjectScriptPanel
+                projectId={projectId}
+                targetDeviceId={targetDeviceId}
+                binding={selectedBinding}
+                scripts={workspace.config.run_scripts}
               />
               <ProjectTerminalPanel
                 projectId={projectId}
@@ -346,6 +416,315 @@ function ProjectActiveTaskBanner({ tasks }: { tasks: ProjectActiveTask[] }) {
   );
 }
 
+function CreateGitHubRepoPanel({
+  projectId,
+  projectTitle,
+}: {
+  projectId: string;
+  projectTitle?: string;
+}) {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { colorScheme } = useColorScheme();
+  const installationsQuery = useQuery(githubInstallationsOptions(wsId));
+  const createRepo = useCreateProjectGitHubRepository(projectId);
+  const [owner, setOwner] = useState("");
+  const [repoName, setRepoName] = useState(() =>
+    defaultGitHubRepoName(projectTitle, projectId),
+  );
+  const [visibility, setVisibility] = useState<"private" | "public">("private");
+
+  useEffect(() => {
+    if (!owner) return;
+    const exists = installationsQuery.data?.installations.some(
+      (installation) => installation.account_login === owner,
+    );
+    if (!exists) setOwner("");
+  }, [installationsQuery.data?.installations, owner]);
+
+  const installations = installationsQuery.data?.installations ?? [];
+  const selectedOwner =
+    installations.find((installation) => installation.account_login === owner) ?? null;
+  const canCreate =
+    !!selectedOwner && repoName.trim().length > 0 && !createRepo.isPending;
+
+  const submit = () => {
+    if (!selectedOwner || !repoName.trim()) return;
+    const request: CreateProjectGitHubRepositoryRequest = {
+      owner: selectedOwner.account_login,
+      owner_type: githubOwnerType(selectedOwner),
+      name: repoName.trim(),
+      visibility,
+    };
+    createRepo.mutate(request, {
+      onSuccess: (created) => {
+        Alert.alert(
+          "Repository created",
+          `${created.repository.full_name || created.repository.clone_url} is now the Project primary repo. Open Multica Desktop on a machine to clone or bind the local folder.`,
+        );
+      },
+      onError: (err) => {
+        Alert.alert("Could not create repository", errorMessage(err));
+      },
+    });
+  };
+
+  if (installationsQuery.isLoading) {
+    return (
+      <View className="mx-4 mb-3 rounded-md border border-border bg-secondary/30 p-3">
+        <ActivityIndicator size="small" />
+      </View>
+    );
+  }
+
+  if (installationsQuery.data && !installationsQuery.data.configured) {
+    return (
+      <EmptyState
+        icon="logo-github"
+        title="GitHub is not configured"
+        body="Connect the GitHub app in workspace settings before creating a repository."
+      />
+    );
+  }
+
+  if (installations.length === 0) {
+    return (
+      <EmptyState
+        icon="logo-github"
+        title="No GitHub owners"
+        body="Install the GitHub app for a user or organization, then return here."
+      />
+    );
+  }
+
+  if (installationsQuery.data?.can_manage === false) {
+    return (
+      <EmptyState
+        icon="lock-closed-outline"
+        title="GitHub setup is read-only"
+        body="Ask a workspace owner or admin to create the primary repository."
+      />
+    );
+  }
+
+  return (
+    <View className="mx-4 mb-3 gap-3 rounded-md border border-border bg-secondary/30 p-3">
+      <View className="flex-row items-center gap-2">
+        <Ionicons name="logo-github" size={16} color="#7c7c7c" />
+        <Text className="text-sm font-medium text-foreground">
+          Create GitHub repository
+        </Text>
+      </View>
+
+      <View className="gap-2">
+        <Text className="text-xs uppercase tracking-wider text-muted-foreground">
+          Owner
+        </Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View className="flex-row gap-2">
+            {installations.map((installation) => {
+              const selected = installation.account_login === owner;
+              return (
+                <Pressable
+                  key={installation.id}
+                  onPress={() => setOwner(installation.account_login)}
+                  className={`rounded-md border px-3 py-2 active:bg-secondary ${
+                    selected ? "border-primary bg-primary/10" : "border-border bg-background"
+                  }`}
+                >
+                  <Text className="text-sm text-foreground">
+                    {installation.account_login}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    {installation.account_type === "Organization" ? "Organization" : "User"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </ScrollView>
+      </View>
+
+      <View className="gap-1">
+        <Text className="text-xs uppercase tracking-wider text-muted-foreground">
+          Repository name
+        </Text>
+        <TextInput
+          value={repoName}
+          onChangeText={setRepoName}
+          editable={!createRepo.isPending}
+          placeholder="multica-project"
+          placeholderTextColor={THEME[colorScheme].mutedForeground}
+          autoCapitalize="none"
+          autoCorrect={false}
+          className="h-10 rounded-md bg-background px-3 text-sm text-foreground"
+        />
+      </View>
+
+      <View className="flex-row gap-2">
+        <Button
+          variant={visibility === "private" ? "default" : "outline"}
+          size="sm"
+          disabled={createRepo.isPending}
+          onPress={() => setVisibility("private")}
+          className="flex-1"
+        >
+          <Text className="text-xs">Private</Text>
+        </Button>
+        <Button
+          variant={visibility === "public" ? "default" : "outline"}
+          size="sm"
+          disabled={createRepo.isPending}
+          onPress={() => setVisibility("public")}
+          className="flex-1"
+        >
+          <Text className="text-xs">Public</Text>
+        </Button>
+      </View>
+
+      <Button disabled={!canCreate} onPress={submit}>
+        <Text className="text-sm">
+          {createRepo.isPending
+            ? "Creating..."
+            : visibility === "private"
+              ? "Create private repo"
+              : "Create public repo"}
+        </Text>
+      </Button>
+    </View>
+  );
+}
+
+function RemoteWorkspaceSetupCard({ projectId }: { projectId: string }) {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { colorScheme } = useColorScheme();
+  const runtimesQuery = useQuery(runtimeListOptions(wsId));
+  const candidates = useMemo(
+    () =>
+      (runtimesQuery.data ?? []).filter(
+        (runtime) =>
+          runtime.status === "online" &&
+          runtime.runtime_mode === "local" &&
+          !!runtime.daemon_id,
+      ),
+    [runtimesQuery.data],
+  );
+  const [runtimeId, setRuntimeId] = useState("");
+  const [localPath, setLocalPath] = useState("");
+  const bind = useSetupProjectWorkspace(projectId, "bind");
+  const clone = useSetupProjectWorkspace(projectId, "clone");
+  const busy = bind.isPending || clone.isPending;
+
+  useEffect(() => {
+    if (runtimeId && !candidates.some((runtime) => runtime.id === runtimeId)) {
+      setRuntimeId("");
+      return;
+    }
+    if (!runtimeId && candidates.length === 1) {
+      setRuntimeId(candidates[0]?.id ?? "");
+    }
+  }, [candidates, runtimeId]);
+
+  const chooseRuntime = () => {
+    if (candidates.length === 0) {
+      Alert.alert("No online runtime", "Open Multica Desktop and keep its daemon online.");
+      return;
+    }
+    const options = ["Cancel", ...candidates.map(runtimeLabel)];
+    ActionSheetIOS.showActionSheetWithOptions(
+      { options, cancelButtonIndex: 0 },
+      (index) => {
+        if (index > 0) {
+          setRuntimeId(candidates[index - 1]?.id ?? "");
+        }
+      },
+    );
+  };
+
+  const submit = (mode: "bind" | "clone") => {
+    const selected = candidates.find((runtime) => runtime.id === runtimeId);
+    if (!selected || !localPath.trim()) {
+      chooseRuntime();
+      return;
+    }
+    const mutation = mode === "bind" ? bind : clone;
+    mutation.mutate(
+      {
+        runtimeId: selected.id,
+        data: { local_path: localPath.trim() },
+      },
+      {
+        onSuccess: () => {
+          setLocalPath("");
+          Alert.alert("Workspace connected", runtimeLabel(selected));
+        },
+        onError: (err) => {
+          Alert.alert("Workspace setup failed", errorMessage(err));
+        },
+      },
+    );
+  };
+
+  if (runtimesQuery.isLoading || candidates.length === 0) return null;
+
+  const selected = candidates.find((runtime) => runtime.id === runtimeId) ?? null;
+
+  return (
+    <View className="mx-4 mb-3 gap-2 rounded-lg bg-card p-3">
+      <View className="flex-row items-center justify-between">
+        <Text className="text-xs uppercase tracking-wider text-muted-foreground">
+          Online device setup
+        </Text>
+        <Pressable
+          onPress={chooseRuntime}
+          disabled={busy}
+          className="rounded-md px-2 py-1 active:bg-secondary"
+        >
+          <Text className="text-xs text-primary">
+            {selected ? runtimeLabel(selected) : "Choose runtime"}
+          </Text>
+        </Pressable>
+      </View>
+      <TextInput
+        value={localPath}
+        onChangeText={setLocalPath}
+        editable={!busy}
+        placeholder="Path on target device"
+        placeholderTextColor={THEME[colorScheme].mutedForeground}
+        autoCapitalize="none"
+        autoCorrect={false}
+        className="h-10 rounded-md bg-background px-3 text-sm text-foreground"
+      />
+      <View className="flex-row gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!runtimeId || !localPath.trim() || busy}
+          onPress={() => submit("bind")}
+          className="flex-1"
+        >
+          <Text className="text-xs">{bind.isPending ? "Binding..." : "Bind"}</Text>
+        </Button>
+        <Button
+          size="sm"
+          disabled={!runtimeId || !localPath.trim() || busy}
+          onPress={() => submit("clone")}
+          className="flex-1"
+        >
+          <Text className="text-xs">{clone.isPending ? "Cloning..." : "Clone"}</Text>
+        </Button>
+      </View>
+    </View>
+  );
+}
+
+function runtimeLabel(runtime: RuntimeDevice) {
+  const device = runtime.device_info || runtime.daemon_id || runtime.name;
+  if (device && runtime.name && device !== runtime.name) {
+    return `${runtime.name} · ${device}`;
+  }
+  return runtime.name || device || runtime.id;
+}
+
 function DeviceRow({
   binding,
   onlineCount,
@@ -370,7 +749,7 @@ function DeviceRow({
           {needsChoice
             ? "Choose target device"
             : binding
-              ? deviceLabel(binding)
+            ? projectDeviceLabel(binding)
               : "No target device"}
         </Text>
         <Text className="text-xs text-muted-foreground" numberOfLines={1}>
@@ -379,6 +758,95 @@ function DeviceRow({
       </View>
       <Ionicons name="chevron-forward" size={14} color="#7c7c7c" />
     </Pressable>
+  );
+}
+
+function DeviceChoiceList({
+  bindings,
+  selectedDeviceId,
+  onSelect,
+}: {
+  bindings: ProjectDeviceBinding[];
+  selectedDeviceId: string | null;
+  onSelect: (deviceId: string) => void;
+}) {
+  const { colorScheme } = useColorScheme();
+  return (
+    <View className="border-t border-border px-4 pb-3 gap-2">
+      {bindings.map((binding) => {
+        const selected = binding.device_id === selectedDeviceId;
+        return (
+          <Pressable
+            key={binding.device_id}
+            onPress={() => onSelect(binding.device_id)}
+            className={`flex-row items-center gap-2 rounded-md border px-3 py-2 active:bg-secondary ${
+              selected ? "border-primary bg-primary/10" : "border-border bg-secondary/30"
+            }`}
+          >
+            <Ionicons
+              name={selected ? "radio-button-on" : "radio-button-off"}
+              size={15}
+              color={
+                selected
+                  ? THEME[colorScheme].primary
+                  : THEME[colorScheme].mutedForeground
+              }
+            />
+            <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+              {projectDeviceLabel(binding)}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function DeviceBindingList({
+  bindings,
+  selectedDeviceId,
+}: {
+  bindings: ProjectDeviceBinding[];
+  selectedDeviceId?: string | null;
+}) {
+  const { colorScheme } = useColorScheme();
+  if (bindings.length === 0) return null;
+  return (
+    <View className="mx-4 mb-3 gap-2 rounded-lg bg-card p-3">
+      <Text className="text-xs uppercase tracking-wider text-muted-foreground">
+        Bound devices
+      </Text>
+      {bindings.map((binding) => {
+        const online = isOnlineProjectBinding(binding);
+        const selected = selectedDeviceId === binding.device_id;
+        const statusColor = online
+          ? THEME[colorScheme].success
+          : THEME[colorScheme].mutedForeground;
+        return (
+          <View
+            key={binding.id || binding.device_id}
+            className={`rounded-md border px-3 py-2 ${
+              selected ? "border-primary bg-primary/10" : "border-border bg-secondary/30"
+            }`}
+          >
+            <View className="flex-row items-center gap-2">
+              <Ionicons name="desktop-outline" size={15} color={statusColor} />
+              <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                {projectDeviceLabel(binding)}
+              </Text>
+              <Text
+                className={`text-xs ${online ? "text-success" : "text-muted-foreground"}`}
+              >
+                {online ? "online" : binding.status || "offline"}
+              </Text>
+            </View>
+            <Text className="mt-1 text-xs text-muted-foreground" numberOfLines={1}>
+              {binding.path_basename || binding.path_alias || binding.device_id}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
   );
 }
 
@@ -561,6 +1029,7 @@ function GitSummary({
         <Pill label={`behind ${git.behind}`} tone={git.behind ? "warning" : "muted"} />
       </View>
       <InfoLine label="Remote" value={git.remote || "Not configured"} />
+      <RemoteList remotes={git.remotes ?? []} />
       <InfoLine label="Last fetch" value={formatTime(git.last_fetch_at)} />
       {files.length > 0 ? (
         <View className="gap-1">
@@ -571,6 +1040,34 @@ function GitSummary({
           ))}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+function RemoteList({
+  remotes,
+}: {
+  remotes: NonNullable<ProjectGitStatus["remotes"]>;
+}) {
+  if (remotes.length === 0) return null;
+  return (
+    <View className="rounded-md bg-secondary/40 p-2 gap-1">
+      <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
+        Remotes
+      </Text>
+      {remotes.map((remote) => (
+        <View key={remote.name} className="gap-0.5">
+          <Text className="text-xs font-medium text-foreground">{remote.name}</Text>
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {remote.fetch_url || remote.push_url}
+          </Text>
+          {remote.push_url && remote.push_url !== remote.fetch_url ? (
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+              {remote.push_url}
+            </Text>
+          ) : null}
+        </View>
+      ))}
     </View>
   );
 }
@@ -750,13 +1247,130 @@ function GitActions({
       <View className="flex-row gap-2">
         <ActionButton label="Pull" icon="arrow-down-circle-outline" disabled={isBusy || dirty} onPress={onPull} />
         <ActionButton label="Rebase" icon="git-compare-outline" disabled={isBusy || dirty} onPress={onRebase} />
-        <ActionButton label="Push" icon="cloud-upload-outline" disabled={isBusy || git.ahead === 0} onPress={onPush} />
+        <ActionButton label="Push" icon="cloud-upload-outline" disabled={isBusy || dirty || git.ahead === 0} onPress={onPush} />
       </View>
       {dirty ? (
         <Text className="text-xs text-warning">
-          Pull and rebase require a clean worktree. Commit or create a safety snapshot first.
+          Pull, rebase, and push require a clean worktree. Commit or create a safety snapshot first.
         </Text>
       ) : null}
+    </View>
+  );
+}
+
+function CreatePullRequestPanel({
+  git,
+  baseBranch,
+  isBusy,
+  onCreate,
+}: {
+  git: ProjectGitStatus;
+  baseBranch: string;
+  isBusy: boolean;
+  onCreate: (request: CreateGitHubPullRequestRequest) => void;
+}) {
+  const { colorScheme } = useColorScheme();
+  const defaultTitle = git.branch ? `Open ${git.branch}` : "";
+  const [title, setTitle] = useState(defaultTitle);
+  const [body, setBody] = useState("");
+  const [issueId, setIssueId] = useState("");
+  const [draft, setDraft] = useState(false);
+
+  useEffect(() => {
+    setTitle((current) => (current.trim() ? current : defaultTitle));
+  }, [defaultTitle]);
+
+  const hasBranch = !!git.branch;
+  const onBaseBranch = git.branch === baseBranch;
+  const canCreate =
+    hasBranch &&
+    !onBaseBranch &&
+    !git.has_uncommitted &&
+    git.ahead === 0 &&
+    title.trim().length > 0 &&
+    !isBusy;
+  const hint = !hasBranch
+    ? "Checkout a task branch before creating a PR."
+    : onBaseBranch
+      ? "Create PRs from task branches, not the base branch."
+      : git.has_uncommitted
+        ? "Commit or discard local changes before creating a PR."
+        : git.ahead > 0
+          ? "Push local commits first so GitHub can see the branch."
+          : "This creates a PR explicitly on GitHub.";
+
+  return (
+    <View className="px-4 pb-3">
+      <View className="rounded-md bg-secondary/40 p-2 gap-2">
+        <View className="flex-row items-center gap-2">
+          <Ionicons name="git-pull-request-outline" size={14} color="#7c7c7c" />
+          <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
+            Create pull request
+          </Text>
+        </View>
+        <TextInput
+          value={title}
+          onChangeText={setTitle}
+          editable={!isBusy}
+          placeholder="Pull request title"
+          placeholderTextColor={THEME[colorScheme].mutedForeground}
+          autoCapitalize="none"
+          autoCorrect={false}
+          className="rounded-md bg-background px-3 py-2 text-sm text-foreground"
+        />
+        <TextInput
+          value={body}
+          onChangeText={setBody}
+          editable={!isBusy}
+          placeholder="Pull request description"
+          placeholderTextColor={THEME[colorScheme].mutedForeground}
+          multiline
+          textAlignVertical="top"
+          className="min-h-20 rounded-md bg-background px-3 py-2 text-sm text-foreground"
+        />
+        <TextInput
+          value={issueId}
+          onChangeText={setIssueId}
+          editable={!isBusy}
+          placeholder="Issue UUID or identifier"
+          placeholderTextColor={THEME[colorScheme].mutedForeground}
+          autoCapitalize="none"
+          autoCorrect={false}
+          className="rounded-md bg-background px-3 py-2 text-sm text-foreground"
+        />
+        <View className="flex-row items-center gap-2">
+          <Pressable
+            disabled={isBusy}
+            onPress={() => setDraft((value) => !value)}
+            className="flex-1 flex-row items-center gap-2 rounded-md px-1 py-2 active:bg-background"
+          >
+            <Ionicons
+              name={draft ? "checkbox-outline" : "square-outline"}
+              size={16}
+              color={THEME[colorScheme].mutedForeground}
+            />
+            <Text className="text-sm text-muted-foreground">Draft</Text>
+          </Pressable>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!canCreate}
+            onPress={() =>
+              onCreate({
+                title: title.trim(),
+                body: body.trim() || undefined,
+                issue_id: issueId.trim() || undefined,
+                head: git.branch,
+                base: baseBranch,
+                draft,
+              })
+            }
+          >
+            <Text className="text-xs">{isBusy ? "Creating..." : "Create PR"}</Text>
+          </Button>
+        </View>
+        <Text className="text-xs text-muted-foreground">{hint}</Text>
+      </View>
     </View>
   );
 }
@@ -851,6 +1465,278 @@ function SnapshotList({
       ))}
     </View>
   );
+}
+
+function GitLogGraph({ graph, loading }: { graph: string; loading: boolean }) {
+  if (loading) {
+    return (
+      <View className="px-4 pb-3">
+        <ActivityIndicator size="small" />
+      </View>
+    );
+  }
+  return (
+    <View className="px-4 pb-3 gap-1">
+      <View className="flex-row items-center gap-2">
+        <Ionicons name="git-commit-outline" size={14} color="#7c7c7c" />
+        <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
+          Recent commits
+        </Text>
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <Text selectable className="font-mono text-xs leading-5 text-muted-foreground">
+          {graph || "No commits yet."}
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
+function ProjectActivityList({ projectId }: { projectId: string }) {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { data = [], isLoading } = useQuery(projectActivityOptions(wsId, projectId));
+  const entries = data.slice(0, 8);
+
+  if (isLoading) {
+    return (
+      <View className="border-t border-border px-4 py-3">
+        <ActivityIndicator size="small" />
+      </View>
+    );
+  }
+  if (entries.length === 0) return null;
+
+  return (
+    <View className="border-t border-border px-4 py-3 gap-2">
+      <View className="flex-row items-center gap-2">
+        <Ionicons name="time-outline" size={16} color="#7c7c7c" />
+        <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
+          Activity
+        </Text>
+      </View>
+      <View className="gap-2">
+        {entries.map((entry) => (
+          <ProjectActivityRow key={entry.id} entry={entry} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function ProjectActivityRow({ entry }: { entry: TimelineEntry }) {
+  const details = entry.details ?? {};
+  const label = projectActivityLabel(entry.action);
+  const subject = projectActivitySubject(details);
+  const detailText = projectActivityDetailText(details);
+  const clippedDetail =
+    detailText.length > 1200 ? `${detailText.slice(0, 1200)}...` : detailText;
+
+  return (
+    <View className="gap-1 rounded-md bg-secondary/40 p-2">
+      <View className="flex-row gap-2">
+        <View className="mt-1 h-2 w-2 rounded-full bg-muted-foreground" />
+        <View className="flex-1">
+          <Text className="text-xs text-foreground" numberOfLines={1}>
+            {label}
+            {subject ? ` · ${subject}` : ""}
+          </Text>
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {formatTime(entry.created_at)}
+          </Text>
+        </View>
+      </View>
+      {clippedDetail ? (
+        <ScrollView horizontal className="rounded bg-background px-2 py-2">
+          <Text selectable className="font-mono text-xs leading-5 text-foreground">
+            {clippedDetail}
+          </Text>
+        </ScrollView>
+      ) : null}
+    </View>
+  );
+}
+
+function projectActivityLabel(action?: string) {
+  switch (action) {
+    case "project_workspace_config_updated":
+      return "Updated workspace config";
+    case "project_device_binding_upserted":
+      return "Bound local device";
+    case "project_device_binding_deleted":
+      return "Unbound local device";
+    case "project_workspace_bind":
+      return "Bound folder on device";
+    case "project_workspace_clone":
+      return "Cloned repo on device";
+    case "project_workspace_git_diff":
+      return "Viewed Git diff";
+    case "project_workspace_git_fetch":
+      return "Fetched remote";
+    case "project_workspace_git_pull":
+      return "Pulled remote changes";
+    case "project_workspace_git_rebase":
+      return "Rebased branch";
+    case "project_workspace_git_commit":
+      return "Committed changes";
+    case "project_workspace_git_push":
+      return "Pushed branch";
+    case "project_workspace_git_snapshot":
+      return "Created safety snapshot";
+    case "project_workspace_file_read":
+      return "Read file";
+    case "project_workspace_file_write":
+      return "Wrote file";
+    case "project_workspace_script_run":
+      return "Ran script";
+    case "project_workspace_script_stop":
+      return "Stopped script";
+    case "project_workspace_terminal_start":
+      return "Started terminal";
+    case "project_workspace_terminal_input":
+      return "Sent terminal input";
+    case "project_workspace_terminal_stop":
+      return "Stopped terminal";
+    case "project_agent_task_started":
+      return "Agent task started";
+    case "project_agent_task_completed":
+      return "Agent task completed";
+    case "project_agent_task_failed":
+      return "Agent task failed";
+    case "project_resource_attached":
+      return "Project resource attached";
+    case "project_resource_detached":
+      return "Project resource detached";
+    case "github_repo_create":
+      return "GitHub repo created";
+    case "github_pr_create":
+      return "Pull request created";
+    case "github_pr_review_comment":
+      return "Review comment added";
+    case "github_pr_review_resolve":
+      return "Review thread resolved";
+    default:
+      return action || "Project activity";
+  }
+}
+
+function projectActivitySubject(details: Record<string, unknown>) {
+  const file = details.file;
+  if (isRecord(file) && typeof file.path === "string" && file.path) {
+    return file.path;
+  }
+  const path = details.path;
+  if (typeof path === "string" && path) return path;
+  const branch = details.branch;
+  if (typeof branch === "string" && branch) return branch;
+  const snapshot = details.snapshot;
+  if (isRecord(snapshot) && typeof snapshot.ref === "string" && snapshot.ref) {
+    return snapshot.ref;
+  }
+  const script = details.script;
+  if (typeof script === "string" && script) return script;
+  const taskKind = details.task_kind;
+  if (typeof taskKind === "string" && taskKind) return taskKind;
+  const repo = details.repo;
+  if (typeof repo === "string" && repo) return repo;
+  const deviceId = details.device_id;
+  if (typeof deviceId === "string" && deviceId) return deviceId;
+  return "";
+}
+
+function projectActivityDetailText(details: Record<string, unknown>) {
+  const portsText = projectActivityPortsText(details);
+  const repoURL = details.repo_url;
+  if (typeof repoURL === "string" && repoURL) {
+    const htmlURL = typeof details.html_url === "string" ? details.html_url : "";
+    const defaultBranch =
+      typeof details.default_branch === "string" ? details.default_branch : "";
+    const visibility = typeof details.visibility === "string" ? details.visibility : "";
+    const role = typeof details.repo_role === "string" ? details.repo_role : "";
+    const workspaceRepoAdded =
+      typeof details.workspace_repo_added === "boolean"
+        ? details.workspace_repo_added
+        : undefined;
+    return [
+      `Repository: ${repoURL}`,
+      htmlURL ? `GitHub: ${htmlURL}` : "",
+      role ? `Role: ${role}` : "",
+      defaultBranch ? `Default branch: ${defaultBranch}` : "",
+      visibility ? `Visibility: ${visibility}` : "",
+      typeof workspaceRepoAdded === "boolean"
+        ? `Workspace repo pool: ${workspaceRepoAdded ? "added" : "already present"}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  const commentURL = details.comment_url;
+  const commentID =
+    typeof details.comment_id === "number" || typeof details.comment_id === "string"
+      ? String(details.comment_id)
+      : "";
+  if ((typeof commentURL === "string" && commentURL) || commentID) {
+    const pullRequestURL =
+      typeof details.pull_request_url === "string" ? details.pull_request_url : "";
+    const line =
+      typeof details.line === "number" || typeof details.line === "string"
+        ? `Line: ${details.line}`
+        : "";
+    const resolved =
+      typeof details.resolved === "boolean"
+        ? `Resolved: ${details.resolved ? "yes" : "no"}`
+        : "";
+    const commentText =
+      typeof commentURL === "string" && commentURL
+        ? `Review comment: ${commentURL}`
+        : `Review comment: #${commentID}`;
+    return [
+      commentText,
+      pullRequestURL ? `Pull request: ${pullRequestURL}` : "",
+      line,
+      resolved,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  const pullRequestURL = details.pull_request_url;
+  if (typeof pullRequestURL === "string" && pullRequestURL) {
+    const head = typeof details.head === "string" ? details.head : "";
+    const base = typeof details.base === "string" ? details.base : "";
+    const draft = typeof details.draft === "boolean" ? details.draft : undefined;
+    const branchText = head && base ? `Branch: ${head} -> ${base}` : "";
+    const draftText = typeof draft === "boolean" ? `Draft: ${draft ? "yes" : "no"}` : "";
+    return [`Pull request: ${pullRequestURL}`, branchText, draftText].filter(Boolean).join("\n");
+  }
+  const diff = details.diff;
+  if (isRecord(diff) && typeof diff.patch === "string" && diff.patch.trim()) {
+    return diff.patch.trim();
+  }
+  for (const key of ["output", "log", "command", "new_content_preview"]) {
+    const value = details[key];
+    if (isRecord(value) && typeof value.text === "string" && value.text.trim()) {
+      return [portsText, value.text.trim()].filter(Boolean).join("\n");
+    }
+  }
+  return portsText;
+}
+
+function projectActivityPortsText(details: Record<string, unknown>) {
+  const ports = details.ports;
+  if (!Array.isArray(ports)) return "";
+  const labels = ports
+    .map((port) => {
+      if (!isRecord(port)) return "";
+      const portNumber =
+        typeof port.port === "number" || typeof port.port === "string"
+          ? String(port.port)
+          : "";
+      if (!portNumber) return "";
+      const url = typeof port.url === "string" && port.url ? ` ${port.url}` : "";
+      return `:${portNumber}${url}`;
+    })
+    .filter(Boolean);
+  if (labels.length === 0) return "";
+  return `Preview ports: ${labels.join(", ")}`;
 }
 
 function ProjectPullRequestPanel({
@@ -977,19 +1863,97 @@ function ProjectPullRequestReviewDetail({
   pullRequestId: string | null;
 }) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const queryClient = useQueryClient();
   const reviewQuery = useQuery(
     projectPullRequestReviewOptions(wsId, projectId, pullRequestId),
   );
   const files = useMemo(() => reviewQuery.data?.files ?? [], [reviewQuery.data?.files]);
+  const fileReviewHunks = useMemo(
+    () =>
+      files.map((file) => ({
+        file,
+        hunks: parsePullRequestReviewHunks(file.patch),
+      })),
+    [files],
+  );
+  const allHunkIds = useMemo(
+    () =>
+      fileReviewHunks.flatMap(({ file, hunks }) =>
+        hunks.map((hunk) => makePullRequestReviewHunkId(file.filename, hunk)),
+      ),
+    [fileReviewHunks],
+  );
+  const allHunkIdSet = useMemo(() => new Set(allHunkIds), [allHunkIds]);
   const fileKey = useMemo(
     () => files.map((file) => file.filename).join("\u0000"),
     [files],
   );
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const hunkKey = useMemo(() => allHunkIds.join("\u0001"), [allHunkIds]);
+  const [selectedHunkIds, setSelectedHunkIds] = useState<string[]>([]);
+  const [commentFile, setCommentFile] = useState("");
+  const [commentLine, setCommentLine] = useState("");
+  const [commentBody, setCommentBody] = useState("");
 
   useEffect(() => {
-    setSelectedFiles(files.map((file) => file.filename));
+    setSelectedHunkIds(allHunkIds);
+  }, [allHunkIds, hunkKey]);
+
+  useEffect(() => {
+    setCommentFile((current) => {
+      if (files.length === 0) return "";
+      if (current && files.some((file) => file.filename === current)) {
+        return current;
+      }
+      return files[0]?.filename ?? "";
+    });
   }, [fileKey, files]);
+
+  const reviewQueryKey = projectKeys.pullRequestReview(wsId, projectId, pullRequestId);
+  const commentLineNumber = Number.parseInt(commentLine.trim(), 10);
+  const createComment = useMutation({
+    mutationFn: () => {
+      if (!pullRequestId) throw new Error("pullRequestId is required");
+      return api.createProjectPullRequestReviewComment(projectId, pullRequestId, {
+        body: commentBody.trim(),
+        path: commentFile,
+        line: commentLineNumber,
+        side: "RIGHT",
+      });
+    },
+    onSuccess: () => {
+      setCommentBody("");
+      Alert.alert("Review comment added");
+      void queryClient.invalidateQueries({ queryKey: reviewQueryKey });
+      void queryClient.invalidateQueries({
+        queryKey: projectKeys.activity(wsId, projectId),
+      });
+    },
+    onError: (err) => {
+      Alert.alert("Review comment failed", errorMessage(err));
+    },
+  });
+  const resolveThread = useMutation({
+    mutationFn: (commentId: number) => {
+      if (!pullRequestId) throw new Error("pullRequestId is required");
+      return api.resolveProjectPullRequestReviewThread(projectId, pullRequestId, commentId);
+    },
+    onSuccess: () => {
+      Alert.alert("Review thread resolved");
+      void queryClient.invalidateQueries({ queryKey: reviewQueryKey });
+      void queryClient.invalidateQueries({
+        queryKey: projectKeys.activity(wsId, projectId),
+      });
+    },
+    onError: (err) => {
+      Alert.alert("Resolve failed", errorMessage(err));
+    },
+  });
+  const canSubmitComment =
+    !!commentFile &&
+    Number.isInteger(commentLineNumber) &&
+    commentLineNumber > 0 &&
+    commentBody.trim().length > 0 &&
+    !createComment.isPending;
 
   if (!pullRequestId) return null;
   if (reviewQuery.isLoading) {
@@ -1008,7 +1972,53 @@ function ProjectPullRequestReviewDetail({
   }
   if (!reviewQuery.data) return null;
 
-  const selectedSet = new Set(selectedFiles);
+  const selectedSet = new Set(selectedHunkIds);
+  const selectedHunkCount = selectedHunkIds.reduce(
+    (count, id) => count + (allHunkIdSet.has(id) ? 1 : 0),
+    0,
+  );
+  const toggleAllHunks = () => {
+    setSelectedHunkIds((current) => {
+      const currentSet = new Set(current);
+      const allSelected =
+        allHunkIds.length > 0 && allHunkIds.every((id) => currentSet.has(id));
+      return allSelected ? [] : allHunkIds;
+    });
+  };
+  const toggleFileHunks = (
+    file: GitHubPullRequestReviewFile,
+    hunks: ProjectPullRequestReviewHunk[],
+  ) => {
+    const fileHunkIds = hunks.map((hunk) =>
+      makePullRequestReviewHunkId(file.filename, hunk),
+    );
+    setSelectedHunkIds((current) => {
+      const next = new Set(current.filter((id) => allHunkIdSet.has(id)));
+      const fileSelected =
+        fileHunkIds.length > 0 && fileHunkIds.every((id) => next.has(id));
+      if (fileSelected) {
+        fileHunkIds.forEach((id) => next.delete(id));
+      } else {
+        fileHunkIds.forEach((id) => next.add(id));
+      }
+      return allHunkIds.filter((id) => next.has(id));
+    });
+  };
+  const toggleHunk = (
+    file: GitHubPullRequestReviewFile,
+    hunk: ProjectPullRequestReviewHunk,
+  ) => {
+    const hunkId = makePullRequestReviewHunkId(file.filename, hunk);
+    setSelectedHunkIds((current) => {
+      const next = new Set(current.filter((id) => allHunkIdSet.has(id)));
+      if (next.has(hunkId)) {
+        next.delete(hunkId);
+      } else {
+        next.add(hunkId);
+      }
+      return allHunkIds.filter((id) => next.has(id));
+    });
+  };
   return (
     <View className="rounded-md bg-secondary/40 p-2 gap-2">
       <View className="flex-row flex-wrap gap-2">
@@ -1016,39 +2026,88 @@ function ProjectPullRequestReviewDetail({
         <Pill label={`${reviewQuery.data.comments.length} comments`} />
         <Pill label={`${reviewQuery.data.reviews.length} reviews`} />
       </View>
+      <View className="rounded-md border border-border/70 p-2 gap-2">
+        <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
+          Add line comment
+        </Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View className="flex-row gap-2">
+            {files.map((file) => {
+              const selected = commentFile === file.filename;
+              return (
+                <Pressable
+                  key={file.filename}
+                  onPress={() => setCommentFile(file.filename)}
+                  disabled={createComment.isPending}
+                  className={`rounded-md border px-2 py-1 active:bg-background ${
+                    selected ? "border-primary bg-background" : "border-border"
+                  }`}
+                >
+                  <Text className="text-xs text-foreground" numberOfLines={1}>
+                    {file.filename}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </ScrollView>
+        <TextInput
+          value={commentLine}
+          onChangeText={setCommentLine}
+          editable={!createComment.isPending}
+          keyboardType="number-pad"
+          placeholder="Line"
+          placeholderTextColor="#7c7c7c"
+          className="rounded-md border border-border px-3 py-2 text-sm text-foreground"
+        />
+        <TextInput
+          value={commentBody}
+          onChangeText={setCommentBody}
+          editable={!createComment.isPending}
+          multiline
+          placeholder="Leave a review comment..."
+          placeholderTextColor="#7c7c7c"
+          className="min-h-20 rounded-md border border-border px-3 py-2 text-sm text-foreground"
+          textAlignVertical="top"
+        />
+        <Button
+          size="sm"
+          disabled={!canSubmitComment}
+          onPress={() => createComment.mutate()}
+        >
+          <Text className="text-xs">Add comment</Text>
+        </Button>
+      </View>
       <View className="flex-row items-center gap-2">
         <Text className="flex-1 text-xs text-muted-foreground">
-          {selectedFiles.length}/{files.length} files selected
+          {selectedHunkCount}/{allHunkIds.length} hunks selected
         </Text>
         <Pressable
-          onPress={() =>
-            setSelectedFiles((current) =>
-              current.length === files.length
-                ? []
-                : files.map((file) => file.filename),
-            )
-          }
+          onPress={toggleAllHunks}
+          disabled={allHunkIds.length === 0}
           className="rounded px-2 py-1 active:bg-background"
         >
           <Text className="text-xs text-foreground">
-            {selectedFiles.length === files.length ? "Clear" : "All"}
+            {selectedHunkCount === allHunkIds.length && allHunkIds.length > 0 ? "Clear" : "All"}
           </Text>
         </Pressable>
       </View>
       <ScrollView className="max-h-72">
         <View className="gap-2">
-          {files.map((file) => (
+          {fileReviewHunks.map(({ file, hunks }) => (
             <ProjectPullRequestFileReview
               key={file.filename}
               file={file}
-              selected={selectedSet.has(file.filename)}
-              onToggle={() =>
-                setSelectedFiles((current) =>
-                  current.includes(file.filename)
-                    ? current.filter((item) => item !== file.filename)
-                    : [...current, file.filename],
-                )
-              }
+              hunks={hunks}
+              selectedHunkIds={selectedSet}
+              onToggleFile={() => toggleFileHunks(file, hunks)}
+              onToggleHunk={(hunk) => toggleHunk(file, hunk)}
+              onCommentAtHunk={(hunk) => {
+                setCommentFile(file.filename);
+                if (hunk.startLine !== null) {
+                  setCommentLine(String(hunk.startLine));
+                }
+              }}
             />
           ))}
         </View>
@@ -1056,6 +2115,8 @@ function ProjectPullRequestReviewDetail({
       <ProjectPullRequestComments
         comments={reviewQuery.data.comments}
         reviews={reviewQuery.data.reviews}
+        onResolve={(commentId) => resolveThread.mutate(commentId)}
+        resolvingCommentId={resolveThread.isPending ? (resolveThread.variables ?? null) : null}
       />
     </View>
   );
@@ -1063,45 +2124,102 @@ function ProjectPullRequestReviewDetail({
 
 function ProjectPullRequestFileReview({
   file,
-  selected,
-  onToggle,
+  hunks,
+  selectedHunkIds,
+  onToggleFile,
+  onToggleHunk,
+  onCommentAtHunk,
 }: {
   file: GitHubPullRequestReviewFile;
-  selected: boolean;
-  onToggle: () => void;
+  hunks: ProjectPullRequestReviewHunk[];
+  selectedHunkIds: ReadonlySet<string>;
+  onToggleFile: () => void;
+  onToggleHunk: (hunk: ProjectPullRequestReviewHunk) => void;
+  onCommentAtHunk: (hunk: ProjectPullRequestReviewHunk) => void;
 }) {
+  const hunkIds = hunks.map((hunk) => makePullRequestReviewHunkId(file.filename, hunk));
+  const selectedHunkCount = hunkIds.filter((id) => selectedHunkIds.has(id)).length;
+  const fileSelected = hunkIds.length > 0 && selectedHunkCount === hunkIds.length;
+  const filePartial = selectedHunkCount > 0 && !fileSelected;
+  const selectionMarker = fileSelected ? "[x]" : filePartial ? "[-]" : "[ ]";
+
   return (
-    <Pressable
-      onPress={onToggle}
-      className="rounded-md border border-border/70 p-2 gap-2 active:bg-background"
-    >
-      <View className="flex-row items-center gap-2">
+    <View className="rounded-md border border-border/70 p-2 gap-2">
+      <Pressable
+        onPress={onToggleFile}
+        disabled={hunks.length === 0}
+        className="flex-row items-center gap-2 rounded-sm active:bg-background"
+      >
         <Text className="text-xs text-muted-foreground">
-          {selected ? "[x]" : "[ ]"}
+          {selectionMarker}
         </Text>
         <Text className="flex-1 text-xs text-foreground" numberOfLines={1}>
           {file.filename}
         </Text>
+        <Text className="text-xs text-muted-foreground">
+          {selectedHunkCount}/{hunks.length}
+        </Text>
         <Text className="text-xs text-brand">+{file.additions}</Text>
         <Text className="text-xs text-destructive">-{file.deletions}</Text>
-      </View>
-      {selected && file.patch ? (
-        <ScrollView horizontal className="rounded bg-background px-2 py-2">
-          <Text selectable className="font-mono text-xs leading-5 text-foreground">
-            {file.patch}
-          </Text>
-        </ScrollView>
-      ) : null}
-    </Pressable>
+      </Pressable>
+      {hunks.length === 0 ? (
+        <Text className="text-xs text-muted-foreground">
+          No patch hunks available.
+        </Text>
+      ) : (
+        <View className="gap-2">
+          {hunks.map((hunk) => {
+            const hunkId = makePullRequestReviewHunkId(file.filename, hunk);
+            const selected = selectedHunkIds.has(hunkId);
+            return (
+              <View key={hunkId} className="rounded-md border border-border/60 p-2 gap-2">
+                <View className="flex-row items-center gap-2">
+                  <Pressable
+                    onPress={() => onToggleHunk(hunk)}
+                    className="flex-1 flex-row items-center gap-2 rounded-sm active:bg-background"
+                  >
+                    <Text className="text-xs text-muted-foreground">
+                      {selected ? "[x]" : "[ ]"}
+                    </Text>
+                    <Text className="flex-1 font-mono text-xs text-muted-foreground" numberOfLines={1}>
+                      {hunk.header}
+                    </Text>
+                  </Pressable>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={hunk.startLine === null}
+                    onPress={() => onCommentAtHunk(hunk)}
+                  >
+                    <Text className="text-xs">Comment</Text>
+                  </Button>
+                </View>
+                {selected ? (
+                  <ScrollView horizontal className="rounded bg-background px-2 py-2">
+                    <Text selectable className="font-mono text-xs leading-5 text-foreground">
+                      {hunk.patch}
+                    </Text>
+                  </ScrollView>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
   );
 }
 
 function ProjectPullRequestComments({
   comments,
   reviews,
+  onResolve,
+  resolvingCommentId,
 }: {
   comments: GitHubPullRequestReviewComment[];
   reviews: GitHubPullRequestReviewSummary[];
+  onResolve?: (commentId: number) => void;
+  resolvingCommentId?: number | null;
 }) {
   return (
     <View className="gap-2">
@@ -1113,7 +2231,12 @@ function ProjectPullRequestComments({
           <Text className="text-xs text-muted-foreground">No line comments yet.</Text>
         ) : (
           comments.slice(0, 6).map((comment) => (
-            <ProjectPullRequestCommentRow key={comment.id} comment={comment} />
+            <ProjectPullRequestCommentRow
+              key={comment.id}
+              comment={comment}
+              onResolve={onResolve}
+              resolving={resolvingCommentId === comment.id}
+            />
           ))
         )}
       </View>
@@ -1135,20 +2258,52 @@ function ProjectPullRequestComments({
   );
 }
 
-function ProjectPullRequestCommentRow({ comment }: { comment: GitHubPullRequestReviewComment }) {
+function ProjectPullRequestCommentRow({
+  comment,
+  onResolve,
+  resolving,
+}: {
+  comment: GitHubPullRequestReviewComment;
+  onResolve?: (commentId: number) => void;
+  resolving?: boolean;
+}) {
   const resolution =
     comment.resolved === true
       ? "resolved"
       : comment.resolved === false
         ? "unresolved"
         : "resolution unknown";
+  const openComment = () => {
+    if (!comment.html_url) return;
+    void Linking.openURL(comment.html_url).catch((err: unknown) => {
+      Alert.alert("Could not open review comment", errorMessage(err));
+    });
+  };
 
   return (
-    <View className="gap-0.5">
-      <Text className="text-xs font-medium text-foreground" numberOfLines={1}>
-        {comment.path}
-        {comment.line ? `:${comment.line}` : ""}
-      </Text>
+    <View className="gap-1 rounded-md p-1">
+      <View className="flex-row items-center gap-2">
+        <Pressable
+          onPress={openComment}
+          disabled={!comment.html_url}
+          className="flex-1 rounded-sm active:bg-background"
+        >
+          <Text className="text-xs font-medium text-foreground" numberOfLines={1}>
+            {comment.path}
+            {comment.line ? `:${comment.line}` : ""}
+          </Text>
+        </Pressable>
+        {comment.resolved === false && onResolve ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={resolving}
+            onPress={() => onResolve(comment.id)}
+          >
+            <Text className="text-xs">Resolve</Text>
+          </Button>
+        ) : null}
+      </View>
       <Text className="text-xs text-muted-foreground" numberOfLines={2}>
         [{resolution}] @{comment.user_login}: {comment.body}
       </Text>
@@ -1320,7 +2475,7 @@ function ProjectFilePanel({
           Files
         </Text>
         <Text className="ml-auto text-xs text-muted-foreground" numberOfLines={1}>
-          {binding ? deviceLabel(binding) : targetDeviceId}
+          {binding ? projectDeviceLabel(binding) : targetDeviceId}
         </Text>
       </View>
       <View className="flex-row gap-2">
@@ -1454,6 +2609,185 @@ function ProjectFileEntryRow({
   );
 }
 
+function ProjectScriptPanel({
+  projectId,
+  targetDeviceId,
+  binding,
+  scripts,
+}: {
+  projectId: string;
+  targetDeviceId: string | null;
+  binding: ProjectDeviceBinding | null;
+  scripts: ProjectRunScript[];
+}) {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const qc = useQueryClient();
+
+  const scriptsQuery = useQuery({
+    ...projectDeviceScriptsOptions(wsId, projectId, targetDeviceId),
+    refetchInterval: targetDeviceId ? 2_000 : false,
+  });
+  const queryKey = projectKeys.deviceScripts(wsId, projectId, targetDeviceId);
+  const activityQueryKey = projectKeys.activity(wsId, projectId);
+  const setScriptRun = (run: ProjectScriptRun) => {
+    qc.setQueryData<{ scripts: ProjectScriptRun[] }>(queryKey, (old) => ({
+      scripts: upsertScriptRun(old?.scripts ?? [], run),
+    }));
+  };
+  const refreshProjectActivity = () => {
+    void qc.invalidateQueries({ queryKey: activityQueryKey });
+  };
+
+  const runScript = useMutation({
+    mutationFn: (script: ProjectRunScript) => {
+      if (!targetDeviceId) throw new Error("Choose an online device first.");
+      return api.runProjectDeviceScript(projectId, targetDeviceId, {
+        name: script.name,
+        command: script.command,
+      });
+    },
+    onSuccess: (run) => {
+      setScriptRun(run);
+      refreshProjectActivity();
+    },
+    onError: (err) => {
+      Alert.alert("Script failed", errorMessage(err));
+    },
+  });
+
+  const stopScript = useMutation({
+    mutationFn: (runId: string) => {
+      if (!targetDeviceId) throw new Error("Choose an online device first.");
+      return api.stopProjectDeviceScript(projectId, targetDeviceId, runId);
+    },
+    onSuccess: (run) => {
+      setScriptRun(run);
+      refreshProjectActivity();
+    },
+    onError: (err) => {
+      Alert.alert("Stop script failed", errorMessage(err));
+    },
+  });
+
+  if (!targetDeviceId || scripts.length === 0) return null;
+
+  const runs = scriptsQuery.data?.scripts ?? [];
+  const busy = runScript.isPending || stopScript.isPending;
+  const targetLabel = binding ? projectDeviceLabel(binding) : targetDeviceId;
+
+  return (
+    <View className="border-t border-border px-4 py-3 gap-3">
+      <View className="flex-row items-center gap-2">
+        <Ionicons name="play-circle-outline" size={16} color="#7c7c7c" />
+        <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
+          Scripts
+        </Text>
+        <Text className="ml-auto text-xs text-muted-foreground" numberOfLines={1}>
+          {targetLabel}
+        </Text>
+      </View>
+      <View className="flex-row flex-wrap gap-2">
+        {scripts.map((script) => (
+          <Button
+            key={`${script.name}:${script.command}`}
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onPress={() => runScript.mutate(script)}
+          >
+            <Ionicons name="play-outline" size={14} color="#7c7c7c" />
+            <Text className="text-xs">{script.name}</Text>
+          </Button>
+        ))}
+      </View>
+      {scriptsQuery.isLoading ? (
+        <ActivityIndicator size="small" />
+      ) : scriptsQuery.error ? (
+        <Text className="text-sm text-destructive">
+          {errorMessage(scriptsQuery.error)}
+        </Text>
+      ) : runs.length === 0 ? (
+        <Text className="text-sm text-muted-foreground">
+          No script runs yet.
+        </Text>
+      ) : (
+        <View className="gap-2">
+          {runs.slice(0, 4).map((run) => (
+            <ProjectScriptRunRow
+              key={run.id}
+              run={run}
+              stopping={stopScript.isPending && stopScript.variables === run.id}
+              onStop={() => stopScript.mutate(run.id)}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ProjectScriptRunRow({
+  run,
+  stopping,
+  onStop,
+}: {
+  run: ProjectScriptRun;
+  stopping: boolean;
+  onStop: () => void;
+}) {
+  const running = run.status === "running" || run.status === "stopping";
+  const { colorScheme } = useColorScheme();
+  return (
+    <View className="rounded-md bg-secondary/40 p-2 gap-2">
+      <View className="flex-row items-center gap-2">
+        <Text className="flex-1 text-xs font-medium text-foreground" numberOfLines={1}>
+          {run.name || run.command}
+        </Text>
+        <Pill label={run.status} tone={run.status === "failed" ? "warning" : "muted"} />
+        {running ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={stopping}
+            onPress={onStop}
+          >
+            <Text className="text-xs">Stop</Text>
+          </Button>
+        ) : null}
+      </View>
+      <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+        {run.command}
+      </Text>
+      {run.ports && run.ports.length > 0 ? (
+        <View className="flex-row flex-wrap gap-2">
+          {run.ports.map((port) => (
+            <Button
+              key={`${run.id}:${port.port}`}
+              variant="outline"
+              size="sm"
+              onPress={() => {
+                void Linking.openURL(port.url);
+              }}
+            >
+              <Ionicons
+                name="open-outline"
+                size={13}
+                color={THEME[colorScheme].mutedForeground}
+              />
+              <Text className="text-xs">:{port.port}</Text>
+            </Button>
+          ))}
+        </View>
+      ) : null}
+      <ScrollView horizontal className="max-h-32 rounded bg-background px-2 py-2">
+        <Text selectable className="font-mono text-xs leading-5 text-foreground">
+          {run.log || "$ "}
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
 function ProjectTerminalPanel({
   projectId,
   targetDeviceId,
@@ -1473,6 +2807,7 @@ function ProjectTerminalPanel({
     refetchInterval: targetDeviceId ? 2_000 : false,
   });
   const queryKey = projectKeys.deviceTerminals(wsId, projectId, targetDeviceId);
+  const activityQueryKey = projectKeys.activity(wsId, projectId);
 
   const setTerminal = (session: ProjectTerminalSession) => {
     qc.setQueryData<{ terminals: ProjectTerminalSession[] }>(
@@ -1482,13 +2817,19 @@ function ProjectTerminalPanel({
       }),
     );
   };
+  const refreshProjectActivity = () => {
+    void qc.invalidateQueries({ queryKey: activityQueryKey });
+  };
 
   const startTerminal = useMutation({
     mutationFn: () => {
       if (!targetDeviceId) throw new Error("Choose an online device first.");
       return api.startProjectDeviceTerminal(projectId, targetDeviceId);
     },
-    onSuccess: setTerminal,
+    onSuccess: (session) => {
+      setTerminal(session);
+      refreshProjectActivity();
+    },
     onError: (err) => {
       Alert.alert("Terminal failed", errorMessage(err));
     },
@@ -1504,6 +2845,7 @@ function ProjectTerminalPanel({
     onSuccess: (session) => {
       setInput("");
       setTerminal(session);
+      refreshProjectActivity();
     },
     onError: (err) => {
       Alert.alert("Terminal input failed", errorMessage(err));
@@ -1515,7 +2857,10 @@ function ProjectTerminalPanel({
       if (!targetDeviceId) throw new Error("Choose an online device first.");
       return api.stopProjectDeviceTerminal(projectId, targetDeviceId, sessionId);
     },
-    onSuccess: setTerminal,
+    onSuccess: (session) => {
+      setTerminal(session);
+      refreshProjectActivity();
+    },
     onError: (err) => {
       Alert.alert("Terminal stop failed", errorMessage(err));
     },
@@ -1553,7 +2898,7 @@ function ProjectTerminalPanel({
           Terminal
         </Text>
         <Text className="ml-auto text-xs text-muted-foreground" numberOfLines={1}>
-          {binding ? deviceLabel(binding) : targetDeviceId}
+          {binding ? projectDeviceLabel(binding) : targetDeviceId}
         </Text>
       </View>
       <View className="flex-row gap-2">
@@ -1645,6 +2990,15 @@ function upsertTerminal(
   const existing = terminals.some((item) => item.id === session.id);
   if (!existing) return [session, ...terminals];
   return terminals.map((item) => (item.id === session.id ? session : item));
+}
+
+function upsertScriptRun(
+  scripts: ProjectScriptRun[],
+  run: ProjectScriptRun,
+): ProjectScriptRun[] {
+  const existing = scripts.some((item) => item.id === run.id);
+  if (!existing) return [run, ...scripts];
+  return scripts.map((item) => (item.id === run.id ? run : item));
 }
 
 function sortProjectFileEntries(entries: ProjectFileEntry[]): ProjectFileEntry[] {
@@ -1820,17 +3174,17 @@ function promptCommitMessage(onSubmit: (message: string) => void) {
   );
 }
 
-function isOnlineBinding(binding: ProjectDeviceBinding): boolean {
-  return binding.status === "online" && !!binding.runtime_id;
+function githubOwnerType(owner: GitHubInstallation): "user" | "organization" {
+  return owner.account_type === "Organization" ? "organization" : "user";
 }
 
-function deviceLabel(binding: ProjectDeviceBinding): string {
-  return (
-    binding.runtime_name ||
-    binding.path_alias ||
-    binding.path_basename ||
-    binding.device_id
-  );
+function defaultGitHubRepoName(projectTitle: string | undefined, projectId: string): string {
+  const slug = (projectTitle ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return slug || `multica-project-${projectId.slice(0, 8)}`;
 }
 
 function gitOperationTitle(operation: ProjectGitOperation): string {
@@ -1852,4 +3206,8 @@ function formatTime(raw?: string | null): string {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return raw;
   return date.toLocaleString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }

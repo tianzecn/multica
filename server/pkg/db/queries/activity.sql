@@ -22,6 +22,16 @@ DELETE FROM activity_log
 WHERE workspace_id = $1
   AND details->>'project_id' = sqlc.arg('project_id')::text;
 
+-- name: ListActivitiesForProjectExport :many
+-- Export uses chronological order so downstream archive readers can replay the
+-- Project history directly, including redacted diff payloads stored in details.
+SELECT * FROM activity_log
+WHERE workspace_id = $1
+  AND issue_id IS NULL
+  AND details->>'project_id' = sqlc.arg('project_id')::text
+ORDER BY created_at ASC, id ASC
+LIMIT sqlc.arg('limit');
+
 -- name: GetActivity :one
 SELECT * FROM activity_log
 WHERE id = $1;

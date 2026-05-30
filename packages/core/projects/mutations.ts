@@ -11,6 +11,7 @@ import type {
   ProjectFileWriteRequest,
   ProjectGitOperation,
   ProjectGitOperationRequest,
+  SetupProjectWorkspaceRequest,
   UpdateProjectWorkspaceConfigRequest,
   UpsertProjectDeviceBindingRequest,
 } from "../types";
@@ -126,6 +127,42 @@ export function useUpsertProjectDeviceBinding(projectId: string) {
   });
 }
 
+export function useSetupProjectWorkspace(
+  projectId: string,
+  mode: "bind" | "clone",
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      runtimeId,
+      data,
+    }: {
+      runtimeId: string;
+      data: SetupProjectWorkspaceRequest;
+    }) =>
+      mode === "bind"
+        ? api.bindProjectWorkspaceOnRuntime(projectId, runtimeId, data)
+        : api.cloneProjectWorkspaceOnRuntime(projectId, runtimeId, data),
+    onSuccess: ({ binding }) => {
+      qc.setQueryData<ProjectWorkspace>(projectKeys.workspace(wsId, projectId), (old) => {
+        if (!old) return old;
+        const exists = old.bindings.some((b) => b.device_id === binding.device_id);
+        return {
+          ...old,
+          bindings: exists
+            ? old.bindings.map((b) => (b.device_id === binding.device_id ? binding : b))
+            : [...old.bindings, binding],
+        };
+      });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
+    },
+  });
+}
+
 export function useRunProjectDeviceGitOperation(projectId: string, deviceId: string) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
@@ -140,6 +177,7 @@ export function useRunProjectDeviceGitOperation(projectId: string, deviceId: str
     onSettled: () => {
       qc.invalidateQueries({ queryKey: projectKeys.device(wsId, projectId, deviceId) });
       qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
     },
   });
 }

@@ -216,7 +216,7 @@ func TestPrepareWithProjectResources(t *testing.T) {
 		"GitHub repo",
 		"https://github.com/multica-ai/multica",
 		"default branch: `main`",
-		".multica/project/resources.json",
+		"$MULTICA_PROJECT_RESOURCES_FILE",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("CLAUDE.md missing %q", want)
@@ -260,6 +260,15 @@ func TestProjectReposReplaceWorkspaceReposInMetaSkill(t *testing.T) {
 	s := string(content)
 	if !strings.Contains(s, "https://github.com/org/project-repo") {
 		t.Errorf("CLAUDE.md missing project repo URL")
+	}
+	for _, want := range []string{
+		"already checked out as the current working directory",
+		"do not run `multica repo checkout` for the primary Project repo",
+		"primary repo as the current working directory",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("CLAUDE.md missing Project-bound repo guidance %q\n---\n%s", want, s)
+		}
 	}
 	if strings.Contains(s, "https://github.com/org/workspace-repo") {
 		t.Errorf("CLAUDE.md should not contain workspace repo when project has its own")
@@ -3328,10 +3337,10 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			want: withSection,
 		},
 		{
-			name:                "assignment_triggered",
-			ctx:                 TaskContextForEnv{IssueID: "issue-md-2"},
-			provider:            "claude",
-			filename:            "CLAUDE.md",
+			name:     "assignment_triggered",
+			ctx:      TaskContextForEnv{IssueID: "issue-md-2"},
+			provider: "claude",
+			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
 				"multica issue metadata list issue-md-2 --output json",
 				"See the `## Issue Metadata` section above",

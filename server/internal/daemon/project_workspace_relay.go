@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -29,9 +30,15 @@ func (d *Daemon) handleWSProjectWorkspaceRequest(ctx context.Context, req protoc
 
 func (d *Daemon) executeProjectWorkspaceRelayRequest(ctx context.Context, req protocol.DaemonProjectWorkspaceRequestPayload) protocol.DaemonProjectWorkspaceResponsePayload {
 	resp := protocol.DaemonProjectWorkspaceResponsePayload{RequestID: req.RequestID}
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
 	req.ProjectID = strings.TrimSpace(req.ProjectID)
 	req.Method = strings.ToUpper(strings.TrimSpace(req.Method))
 	req.Path = strings.TrimSpace(req.Path)
+	if req.WorkspaceID != "" && (strings.Contains(req.WorkspaceID, "/") || strings.Contains(req.WorkspaceID, "\\")) {
+		resp.StatusCode = http.StatusBadRequest
+		resp.Error = "invalid workspace_id"
+		return resp
+	}
 	if req.ProjectID == "" || strings.Contains(req.ProjectID, "/") || strings.Contains(req.ProjectID, "\\") {
 		resp.StatusCode = http.StatusBadRequest
 		resp.Error = "invalid project_id"
@@ -41,6 +48,19 @@ func (d *Daemon) executeProjectWorkspaceRelayRequest(ctx context.Context, req pr
 		resp.StatusCode = http.StatusNotFound
 		resp.Error = "project workspace route is not allowed"
 		return resp
+	}
+	if req.WorkspaceID != "" {
+		binding, err := loadBoundProjectWorkspace(ctx, d.cfg.Profile, req.ProjectID)
+		if err == nil && binding.WorkspaceID != req.WorkspaceID {
+			resp.StatusCode = http.StatusConflict
+			resp.Error = "project workspace binding does not belong to requested workspace"
+			return resp
+		}
+		if err != nil && !errors.Is(err, errProjectWorkspaceNotBound) {
+			resp.StatusCode = http.StatusInternalServerError
+			resp.Error = err.Error()
+			return resp
+		}
 	}
 
 	target := "/project-workspaces/" + url.PathEscape(req.ProjectID) + req.Path
@@ -70,7 +90,12 @@ func (d *Daemon) executeProjectWorkspaceRelayRequest(ctx context.Context, req pr
 }
 
 func isProjectWorkspaceRelayRouteAllowed(method, routePath string) bool {
+	if routePath == "" || routePath == "/" {
+		return method == http.MethodPut
+	}
 	switch routePath {
+	case "/clone":
+		return method == http.MethodPost
 	case "/git/status", "/git/diff", "/git/log", "/git/snapshots":
 		return method == http.MethodGet
 	case "/git/fetch", "/git/pull", "/git/rebase", "/git/commit", "/git/push", "/git/snapshot":

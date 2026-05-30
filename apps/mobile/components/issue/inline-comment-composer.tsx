@@ -13,13 +13,17 @@
  * with chat-mode props.
  */
 import { useCallback } from "react";
+import type { Issue } from "@multica/core/types";
 import { useCreateComment } from "@/data/mutations/issues";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useIssueProjectDirtyWorktreeConsent } from "@/lib/use-project-dirty-worktree-consent";
 import { MessageComposer } from "@/components/composer/message-composer";
 
-export function InlineCommentComposer({ issueId }: { issueId: string }) {
-  const createComment = useCreateComment(issueId);
+export function InlineCommentComposer({ issue }: { issue: Issue }) {
+  const createComment = useCreateComment(issue.id);
+  const { confirmProjectCommentDirtyContinue } =
+    useIssueProjectDirtyWorktreeConsent(issue);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const replyTarget = useReplyTargetStore((s) => s.target);
   const clearReplyTarget = useReplyTargetStore((s) => s.clear);
@@ -33,10 +37,13 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
       attachmentIds: string[];
     }) => {
       try {
+        const dirtyChoice = await confirmProjectCommentDirtyContinue(content);
+        if (!dirtyChoice.proceed) return;
         await createComment.mutateAsync({
           content,
           parentId: replyTarget?.commentId,
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+          projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
         });
       } catch (err) {
         // Rethrow so MessageComposer's catch path restores text + chips.
@@ -45,7 +52,7 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
         throw err;
       }
     },
-    [createComment, replyTarget?.commentId],
+    [createComment, confirmProjectCommentDirtyContinue, replyTarget?.commentId],
   );
 
   return (
@@ -55,7 +62,7 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
         pathname: "/[workspace]/mention-picker",
         params: { workspace: wsSlug ?? "", mode: "comment" },
       }}
-      uploadContext={{ issueId }}
+      uploadContext={{ issueId: issue.id }}
       placeholder="Add a comment…"
       pillLabel="Add a comment, @ to mention…"
       pillIcon="chatbubble-ellipses-outline"

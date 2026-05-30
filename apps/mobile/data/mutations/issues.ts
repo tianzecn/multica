@@ -57,6 +57,7 @@ export type CreateCommentVars = {
    *  too. Mirrors web's `CommentInput.handleSubmit` `activeIds` derivation
    *  (`packages/views/issues/components/comment-input.tsx:76-78`). */
   attachmentIds?: string[];
+  projectContinueOnDirty?: boolean;
 };
 
 export function useCreateComment(issueId: string) {
@@ -65,8 +66,17 @@ export function useCreateComment(issueId: string) {
   const userId = useAuthStore((s) => s.user?.id ?? null);
 
   return useMutation({
-    mutationFn: ({ content, parentId, attachmentIds }: CreateCommentVars) =>
-      api.createComment(issueId, content, { parentId, attachmentIds }),
+    mutationFn: ({
+      content,
+      parentId,
+      attachmentIds,
+      projectContinueOnDirty,
+    }: CreateCommentVars) =>
+      api.createComment(issueId, content, {
+        parentId,
+        attachmentIds,
+        projectContinueOnDirty,
+      }),
     onMutate: async ({ content, parentId }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });

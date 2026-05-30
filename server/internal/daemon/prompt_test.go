@@ -292,6 +292,56 @@ func TestBuildPromptDefaultMentionsRecent(t *testing.T) {
 	}
 }
 
+func TestBuildPromptProjectGitWorkflowLeavesDiffUncommitted(t *testing.T) {
+	cases := []struct {
+		name string
+		task Task
+	}{
+		{name: "assignment", task: Task{IssueID: "issue-1", ProjectID: "project-1"}},
+		{name: "comment", task: Task{IssueID: "issue-2", TriggerCommentID: "comment-1", TriggerCommentContent: "please fix", ProjectID: "project-1"}},
+		{name: "chat", task: Task{ChatSessionID: "chat-1", ChatMessage: "please fix", ProjectID: "project-1"}},
+		{name: "autopilot", task: Task{AutopilotRunID: "run-1", AutopilotTitle: "nightly", ProjectID: "project-1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := BuildPrompt(tc.task, "claude")
+			for _, s := range []string{
+				"Project workspace Git workflow",
+				"Leave code changes uncommitted by default",
+				"Do NOT run `git commit`, `git push`, `gh pr create`",
+				"unless the user's task explicitly asks",
+				"commit/push/sync are explicit user actions",
+			} {
+				if !strings.Contains(out, s) {
+					t.Errorf("project prompt missing git workflow rule %q\n--- output ---\n%s", s, out)
+				}
+			}
+		})
+	}
+
+	out := BuildPrompt(Task{IssueID: "issue-default-1"}, "claude")
+	if strings.Contains(out, "Project workspace Git workflow") {
+		t.Errorf("non-project prompt must not include Project Git workflow instructions\n--- output ---\n%s", out)
+	}
+
+	out = BuildPrompt(Task{
+		IssueID:                     "issue-scope-1",
+		ProjectID:                   "project-1",
+		ProjectScopePath:            "packages/app",
+		ProjectVerificationCommands: []string{"pnpm typecheck", "go test ./..."},
+	}, "claude")
+	for _, s := range []string{
+		"Project scope path: `packages/app`",
+		"Suggested Project verification commands",
+		"`pnpm typecheck`",
+		"`go test ./...`",
+	} {
+		if !strings.Contains(out, s) {
+			t.Errorf("project prompt missing workspace config hint %q\n--- output ---\n%s", s, out)
+		}
+	}
+}
+
 // TestBuildPromptNonSquadLeaderNoRule verifies that non-squad-leader agents
 // do NOT get the squad leader no_action rule injected.
 func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {

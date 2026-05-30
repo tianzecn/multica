@@ -61,6 +61,12 @@ describe("resolveRemoteApiUrl", () => {
     );
   });
 
+  it("ignores PORT when it matches the frontend dev server port", () => {
+    expect(resolveRemoteApiUrl({ PORT: "3000", FRONTEND_PORT: "3000" })).toBe(
+      "http://localhost:8080",
+    );
+  });
+
   it("ignores whitespace-only backend URL values", () => {
     expect(
       resolveRemoteApiUrl({

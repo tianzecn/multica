@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,73 @@ func TestProjectResourceLifecycle(t *testing.T) {
 	}
 }
 
+func TestProjectResourceActivityAudit(t *testing.T) {
+	resetWorkspaceRepos(t)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Resource activity audit project",
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProject: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var project ProjectResponse
+	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
+		t.Fatalf("decode CreateProject: %v", err)
+	}
+	defer func() {
+		r := newRequest("DELETE", "/api/projects/"+project.ID, nil)
+		r = withURLParam(r, "id", project.ID)
+		testHandler.DeleteProject(httptest.NewRecorder(), r)
+	}()
+
+	repoURL := "https://github.com/multica-ai/resource-activity-audit"
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref":  map[string]any{"url": repoURL, "role": "primary"},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProjectResource: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var created ProjectResourceResponse
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode CreateProjectResource: %v", err)
+	}
+
+	activities := listProjectActivityForTest(t, project.ID)
+	attached := findProjectActivityForTest(t, activities, "project_resource_attached")
+	attachedDetails := decodeActivityDetailsForTest(t, attached)
+	if attachedDetails["resource_id"] != created.ID {
+		t.Fatalf("attached resource_id = %v, want %s", attachedDetails["resource_id"], created.ID)
+	}
+	if attachedDetails["repo_url"] != repoURL || attachedDetails["repo_role"] != "primary" {
+		t.Fatalf("attached repo details = %+v", attachedDetails)
+	}
+	if attachedDetails["workspace_repo_added"] != true {
+		t.Fatalf("workspace_repo_added = %v, want true", attachedDetails["workspace_repo_added"])
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("DELETE", "/api/projects/"+project.ID+"/resources/"+created.ID, nil)
+	req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
+	testHandler.DeleteProjectResource(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteProjectResource: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	activities = listProjectActivityForTest(t, project.ID)
+	_ = findProjectActivityForTest(t, activities, "project_resource_attached")
+	detached := findProjectActivityForTest(t, activities, "project_resource_detached")
+	detachedDetails := decodeActivityDetailsForTest(t, detached)
+	if detachedDetails["resource_id"] != created.ID || detachedDetails["repo_url"] != repoURL {
+		t.Fatalf("detached details = %+v", detachedDetails)
+	}
+}
+
 // TestProjectResourceAcceptsSSHRepoURLs covers GitHub issue #2484: SSH and
 // scp-like git URLs must be accepted alongside https URLs, because workspace
 // repos configured with an SSH remote previously got rejected when attached
@@ -164,7 +232,7 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 		role string
 	}{
 		{"scp-like", "git@github.com:multica-ai/multica.git", "primary"},
-		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica.git", "related"},
+		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica-related.git", "related"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,6 +260,74 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 				t.Errorf("ref.url = %q, want %q", ref.URL, tc.url)
 			}
 		})
+	}
+}
+
+func TestProjectResourceRejectsEquivalentGitHubRepoURLDuplicate(t *testing.T) {
+	resetWorkspaceRepos(t)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Equivalent repo URL duplicate",
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
+	}
+	var project ProjectResponse
+	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
+		t.Fatalf("decode CreateProject: %v", err)
+	}
+	defer func() {
+		r := newRequest("DELETE", "/api/projects/"+project.ID, nil)
+		r = withURLParam(r, "id", project.ID)
+		testHandler.DeleteProject(httptest.NewRecorder(), r)
+	}()
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref": map[string]any{
+			"url":  "https://github.com/multica-ai/normalized-duplicate.git",
+			"role": "primary",
+		},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProjectResource primary: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref": map[string]any{
+			"url":  "git@github.com:multica-ai/normalized-duplicate.git",
+			"role": "related",
+		},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("equivalent duplicate: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("GET", "/api/projects/"+project.ID+"/resources", nil)
+	req = withURLParam(req, "id", project.ID)
+	testHandler.ListProjectResources(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListProjectResources: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var listResp struct {
+		Resources []ProjectResourceResponse `json:"resources"`
+		Total     int                       `json:"total"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if listResp.Total != 1 || len(listResp.Resources) != 1 {
+		t.Fatalf("equivalent duplicate created extra resources: total=%d resources=%d", listResp.Total, len(listResp.Resources))
 	}
 }
 
@@ -233,6 +369,8 @@ func TestIsValidGitRepoURL(t *testing.T) {
 }
 
 func TestCreateProjectAttachesResources(t *testing.T) {
+	resetWorkspaceRepos(t)
+
 	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "Project with bundled resources",
@@ -240,6 +378,10 @@ func TestCreateProjectAttachesResources(t *testing.T) {
 			{
 				"resource_type": "github_repo",
 				"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/multica"},
+			},
+			{
+				"resource_type": "github_repo",
+				"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/reference", "role": "related"},
 			},
 		},
 	})
@@ -260,9 +402,60 @@ func TestCreateProjectAttachesResources(t *testing.T) {
 		testHandler.DeleteProject(httptest.NewRecorder(), r)
 	}()
 
-	if len(resp.Resources) != 1 || resp.Resources[0].ResourceType != "github_repo" {
+	if len(resp.Resources) != 2 || resp.Resources[0].ResourceType != "github_repo" {
 		t.Fatalf("response resources mismatch: %+v", resp.Resources)
 	}
+	assertWorkspaceRepos(t, []workspaceRepoJSON{
+		{URL: "https://github.com/multica-ai/multica", Description: "multica-ai/multica"},
+	})
+}
+
+func TestCreateProjectResourcePrimaryAddsWorkspaceRepo(t *testing.T) {
+	resetWorkspaceRepos(t)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Project resource workspace repo pool",
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProject: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var project ProjectResponse
+	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
+		t.Fatalf("decode CreateProject: %v", err)
+	}
+	defer func() {
+		r := newRequest("DELETE", "/api/projects/"+project.ID, nil)
+		r = withURLParam(r, "id", project.ID)
+		testHandler.DeleteProject(httptest.NewRecorder(), r)
+	}()
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/primary", "role": "primary"},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProjectResource primary: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
+		"resource_type": "github_repo",
+		"resource_ref":  map[string]any{"url": "https://github.com/multica-ai/related", "role": "related"},
+	})
+	req = withURLParam(req, "id", project.ID)
+	testHandler.CreateProjectResource(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateProjectResource related: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	assertWorkspaceRepos(t, []workspaceRepoJSON{
+		{URL: "https://github.com/multica-ai/primary", Description: "multica-ai/primary"},
+	})
 }
 
 func TestProjectResourceAllowsOnlyOnePrimaryRepo(t *testing.T) {
@@ -336,6 +529,33 @@ func TestCreateProjectRejectsMultiplePrimaryRepos(t *testing.T) {
 	testHandler.CreateProject(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("CreateProject with two primary repos: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateProjectRejectsEquivalentGitHubRepoURLDuplicate(t *testing.T) {
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Project with equivalent duplicate repos",
+		"resources": []map[string]any{
+			{
+				"resource_type": "github_repo",
+				"resource_ref": map[string]any{
+					"url":  "https://github.com/multica-ai/batch-duplicate.git",
+					"role": "primary",
+				},
+			},
+			{
+				"resource_type": "github_repo",
+				"resource_ref": map[string]any{
+					"url":  "git@github.com:multica-ai/batch-duplicate.git",
+					"role": "related",
+				},
+			},
+		},
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("CreateProject with equivalent duplicate repos: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -511,4 +731,60 @@ func TestCreateProjectRollsBackOnInvalidResource(t *testing.T) {
 			t.Errorf("invalid resource should have rolled back project create, but found %s", p.ID)
 		}
 	}
+}
+
+func assertWorkspaceRepos(t *testing.T, want []workspaceRepoJSON) {
+	t.Helper()
+	workspace, err := testHandler.Queries.GetWorkspace(context.Background(), parseUUID(testWorkspaceID))
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	var got []workspaceRepoJSON
+	if err := json.Unmarshal(workspace.Repos, &got); err != nil {
+		t.Fatalf("decode workspace repos: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("workspace repos = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("workspace repos[%d] = %+v, want %+v; all=%+v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func listProjectActivityForTest(t *testing.T, projectID string) []TimelineEntry {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/projects/"+projectID+"/activity", nil)
+	req = withURLParam(req, "id", projectID)
+	testHandler.ListProjectActivity(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListProjectActivity: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var activities []TimelineEntry
+	if err := json.NewDecoder(w.Body).Decode(&activities); err != nil {
+		t.Fatalf("decode project activities: %v", err)
+	}
+	return activities
+}
+
+func findProjectActivityForTest(t *testing.T, activities []TimelineEntry, action string) TimelineEntry {
+	t.Helper()
+	for _, entry := range activities {
+		if entry.Action != nil && *entry.Action == action {
+			return entry
+		}
+	}
+	t.Fatalf("missing activity %q in %+v", action, activities)
+	return TimelineEntry{}
+}
+
+func decodeActivityDetailsForTest(t *testing.T, entry TimelineEntry) map[string]any {
+	t.Helper()
+	var details map[string]any
+	if err := json.Unmarshal(entry.Details, &details); err != nil {
+		t.Fatalf("decode activity details: %v", err)
+	}
+	return details
 }

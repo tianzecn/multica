@@ -255,6 +255,338 @@ describe("ApiClient", () => {
     );
   });
 
+  describe("project workspace API", () => {
+    it("parses project resources and falls back when resource responses drift", async () => {
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({
+          resources: [
+            {
+              id: "resource-1",
+              project_id: "project-1",
+              workspace_id: "ws-1",
+              resource_type: "github_repo",
+              resource_ref: {
+                url: "https://github.com/acme/app.git",
+                role: "primary",
+              },
+              label: null,
+              position: 0,
+              created_at: "2026-05-29T00:00:00Z",
+              created_by: null,
+            },
+          ],
+          total: 1,
+        }))
+        .mockResolvedValueOnce(jsonResponse({ resources: null }))
+        .mockResolvedValueOnce(jsonResponse({
+          id: "resource-2",
+          project_id: "project-1",
+          workspace_id: "ws-1",
+          resource_type: "github_repo",
+          resource_ref: {
+            url: "https://github.com/acme/docs.git",
+            role: "related",
+          },
+          label: "Docs",
+          position: 1,
+          created_at: "2026-05-29T00:00:00Z",
+          created_by: "user-1",
+        }))
+        .mockResolvedValueOnce(jsonResponse({ id: 123 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(client.listProjectResources("project-1")).resolves.toMatchObject({
+        total: 1,
+        resources: [
+          {
+            id: "resource-1",
+            resource_ref: { role: "primary" },
+          },
+        ],
+      });
+      await expect(client.listProjectResources("project-1")).resolves.toEqual({
+        resources: [],
+        total: 0,
+      });
+      await expect(
+        client.createProjectResource("project-1", {
+          resource_type: "github_repo",
+          resource_ref: {
+            url: "https://github.com/acme/docs.git",
+            role: "related",
+          },
+          label: "Docs",
+        }),
+      ).resolves.toMatchObject({
+        id: "resource-2",
+        label: "Docs",
+      });
+      await expect(
+        client.createProjectResource("project-1", {
+          resource_type: "github_repo",
+          resource_ref: { url: "https://github.com/acme/broken.git" },
+        }),
+      ).resolves.toMatchObject({
+        id: "",
+        resource_type: "github_repo",
+      });
+    });
+
+    it("uses the daemon relay setup endpoints and parses the binding response", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            binding: {
+              id: "binding-1",
+              project_id: "project-1",
+              workspace_id: "ws-1",
+              runtime_id: "runtime-1",
+              device_id: "daemon-1",
+              primary_repo_url: "https://github.com/acme/app.git",
+              status: "online",
+              capabilities: { git: true },
+              path_alias: "app",
+              path_basename: "app",
+              created_at: "2026-05-28T00:00:00Z",
+              updated_at: "2026-05-28T00:00:00Z",
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+      const out = await client.bindProjectWorkspaceOnRuntime(
+        "project-1",
+        "runtime/1",
+        { local_path: "/Users/dev/app" },
+      );
+
+      expect(out.binding.device_id).toBe("daemon-1");
+      const [url, opts] = fetchMock.mock.calls[0]!;
+      expect(url).toBe(
+        "https://api.example.test/api/projects/project-1/workspace/runtimes/runtime%2F1/bind",
+      );
+      expect(opts).toMatchObject({
+        method: "POST",
+        body: JSON.stringify({ local_path: "/Users/dev/app" }),
+      });
+    });
+
+    it("falls back when a project workspace setup response is malformed", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ binding: null }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      const client = new ApiClient("https://api.example.test");
+      const out = await client.cloneProjectWorkspaceOnRuntime(
+        "project-1",
+        "runtime-1",
+        { local_path: "/Users/dev/app" },
+      );
+
+      expect(out.binding.id).toBe("");
+      expect(out.binding.status).toBe("unknown");
+    });
+
+    it("falls back when project workspace relay responses drift", async () => {
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ files: null }))
+        .mockResolvedValueOnce(jsonResponse({ status: null, patch: 123 }))
+        .mockResolvedValueOnce(jsonResponse({ entries: null }))
+        .mockResolvedValueOnce(jsonResponse({ scripts: null }))
+        .mockResolvedValueOnce(jsonResponse({ terminals: null }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(
+        client.getProjectDeviceGitStatus("project-1", "device-1"),
+      ).resolves.toMatchObject({ branch: "", files: [] });
+      await expect(
+        client.getProjectDeviceGitDiff("project-1", "device-1"),
+      ).resolves.toMatchObject({ patch: "", truncated: false });
+      await expect(
+        client.getProjectDeviceFileTree("project-1", "device-1"),
+      ).resolves.toEqual({ path: "", entries: [] });
+      await expect(
+        client.listProjectDeviceScripts("project-1", "device-1"),
+      ).resolves.toEqual({ scripts: [] });
+      await expect(
+        client.listProjectDeviceTerminals("project-1", "device-1"),
+      ).resolves.toEqual({ terminals: [] });
+    });
+
+    it("parses project activity and falls back when the timeline drifts", async () => {
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([
+          {
+            type: "activity",
+            id: "activity-1",
+            actor_type: "member",
+            actor_id: "user-1",
+            action: "project_workspace_git_diff",
+            details: { project_id: "project-1" },
+            created_at: "2026-05-29T00:00:00Z",
+          },
+        ]))
+        .mockResolvedValueOnce(jsonResponse({ entries: null }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(client.listProjectActivity("project-1")).resolves.toMatchObject([
+        {
+          id: "activity-1",
+          action: "project_workspace_git_diff",
+          details: { project_id: "project-1" },
+        },
+      ]);
+      await expect(client.listProjectActivity("project-1")).resolves.toEqual([]);
+    });
+
+    it("parses project activity export and falls back when the response drifts", async () => {
+      const jsonResponse = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({
+            project_id: "project-1",
+            workspace_id: "workspace-1",
+            exported_at: "2026-05-29T00:00:00Z",
+            total: 1,
+            truncated: false,
+            activity: [
+              {
+                type: "activity",
+                id: "activity-1",
+                actor_type: "member",
+                actor_id: "user-1",
+                action: "project_workspace_git_diff",
+                details: {
+                  project_id: "project-1",
+                  diff: { kind: "text_patch", patch: "+hello\n" },
+                },
+                created_at: "2026-05-29T00:00:00Z",
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ activity: null }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(client.exportProjectActivity("project-1")).resolves.toMatchObject({
+        project_id: "project-1",
+        total: 1,
+        activity: [
+          {
+            action: "project_workspace_git_diff",
+            details: { diff: { patch: "+hello\n" } },
+          },
+        ],
+      });
+      await expect(client.exportProjectActivity("project-1")).resolves.toEqual({
+        project_id: "",
+        workspace_id: "",
+        exported_at: "",
+        total: 0,
+        truncated: false,
+        activity: [],
+      });
+    });
+  });
+
+  describe("GitHub API response schemas", () => {
+    it("falls back when GitHub installation responses drift", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ installations: null }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      const client = new ApiClient("https://api.example.test");
+      const out = await client.listGitHubInstallations("ws-1");
+
+      expect(out.installations).toEqual([]);
+      expect(out.configured).toBe(false);
+    });
+
+    it("parses project PR review responses with missing optional lists", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              pull_request: {
+                id: "pr-1",
+                workspace_id: "ws-1",
+                repo_owner: "acme",
+                repo_name: "app",
+                number: 7,
+                title: "Sync",
+                state: "open",
+                html_url: "https://github.com/acme/app/pull/7",
+                branch: "feature/sync",
+                author_login: null,
+                author_avatar_url: null,
+                merged_at: null,
+                closed_at: null,
+                pr_created_at: "2026-05-28T00:00:00Z",
+                pr_updated_at: "2026-05-28T00:00:00Z",
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+      );
+
+      const client = new ApiClient("https://api.example.test");
+      const out = await client.getProjectPullRequestReview("project-1", "pr-1");
+
+      expect(out.pull_request.number).toBe(7);
+      expect(out.files).toEqual([]);
+      expect(out.comments).toEqual([]);
+      expect(out.reviews).toEqual([]);
+    });
+  });
+
   describe("getAttachment", () => {
     it("returns the parsed attachment for a well-formed response", async () => {
       vi.stubGlobal(
@@ -447,6 +779,29 @@ describe("ApiClient", () => {
 
       expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello" });
       expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again" });
+    });
+
+    it("sendChatMessage serialises explicit dirty-worktree consent", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "" }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+      await client.sendChatMessage("session-1", "continue", {
+        attachmentIds: ["att-1"],
+        projectContinueOnDirty: true,
+      });
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(JSON.parse(init?.body as string)).toEqual({
+        content: "continue",
+        attachment_ids: ["att-1"],
+        project_continue_on_dirty: true,
+      });
     });
 
     it("createChannelMessage serialises attachment_ids onto the JSON body when present", async () => {

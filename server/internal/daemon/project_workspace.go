@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -37,6 +38,7 @@ const (
 	projectGitWriteTimeout   = 30 * time.Second
 	projectGitRemoteTimeout  = 2 * time.Minute
 	projectScriptLogMaxBytes = 64 * 1024
+	projectScriptMaxPorts    = 8
 )
 
 var (
@@ -46,6 +48,12 @@ var (
 	errProjectWorkspaceDirty    = errors.New("project workspace has uncommitted changes")
 	errProjectScriptNotFound    = errors.New("project script run not found")
 	errProjectTerminalNotFound  = errors.New("project terminal session not found")
+)
+
+var (
+	projectScriptURLPortPattern  = regexp.MustCompile(`(?i)\b(https?)://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[a-z0-9.-]+):([0-9]{2,5})\b`)
+	projectScriptHostPortPattern = regexp.MustCompile(`(?i)\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0):([0-9]{2,5})\b`)
+	projectScriptPortPattern     = regexp.MustCompile(`(?i)\bport\s+([0-9]{2,5})\b`)
 )
 
 type projectWorkspaceStore struct {
@@ -85,21 +93,28 @@ type projectWorkspaceResponse struct {
 }
 
 type projectGitStatus struct {
-	Branch         string     `json:"branch"`
-	Remote         string     `json:"remote"`
-	DirtyCount     int        `json:"dirty_count"`
-	UntrackedCount int        `json:"untracked_count"`
-	Ahead          int        `json:"ahead"`
-	Behind         int        `json:"behind"`
-	HeadSHA        string     `json:"head_sha"`
-	LastFetchAt    *time.Time `json:"last_fetch_at,omitempty"`
-	HasUncommitted bool       `json:"has_uncommitted"`
-	Files          []gitFile  `json:"files,omitempty"`
+	Branch         string      `json:"branch"`
+	Remote         string      `json:"remote"`
+	Remotes        []gitRemote `json:"remotes,omitempty"`
+	DirtyCount     int         `json:"dirty_count"`
+	UntrackedCount int         `json:"untracked_count"`
+	Ahead          int         `json:"ahead"`
+	Behind         int         `json:"behind"`
+	HeadSHA        string      `json:"head_sha"`
+	LastFetchAt    *time.Time  `json:"last_fetch_at,omitempty"`
+	HasUncommitted bool        `json:"has_uncommitted"`
+	Files          []gitFile   `json:"files,omitempty"`
 }
 
 type gitFile struct {
 	Path   string `json:"path"`
 	Status string `json:"status"`
+}
+
+type gitRemote struct {
+	Name     string `json:"name"`
+	FetchURL string `json:"fetch_url"`
+	PushURL  string `json:"push_url"`
 }
 
 type projectGitDiffResponse struct {
@@ -198,6 +213,12 @@ type projectScriptRunResponse struct {
 	FinishedAt *time.Time             `json:"finished_at,omitempty"`
 	ExitCode   *int                   `json:"exit_code,omitempty"`
 	Log        string                 `json:"log"`
+	Ports      []projectScriptPort    `json:"ports,omitempty"`
+}
+
+type projectScriptPort struct {
+	Port int    `json:"port"`
+	URL  string `json:"url"`
 }
 
 type projectScriptListResponse struct {
@@ -500,6 +521,12 @@ func (d *Daemon) projectWorkspaceFilesHandler(w http.ResponseWriter, r *http.Req
 			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		release, err := d.acquireProjectFileLock(r.Context(), binding.LocalPath, req.Path)
+		if err != nil {
+			writeProjectFileError(w, err)
+			return
+		}
+		defer release()
 		resp, err := projectFileWrite(binding.LocalPath, req)
 		if err != nil {
 			writeProjectFileError(w, err)
@@ -1275,6 +1302,7 @@ func (p *projectTerminalSession) wait(cmd *exec.Cmd, ctx context.Context, done c
 func (p *projectScriptProcess) snapshot() projectScriptRunResponse {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	log := p.log.String()
 	return projectScriptRunResponse{
 		ID:         p.id,
 		ProjectID:  p.projectID,
@@ -1285,7 +1313,8 @@ func (p *projectScriptProcess) snapshot() projectScriptRunResponse {
 		StartedAt:  p.startedAt,
 		FinishedAt: p.finishedAt,
 		ExitCode:   p.exitCode,
-		Log:        p.log.String(),
+		Log:        log,
+		Ports:      detectProjectScriptPorts(log),
 	}
 }
 
@@ -1319,6 +1348,53 @@ func (b *projectScriptLogBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(append([]byte(nil), b.data...))
+}
+
+func detectProjectScriptPorts(log string) []projectScriptPort {
+	seen := map[int]string{}
+	add := func(rawPort, scheme string) {
+		port, err := strconv.Atoi(rawPort)
+		if err != nil || port <= 0 || port > 65535 {
+			return
+		}
+		if _, ok := seen[port]; ok {
+			return
+		}
+		if scheme == "" {
+			scheme = "http"
+		}
+		seen[port] = fmt.Sprintf("%s://localhost:%d", strings.ToLower(scheme), port)
+	}
+
+	for _, match := range projectScriptURLPortPattern.FindAllStringSubmatch(log, -1) {
+		if len(match) >= 3 {
+			add(match[2], match[1])
+		}
+	}
+	for _, match := range projectScriptHostPortPattern.FindAllStringSubmatch(log, -1) {
+		if len(match) >= 2 {
+			add(match[1], "http")
+		}
+	}
+	for _, match := range projectScriptPortPattern.FindAllStringSubmatch(log, -1) {
+		if len(match) >= 2 {
+			add(match[1], "http")
+		}
+	}
+
+	ports := make([]int, 0, len(seen))
+	for port := range seen {
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	if len(ports) > projectScriptMaxPorts {
+		ports = ports[:projectScriptMaxPorts]
+	}
+	out := make([]projectScriptPort, 0, len(ports))
+	for _, port := range ports {
+		out = append(out, projectScriptPort{Port: port, URL: seen[port]})
+	}
+	return out
 }
 
 func normalizeProjectScriptName(raw string) (string, error) {
@@ -1392,6 +1468,39 @@ func (d *Daemon) acquireProjectTaskLock(ctx context.Context, projectID string) (
 	}
 }
 
+func (d *Daemon) acquireProjectFileLock(ctx context.Context, worktree, rawPath string) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	worktree, err := normalizeLocalProjectPath(worktree)
+	if err != nil {
+		return nil, err
+	}
+	_, rel, err := resolveProjectRelativePath(worktree, rawPath, false, false)
+	if err != nil {
+		return nil, err
+	}
+	key := worktree + "\x00" + filepath.ToSlash(rel)
+
+	d.projectFileLocksMu.Lock()
+	if d.projectFileLocks == nil {
+		d.projectFileLocks = make(map[string]chan struct{})
+	}
+	lock := d.projectFileLocks[key]
+	if lock == nil {
+		lock = make(chan struct{}, 1)
+		d.projectFileLocks[key] = lock
+	}
+	d.projectFileLocksMu.Unlock()
+
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (d *Daemon) prepareProjectTaskWorkspace(ctx context.Context, task Task) (string, string, error) {
 	if strings.TrimSpace(task.ProjectID) == "" || len(task.Repos) == 0 {
 		return "", "", nil
@@ -1412,7 +1521,21 @@ func (d *Daemon) prepareProjectTaskWorkspace(ctx context.Context, task Task) (st
 		return "", "", err
 	}
 	if status.HasUncommitted {
-		return "", "", fmt.Errorf("%w; create a Multica safety snapshot, commit, or stash the local changes before starting agent work", errProjectWorkspaceDirty)
+		if !task.ProjectContinueOnDirty {
+			return "", "", fmt.Errorf("%w; create a Multica safety snapshot, commit, or stash the local changes before starting agent work", errProjectWorkspaceDirty)
+		}
+		if _, _, err := createProjectSafetySnapshot(ctx, binding.LocalPath, projectGitOperationRequest{
+			Message: "task " + task.ID + " before agent work",
+		}); err != nil {
+			return "", "", fmt.Errorf("create Multica safety snapshot before starting agent work: %w", err)
+		}
+		status, err = gitStatus(ctx, binding.LocalPath)
+		if err != nil {
+			return "", "", err
+		}
+		if status.HasUncommitted {
+			return "", "", fmt.Errorf("%w; safety snapshot did not produce a clean worktree", errProjectWorkspaceDirty)
+		}
 	}
 	baseBranch, err := normalizeGitBranchName(task.ProjectBaseBranch, "main")
 	if err != nil {
@@ -1430,6 +1553,10 @@ func (d *Daemon) prepareProjectTaskWorkspace(ctx context.Context, task Task) (st
 
 func projectTaskBranchName(projectID, taskID string) string {
 	return "multica/" + safeBranchSegment(projectID, 12) + "/" + safeBranchSegment(taskID, 12)
+}
+
+func projectTaskWorkDirMarker(projectID string) string {
+	return "project:" + projectID
 }
 
 func safeBranchSegment(raw string, maxLen int) string {
@@ -1944,6 +2071,7 @@ func gitStatus(ctx context.Context, worktree string) (projectGitStatus, error) {
 	status := projectGitStatus{
 		Branch:  strings.TrimSpace(branch),
 		Remote:  strings.TrimSpace(remote),
+		Remotes: gitRemotes(ctx, worktree),
 		HeadSHA: strings.TrimSpace(headSHA),
 	}
 	for i, line := range strings.Split(raw, "\n") {
@@ -1971,6 +2099,49 @@ func gitStatus(ctx context.Context, worktree string) (projectGitStatus, error) {
 	return status, nil
 }
 
+func gitRemotes(ctx context.Context, worktree string) []gitRemote {
+	raw, err := gitOutput(ctx, worktree, "remote", "-v")
+	if err != nil {
+		return nil
+	}
+	byName := make(map[string]*gitRemote)
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 3 {
+			continue
+		}
+		name := fields[0]
+		if name == "" {
+			continue
+		}
+		remote := byName[name]
+		if remote == nil {
+			remote = &gitRemote{Name: name}
+			byName[name] = remote
+		}
+		switch fields[2] {
+		case "(fetch)":
+			remote.FetchURL = fields[1]
+		case "(push)":
+			remote.PushURL = fields[1]
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	remotes := make([]gitRemote, 0, len(names))
+	for _, name := range names {
+		remote := byName[name]
+		if remote.FetchURL == "" && remote.PushURL == "" {
+			continue
+		}
+		remotes = append(remotes, *remote)
+	}
+	return remotes
+}
+
 func parseGitStatusFile(line string) (gitFile, bool) {
 	if strings.HasPrefix(line, "## ") || len(line) < 3 {
 		return gitFile{}, false
@@ -1996,12 +2167,66 @@ func gitDiff(ctx context.Context, worktree string) (projectGitDiffResponse, erro
 	if err != nil {
 		return projectGitDiffResponse{}, err
 	}
+	if untracked := gitUntrackedDiff(worktree, status.Files); untracked != "" {
+		patch = joinGitOutput(patch, untracked)
+	}
 	truncated := false
 	if len(patch) > projectGitDiffMaxBytes {
 		patch = patch[:projectGitDiffMaxBytes]
 		truncated = true
 	}
 	return projectGitDiffResponse{Status: status, Patch: patch, Truncated: truncated}, nil
+}
+
+func gitUntrackedDiff(worktree string, files []gitFile) string {
+	var b strings.Builder
+	for _, file := range files {
+		if file.Status != "??" || file.Path == "" {
+			continue
+		}
+		abs, rel, err := resolveProjectRelativePath(worktree, file.Path, false, true)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if info.IsDir() {
+			appendUntrackedSummary(&b, rel, "untracked directory")
+			continue
+		}
+		if info.Size() > projectFileMaxBytes {
+			appendUntrackedSummary(&b, rel, "untracked file too large to preview")
+			continue
+		}
+		content, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		if isBinaryContent(content) {
+			appendUntrackedSummary(&b, rel, "untracked binary file")
+			continue
+		}
+		patch, truncated := projectFileWritePatch(rel, nil, content, false)
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(patch)
+		if truncated {
+			b.WriteString("\n# diff truncated\n")
+		}
+	}
+	return b.String()
+}
+
+func appendUntrackedSummary(b *strings.Builder, rel, reason string) {
+	if b.Len() > 0 {
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(b, "diff --git a/%s b/%s\n", rel, rel)
+	fmt.Fprintf(b, "# %s: %s\n", reason, rel)
 }
 
 func runProjectGitOperation(ctx context.Context, worktree, operation string, req projectGitOperationRequest) (projectGitOperationResponse, error) {
@@ -2100,8 +2325,13 @@ func commitProjectGitChanges(ctx context.Context, worktree string, req projectGi
 	if len(paths) == 0 {
 		addOutput, err = gitOutputWithTimeout(ctx, worktree, projectGitWriteTimeout, "add", "-A")
 	} else {
+		resetOutput, resetErr := gitOutputWithTimeout(ctx, worktree, projectGitWriteTimeout, "reset", "-q", "--")
+		if resetErr != nil {
+			return "", resetErr
+		}
 		args := append([]string{"add", "--"}, paths...)
 		addOutput, err = gitOutputWithTimeout(ctx, worktree, projectGitWriteTimeout, args...)
+		addOutput = joinGitOutput(resetOutput, addOutput)
 	}
 	if err != nil {
 		return "", err

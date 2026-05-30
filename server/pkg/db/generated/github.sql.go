@@ -186,21 +186,35 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 const getPullRequestByProject = `-- name: GetPullRequestByProject :one
 SELECT pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login, pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at, pr.pr_updated_at, pr.created_at, pr.updated_at, pr.head_sha, pr.mergeable_state, pr.additions, pr.deletions, pr.changed_files
 FROM github_pull_request pr
-JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-JOIN issue i ON i.id = ipr.issue_id
-WHERE i.project_id = $1
-  AND pr.id = $2
-  AND pr.workspace_id = i.workspace_id
+WHERE pr.id = $1
+  AND (
+    EXISTS (
+      SELECT 1
+      FROM project_pull_request ppr
+      JOIN project p ON p.id = ppr.project_id
+      WHERE ppr.project_id = $2
+        AND ppr.pull_request_id = pr.id
+        AND p.workspace_id = pr.workspace_id
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM issue_pull_request ipr
+      JOIN issue i ON i.id = ipr.issue_id
+      WHERE i.project_id = $2
+        AND ipr.pull_request_id = pr.id
+        AND i.workspace_id = pr.workspace_id
+    )
+  )
 LIMIT 1
 `
 
 type GetPullRequestByProjectParams struct {
-	ProjectID     pgtype.UUID `json:"project_id"`
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
+	ProjectID     pgtype.UUID `json:"project_id"`
 }
 
 func (q *Queries) GetPullRequestByProject(ctx context.Context, arg GetPullRequestByProjectParams) (GithubPullRequest, error) {
-	row := q.db.QueryRow(ctx, getPullRequestByProject, arg.ProjectID, arg.PullRequestID)
+	row := q.db.QueryRow(ctx, getPullRequestByProject, arg.PullRequestID, arg.ProjectID)
 	var i GithubPullRequest
 	err := row.Scan(
 		&i.ID,
@@ -293,6 +307,32 @@ func (q *Queries) LinkIssueToPullRequest(ctx context.Context, arg LinkIssueToPul
 	return err
 }
 
+const linkProjectToPullRequest = `-- name: LinkProjectToPullRequest :exec
+INSERT INTO project_pull_request (
+    project_id, pull_request_id, linked_by_type, linked_by_id
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT (project_id, pull_request_id) DO NOTHING
+`
+
+type LinkProjectToPullRequestParams struct {
+	ProjectID     pgtype.UUID `json:"project_id"`
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+	LinkedByType  pgtype.Text `json:"linked_by_type"`
+	LinkedByID    pgtype.UUID `json:"linked_by_id"`
+}
+
+func (q *Queries) LinkProjectToPullRequest(ctx context.Context, arg LinkProjectToPullRequestParams) error {
+	_, err := q.db.Exec(ctx, linkProjectToPullRequest,
+		arg.ProjectID,
+		arg.PullRequestID,
+		arg.LinkedByType,
+		arg.LinkedByID,
+	)
+	return err
+}
+
 const listGitHubInstallationsByWorkspace = `-- name: ListGitHubInstallationsByWorkspace :many
 
 SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
@@ -335,7 +375,7 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 
 const listIssueIDsForPullRequest = `-- name: ListIssueIDsForPullRequest :many
 SELECT issue_id FROM issue_pull_request
-WHERE pull_request_id = $1
+WHERE issue_pull_request.pull_request_id = $1
 `
 
 func (q *Queries) ListIssueIDsForPullRequest(ctx context.Context, pullRequestID pgtype.UUID) ([]pgtype.UUID, error) {
@@ -351,6 +391,37 @@ func (q *Queries) ListIssueIDsForPullRequest(ctx context.Context, pullRequestID 
 			return nil, err
 		}
 		items = append(items, issue_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectIDsForPullRequest = `-- name: ListProjectIDsForPullRequest :many
+SELECT project_id FROM project_pull_request
+WHERE project_pull_request.pull_request_id = $1
+UNION
+SELECT DISTINCT i.project_id
+FROM issue_pull_request ipr
+JOIN issue i ON i.id = ipr.issue_id
+WHERE ipr.pull_request_id = $1
+  AND i.project_id IS NOT NULL
+`
+
+func (q *Queries) ListProjectIDsForPullRequest(ctx context.Context, pullRequestID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listProjectIDsForPullRequest, pullRequestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var project_id pgtype.UUID
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -497,9 +568,16 @@ const listPullRequestsByProject = `-- name: ListPullRequestsByProject :many
 WITH project_prs AS (
     SELECT DISTINCT pr.id, pr.head_sha
     FROM github_pull_request pr
-    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-    JOIN issue i ON i.id = ipr.issue_id
-    WHERE i.project_id = $1
+    JOIN (
+        SELECT ppr.pull_request_id
+        FROM project_pull_request ppr
+        WHERE ppr.project_id = $1
+        UNION
+        SELECT ipr.pull_request_id
+        FROM issue_pull_request ipr
+        JOIN issue i ON i.id = ipr.issue_id
+        WHERE i.project_id = $1
+    ) links ON links.pull_request_id = pr.id
 ),
 per_app_latest AS (
     SELECT DISTINCT ON (cs.pr_id, cs.app_id)
@@ -571,9 +649,10 @@ type ListPullRequestsByProjectRow struct {
 	ChecksPending   int64              `json:"checks_pending"`
 }
 
-// Returns PRs linked to any issue in the project, with the same current-head
-// check aggregation used by the issue sidebar. DISTINCT ON keeps a PR that is
-// linked to multiple project issues from rendering more than once.
+// Returns PRs linked directly to the project or to any issue in the project,
+// with the same current-head check aggregation used by the issue sidebar.
+// DISTINCT ON keeps a PR that is linked through multiple paths from rendering
+// more than once.
 func (q *Queries) ListPullRequestsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPullRequestsByProjectRow, error) {
 	rows, err := q.db.Query(ctx, listPullRequestsByProject, projectID)
 	if err != nil {

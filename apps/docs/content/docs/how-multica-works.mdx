@@ -24,7 +24,7 @@ Take the most common scenario — you assign an issue to an agent:
 1. You click assign in the web UI. The browser sends an HTTP request to the Multica server.
 2. The server sets the assignee on that issue to the agent and, at the same time, creates an execution task in the task queue with status `queued`.
 3. The daemon on your machine picks up the task on its next poll (within 3 seconds). Task status becomes `dispatched`.
-4. The daemon creates an isolated working directory locally and invokes the corresponding AI coding tool. Task status becomes `running`.
+4. The daemon prepares the local working directory and invokes the corresponding AI coding tool. For a Project-bound code task, that directory is the Project's bound local folder on the target device and Multica switches it to a task branch; otherwise the daemon uses an isolated task directory. Task status becomes `running`.
 5. The AI writes code locally, runs tests, and posts comments back to the server.
 6. Execution ends. The daemon reports the result (success / failure) to the server, and task status becomes `completed` or `failed`. You see the progress update in real time in the web UI (via WebSocket).
 

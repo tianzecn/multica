@@ -34,9 +34,17 @@ import type {
   CreateIssueRequest,
   CreateLabelRequest,
   CreateProjectRequest,
+  CreateProjectGitHubRepositoryRequest,
+  CreateProjectGitHubRepositoryResponse,
   CreateProjectResourceRequest,
+  CreateGitHubPullRequestRequest,
+  CreateGitHubPullRequestResponse,
+  CreateGitHubPullRequestReviewCommentRequest,
   GitHubPullRequest,
+  ListGitHubInstallationsResponse,
   GitHubPullRequestReview,
+  GitHubPullRequestReviewComment,
+  GitHubPullRequestReviewResolution,
   InboxItem,
   Issue,
   IssueLabelsResponse,
@@ -52,6 +60,7 @@ import type {
   PinnedItem,
   PinnedItemType,
   Project,
+  ProjectActivityExportResponse,
   ProjectFileReadResponse,
   ProjectFileTreeResponse,
   ProjectFileWriteRequest,
@@ -62,11 +71,15 @@ import type {
   ProjectGitOperationRequest,
   ProjectGitOperationResponse,
   ProjectGitStatus,
+  ProjectScriptListResponse,
+  ProjectScriptRun,
+  ProjectScriptRunRequest,
   ProjectTerminalInputRequest,
   ProjectTerminalListResponse,
   ProjectTerminalSession,
   ProjectResource,
   ProjectSafetySnapshotListResponse,
+  ProjectWorkspaceSetupResponse,
   ProjectWorkspace,
   ProjectWorkspaceConfig,
   Reaction,
@@ -77,6 +90,7 @@ import type {
   SearchIssuesResponse,
   SearchProjectsResponse,
   SendChatMessageResponse,
+  SetupProjectWorkspaceRequest,
   Squad,
   NotificationPreferenceResponse,
   NotificationPreferences,
@@ -114,9 +128,11 @@ import {
   EMPTY_CHANNELS,
   EMPTY_SEARCH_CHANNELS_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
+  EMPTY_PROJECT_ACTIVITY_EXPORT_RESPONSE,
   EMPTY_TIMELINE_ENTRIES,
   IssueSchema,
   ListIssuesResponseSchema,
+  ProjectActivityExportResponseSchema,
   SearchChannelsResponseSchema,
   TimelineEntriesSchema,
 } from "@multica/core/api/schemas";
@@ -154,12 +170,21 @@ import {
   EMPTY_PROJECT_FILE_WRITE_RESPONSE,
   EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE,
   EMPTY_GITHUB_PULL_REQUEST_REVIEW,
+  EMPTY_GITHUB_PULL_REQUEST_REVIEW_COMMENT,
+  EMPTY_GITHUB_PULL_REQUEST_REVIEW_RESOLUTION,
+  EMPTY_CREATE_PROJECT_GITHUB_REPOSITORY_RESPONSE,
+  EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
   EMPTY_PROJECT_GIT_LOG_RESPONSE,
+  EMPTY_PROJECT_GIT_OPERATION_RESPONSE,
+  EMPTY_PROJECT_RESOURCE,
+  EMPTY_PROJECT_SCRIPT_LIST_RESPONSE,
+  EMPTY_PROJECT_SCRIPT_RUN,
   EMPTY_PROJECT_GIT_STATUS,
   EMPTY_PROJECT_SAFETY_SNAPSHOT_LIST,
   EMPTY_PROJECT_TERMINAL_LIST_RESPONSE,
   EMPTY_PROJECT_TERMINAL_SESSION,
   EMPTY_PROJECT_WORKSPACE,
+  EMPTY_PROJECT_WORKSPACE_SETUP_RESPONSE,
   EMPTY_PIN_LIST,
   EMPTY_PROJECT,
   EMPTY_RUNTIME_LIST,
@@ -182,13 +207,17 @@ import {
   ProjectFileWriteResponseSchema,
   ProjectGitLogResponseSchema,
   ProjectGitOperationResponseSchema,
+  ProjectResourceSchema,
   ProjectGitStatusSchema,
+  ProjectScriptListResponseSchema,
+  ProjectScriptRunSchema,
   ProjectTerminalListResponseSchema,
   ProjectTerminalSessionSchema,
   ProjectSchema,
   ProjectSafetySnapshotListResponseSchema,
   ProjectWorkspaceConfigSchema,
   ProjectWorkspaceSchema,
+  ProjectWorkspaceSetupResponseSchema,
   RuntimeListSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
@@ -197,7 +226,13 @@ import {
   TaskMessageListSchema,
   EMPTY_TASK_MESSAGE_LIST,
   GitHubPullRequestListResponseSchema,
+  GitHubPullRequestReviewCommentSchema,
+  GitHubPullRequestReviewResolutionSchema,
   GitHubPullRequestReviewSchema,
+  CreateGitHubPullRequestResponseSchema,
+  EMPTY_CREATE_GITHUB_PULL_REQUEST_RESPONSE,
+  CreateProjectGitHubRepositoryResponseSchema,
+  ListGitHubInstallationsResponseSchema,
   UserSchema,
   WorkspaceListSchema,
 } from "./schemas";
@@ -767,7 +802,12 @@ class ApiClient {
   async createComment(
     issueId: string,
     content: string,
-    opts?: { parentId?: string; type?: string; attachmentIds?: string[] },
+    opts?: {
+      parentId?: string;
+      type?: string;
+      attachmentIds?: string[];
+      projectContinueOnDirty?: boolean;
+    },
   ): Promise<Comment> {
     // Body shape mirrors backend `CreateCommentRequest`
     // (server/internal/handler/comment.go:165). `parent_id` is sent only
@@ -784,6 +824,7 @@ class ApiClient {
           type: opts?.type ?? "comment",
           ...(opts?.parentId ? { parent_id: opts.parentId } : {}),
           ...(opts?.attachmentIds ? { attachment_ids: opts.attachmentIds } : {}),
+          ...(opts?.projectContinueOnDirty ? { project_continue_on_dirty: true } : {}),
         }),
       },
       { endpoint: "createComment" },
@@ -1042,12 +1083,15 @@ class ApiClient {
     projectId: string,
     body: CreateProjectResourceRequest,
   ): Promise<ProjectResource> {
-    return this.fetch<ProjectResource>(
+    return this.fetchValidatedWith(
       `/api/projects/${projectId}/resources`,
+      ProjectResourceSchema,
+      EMPTY_PROJECT_RESOURCE,
       {
         method: "POST",
         body: JSON.stringify(body),
       },
+      { endpoint: "POST /api/projects/:id/resources" },
     );
   }
 
@@ -1058,6 +1102,38 @@ class ApiClient {
     await this.fetch<void>(
       `/api/projects/${projectId}/resources/${resourceId}`,
       { method: "DELETE" },
+    );
+  }
+
+  async listGitHubInstallations(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ListGitHubInstallationsResponse> {
+    return this.fetchValidated(
+      `/api/workspaces/${workspaceId}/github/installations`,
+      ListGitHubInstallationsResponseSchema,
+      EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/workspaces/:id/github/installations",
+      },
+    );
+  }
+
+  async createProjectGitHubRepository(
+    projectId: string,
+    body: CreateProjectGitHubRepositoryRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CreateProjectGitHubRepositoryResponse> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/github/repos`,
+      CreateProjectGitHubRepositoryResponseSchema,
+      EMPTY_CREATE_PROJECT_GITHUB_REPOSITORY_RESPONSE,
+      { method: "POST", body: JSON.stringify(body) },
+      {
+        signal: opts?.signal,
+        endpoint: "POST /api/projects/:id/github/repos",
+      },
     );
   }
 
@@ -1074,6 +1150,30 @@ class ApiClient {
     );
   }
 
+  async listProjectActivity(
+    projectId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TimelineEntry[]> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/activity`,
+      TimelineEntriesSchema,
+      EMPTY_TIMELINE_ENTRIES,
+      { ...opts, endpoint: "GET /api/projects/:id/activity" },
+    );
+  }
+
+  async exportProjectActivity(
+    projectId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectActivityExportResponse> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/activity/export`,
+      ProjectActivityExportResponseSchema,
+      EMPTY_PROJECT_ACTIVITY_EXPORT_RESPONSE,
+      { ...opts, endpoint: "GET /api/projects/:id/activity/export" },
+    );
+  }
+
   async updateProjectWorkspaceConfig(
     projectId: string,
     data: UpdateProjectWorkspaceConfigRequest,
@@ -1084,6 +1184,34 @@ class ApiClient {
       EMPTY_PROJECT_WORKSPACE.config,
       { method: "PUT", body: JSON.stringify(data) },
       { endpoint: "PUT /api/projects/:id/workspace/config" },
+    );
+  }
+
+  async bindProjectWorkspaceOnRuntime(
+    projectId: string,
+    runtimeId: string,
+    data: SetupProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspaceSetupResponse> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/runtimes/${encodeURIComponent(runtimeId)}/bind`,
+      ProjectWorkspaceSetupResponseSchema,
+      EMPTY_PROJECT_WORKSPACE_SETUP_RESPONSE,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/projects/:id/workspace/runtimes/:runtimeId/bind" },
+    );
+  }
+
+  async cloneProjectWorkspaceOnRuntime(
+    projectId: string,
+    runtimeId: string,
+    data: SetupProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspaceSetupResponse> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/runtimes/${encodeURIComponent(runtimeId)}/clone`,
+      ProjectWorkspaceSetupResponseSchema,
+      EMPTY_PROJECT_WORKSPACE_SETUP_RESPONSE,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/projects/:id/workspace/runtimes/:runtimeId/clone" },
     );
   }
 
@@ -1206,18 +1334,65 @@ class ApiClient {
     operation: ProjectGitOperation,
     data: ProjectGitOperationRequest = {},
   ): Promise<ProjectGitOperationResponse> {
-    const raw = await this.fetch<unknown>(
+    return this.fetchValidatedWith(
       `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/${operation}`,
+      ProjectGitOperationResponseSchema,
+      EMPTY_PROJECT_GIT_OPERATION_RESPONSE,
       {
         method: "POST",
         body: JSON.stringify(data),
       },
+      {
+        endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/git/:operation",
+      },
     );
-    const parsed = ProjectGitOperationResponseSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new ApiError("Project Git operation response invalid", 200, raw);
-    }
-    return parsed.data;
+  }
+
+  async listProjectDeviceScripts(
+    projectId: string,
+    deviceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ProjectScriptListResponse> {
+    return this.fetchValidated(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts`,
+      ProjectScriptListResponseSchema,
+      EMPTY_PROJECT_SCRIPT_LIST_RESPONSE,
+      {
+        signal: opts?.signal,
+        endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/scripts",
+      },
+    );
+  }
+
+  async runProjectDeviceScript(
+    projectId: string,
+    deviceId: string,
+    data: ProjectScriptRunRequest,
+  ): Promise<ProjectScriptRun> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/run`,
+      ProjectScriptRunSchema,
+      EMPTY_PROJECT_SCRIPT_RUN,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/scripts/run" },
+    );
+  }
+
+  async stopProjectDeviceScript(
+    projectId: string,
+    deviceId: string,
+    runId: string,
+  ): Promise<ProjectScriptRun> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/${encodeURIComponent(runId)}/stop`,
+      ProjectScriptRunSchema,
+      EMPTY_PROJECT_SCRIPT_RUN,
+      { method: "POST", body: JSON.stringify({}) },
+      {
+        endpoint:
+          "POST /api/projects/:id/workspace/bindings/:deviceId/scripts/:runId/stop",
+      },
+    );
   }
 
   async listProjectDeviceTerminals(
@@ -1293,6 +1468,23 @@ class ApiClient {
     );
   }
 
+  async createProjectPullRequest(
+    projectId: string,
+    request: CreateGitHubPullRequestRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CreateGitHubPullRequestResponse> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/pull-requests`,
+      CreateGitHubPullRequestResponseSchema,
+      EMPTY_CREATE_GITHUB_PULL_REQUEST_RESPONSE,
+      { method: "POST", body: JSON.stringify(request) },
+      {
+        signal: opts?.signal,
+        endpoint: "POST /api/projects/:id/pull-requests",
+      },
+    );
+  }
+
   async getProjectPullRequestReview(
     projectId: string,
     pullRequestId: string,
@@ -1305,6 +1497,43 @@ class ApiClient {
       {
         signal: opts?.signal,
         endpoint: "GET /api/projects/:id/pull-requests/:pullRequestId/review",
+      },
+    );
+  }
+
+  async createProjectPullRequestReviewComment(
+    projectId: string,
+    pullRequestId: string,
+    request: CreateGitHubPullRequestReviewCommentRequest,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequestReviewComment> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/pull-requests/${pullRequestId}/review/comments`,
+      GitHubPullRequestReviewCommentSchema,
+      EMPTY_GITHUB_PULL_REQUEST_REVIEW_COMMENT,
+      { method: "POST", body: JSON.stringify(request) },
+      {
+        signal: opts?.signal,
+        endpoint: "POST /api/projects/:id/pull-requests/:pullRequestId/review/comments",
+      },
+    );
+  }
+
+  async resolveProjectPullRequestReviewThread(
+    projectId: string,
+    pullRequestId: string,
+    commentId: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequestReviewResolution> {
+    return this.fetchValidatedWith(
+      `/api/projects/${projectId}/pull-requests/${pullRequestId}/review/comments/${commentId}/resolve`,
+      GitHubPullRequestReviewResolutionSchema,
+      EMPTY_GITHUB_PULL_REQUEST_REVIEW_RESOLUTION,
+      { method: "POST", body: JSON.stringify({}) },
+      {
+        signal: opts?.signal,
+        endpoint:
+          "POST /api/projects/:id/pull-requests/:pullRequestId/review/comments/:commentId/resolve",
       },
     );
   }
@@ -1625,7 +1854,7 @@ class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
-    opts?: { attachmentIds?: string[] },
+    opts?: { attachmentIds?: string[]; projectContinueOnDirty?: boolean },
   ): Promise<SendChatMessageResponse> {
     // Strict parse — we need task_id + created_at to anchor the optimistic
     // StatusPill. Fallback would silently break the elapsed-time timer.
@@ -1634,9 +1863,16 @@ class ApiClient {
     // server-side `chat.go` back-fills `chat_message_id` on the listed
     // attachments after the message row is inserted (see
     // server/internal/handler/chat.go:410-456).
-    const body: { content: string; attachment_ids?: string[] } = { content };
+    const body: {
+      content: string;
+      attachment_ids?: string[];
+      project_continue_on_dirty?: boolean;
+    } = { content };
     if (opts?.attachmentIds && opts.attachmentIds.length > 0) {
       body.attachment_ids = opts.attachmentIds;
+    }
+    if (opts?.projectContinueOnDirty) {
+      body.project_continue_on_dirty = true;
     }
     const raw = await this.fetch<unknown>(
       `/api/chat/sessions/${sessionId}/messages`,

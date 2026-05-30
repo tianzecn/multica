@@ -742,13 +742,13 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 const createAgentTask = `-- name: CreateAgentTask :one
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
-    trigger_summary, force_fresh_session, is_leader_task, project_id
+    trigger_summary, context, force_fresh_session, is_leader_task, project_id
 )
 VALUES (
     $1, $2, $3, 'queued', $4, $5,
-    $6,
-    COALESCE($7::boolean, FALSE),
+    $6, $7,
     COALESCE($8::boolean, FALSE),
+    COALESCE($9::boolean, FALSE),
     (SELECT project_id FROM issue WHERE id = $3)
 )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, project_id
@@ -761,6 +761,7 @@ type CreateAgentTaskParams struct {
 	Priority          int32       `json:"priority"`
 	TriggerCommentID  pgtype.UUID `json:"trigger_comment_id"`
 	TriggerSummary    pgtype.Text `json:"trigger_summary"`
+	Context           []byte      `json:"context"`
 	ForceFreshSession pgtype.Bool `json:"force_fresh_session"`
 	IsLeaderTask      pgtype.Bool `json:"is_leader_task"`
 }
@@ -773,6 +774,7 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.Priority,
 		arg.TriggerCommentID,
 		arg.TriggerSummary,
+		arg.Context,
 		arg.ForceFreshSession,
 		arg.IsLeaderTask,
 	)

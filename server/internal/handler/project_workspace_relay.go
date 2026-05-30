@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -24,12 +25,20 @@ const (
 )
 
 var projectWorkspaceActivitySecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16})\b`),
+	regexp.MustCompile(`(?i)\b(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16})\b`),
+	regexp.MustCompile(`(?s)-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----`),
+	regexp.MustCompile(`\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
+	regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9\-._~+/]+=*`),
+	regexp.MustCompile(`(?i)\b(postgres|postgresql|mysql|mongodb|redis|amqp)://[^:\s]+:[^@\s]+@`),
 	regexp.MustCompile(`(?i)\b(password|passwd|secret|token|api[_-]?key|authorization)(\s*[:=]\s*)(["']?)[^\s"']+`),
 }
 
 var projectWorkspaceActivitySecretReplacements = []string{
 	"[REDACTED]",
+	"[REDACTED PRIVATE KEY]",
+	"[REDACTED JWT]",
+	"Bearer [REDACTED]",
+	"$1://[REDACTED]@",
 	"$1$2$3[REDACTED]",
 }
 
@@ -55,8 +64,177 @@ type projectWorkspaceRelayTerminalInputRequest struct {
 	Input string `json:"input"`
 }
 
+type projectWorkspaceRelaySetupRequest struct {
+	LocalPath string `json:"local_path"`
+	PathAlias string `json:"path_alias,omitempty"`
+}
+
+type ProjectWorkspaceSetupResponse struct {
+	Binding ProjectDeviceBindingResponse `json:"binding"`
+}
+
+type projectWorkspaceRelayLocalWorkspaceResponse struct {
+	ProjectID      string          `json:"project_id"`
+	WorkspaceID    string          `json:"workspace_id"`
+	PrimaryRepoURL string          `json:"primary_repo_url"`
+	PathAlias      string          `json:"path_alias"`
+	PathBasename   string          `json:"path_basename"`
+	Git            json.RawMessage `json:"git,omitempty"`
+}
+
 func (h *Handler) RelayProjectWorkspaceGitStatus(w http.ResponseWriter, r *http.Request) {
 	h.relayProjectWorkspaceRequest(w, r, http.MethodGet, "/git/status", "", nil, "", nil)
+}
+
+func (h *Handler) RelayProjectWorkspaceBind(w http.ResponseWriter, r *http.Request) {
+	h.relayProjectWorkspaceSetup(w, r, "bind", http.MethodPut, "")
+}
+
+func (h *Handler) RelayProjectWorkspaceClone(w http.ResponseWriter, r *http.Request) {
+	h.relayProjectWorkspaceSetup(w, r, "clone", http.MethodPost, "/clone")
+}
+
+func (h *Handler) relayProjectWorkspaceSetup(w http.ResponseWriter, r *http.Request, mode, method, routePath string) {
+	project, ok := h.loadProjectForResource(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	if h.DaemonHub == nil {
+		writeError(w, http.StatusServiceUnavailable, "daemon relay unavailable")
+		return
+	}
+	runtimeID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "runtimeId"), "runtime_id")
+	if !ok {
+		return
+	}
+	runtime, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+		ID: runtimeID, WorkspaceID: project.WorkspaceID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "target runtime not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load target runtime")
+		return
+	}
+	if runtime.Status != "online" {
+		writeError(w, http.StatusConflict, "target runtime is not online")
+		return
+	}
+	deviceID := strings.TrimSpace(runtime.DaemonID.String)
+	if !runtime.DaemonID.Valid || deviceID == "" {
+		writeError(w, http.StatusConflict, "target runtime has no device binding")
+		return
+	}
+	primaryRepoURL := h.primaryRepoURL(r.Context(), project.ID)
+	if primaryRepoURL == nil {
+		writeError(w, http.StatusConflict, "project primary GitHub repository is required")
+		return
+	}
+
+	var req projectWorkspaceRelaySetupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	localPath := strings.TrimSpace(req.LocalPath)
+	if localPath == "" {
+		writeError(w, http.StatusBadRequest, "local_path is required")
+		return
+	}
+	if len(localPath) > 4096 {
+		writeError(w, http.StatusBadRequest, "local_path is too long")
+		return
+	}
+	pathAlias, err := normalizeDisplayPathField(req.PathAlias, "path_alias", 120)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"workspace_id":     uuidToString(project.WorkspaceID),
+		"primary_repo_url": *primaryRepoURL,
+		"local_path":       localPath,
+		"path_alias":       pathAlias,
+	})
+	ctx, cancel := context.WithTimeout(r.Context(), projectWorkspaceRelayTimeout)
+	defer cancel()
+	resp, err := h.DaemonHub.RequestProjectWorkspace(ctx, uuidToString(runtime.ID), protocol.DaemonProjectWorkspaceRequestPayload{
+		WorkspaceID: uuidToString(project.WorkspaceID),
+		ProjectID:   uuidToString(project.ID),
+		Method:      method,
+		Path:        routePath,
+		Body:        string(body),
+	})
+	if err != nil {
+		if errors.Is(err, daemonws.ErrRuntimeNotConnected) || errors.Is(err, daemonws.ErrRuntimeBackpressure) {
+			writeError(w, http.StatusConflict, "target runtime is not online")
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(w, http.StatusGatewayTimeout, "daemon request timed out")
+			return
+		}
+		writeError(w, http.StatusBadGateway, "daemon relay failed")
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeProjectWorkspaceRelayResponse(w, resp)
+		return
+	}
+
+	var local projectWorkspaceRelayLocalWorkspaceResponse
+	if err := json.Unmarshal([]byte(resp.Body), &local); err != nil {
+		writeError(w, http.StatusBadGateway, "daemon workspace setup response was invalid")
+		return
+	}
+	if local.PrimaryRepoURL != "" && githubRepoURLKey(local.PrimaryRepoURL) != githubRepoURLKey(*primaryRepoURL) {
+		writeError(w, http.StatusBadGateway, "daemon workspace setup returned a different primary repository")
+		return
+	}
+	pathBasename, err := normalizeDisplayPathField(local.PathBasename, "path_basename", 120)
+	if err != nil || pathBasename == "" {
+		pathBasename = "workspace"
+	}
+	if pathAlias == "" {
+		pathAlias, _ = normalizeDisplayPathField(local.PathAlias, "path_alias", 120)
+	}
+	capabilities, _ := json.Marshal(map[string]any{
+		"git":      true,
+		"files":    true,
+		"scripts":  true,
+		"terminal": true,
+	})
+	row, err := h.Queries.UpsertProjectDeviceBinding(r.Context(), db.UpsertProjectDeviceBindingParams{
+		ProjectID:      project.ID,
+		WorkspaceID:    project.WorkspaceID,
+		RuntimeID:      runtime.ID,
+		DeviceID:       deviceID,
+		PrimaryRepoUrl: *primaryRepoURL,
+		Status:         "online",
+		Capabilities:   capabilities,
+		PathAlias:      pathAlias,
+		PathBasename:   pathBasename,
+		LastSeenAt:     pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store project device binding")
+		return
+	}
+	h.recordProjectWorkspaceActivity(r, project.WorkspaceID, userID, "project_workspace_"+mode, map[string]any{
+		"project_id":       uuidToString(project.ID),
+		"device_id":        deviceID,
+		"runtime_id":       uuidToString(runtime.ID),
+		"primary_repo_url": *primaryRepoURL,
+		"path_basename":    pathBasename,
+	})
+	writeJSON(w, http.StatusOK, ProjectWorkspaceSetupResponse{Binding: projectDeviceBindingToResponse(row)})
 }
 
 func (h *Handler) RelayProjectWorkspaceGitDiff(w http.ResponseWriter, r *http.Request) {
@@ -272,11 +450,12 @@ func (h *Handler) relayProjectWorkspaceRequestForProject(w http.ResponseWriter, 
 	ctx, cancel := context.WithTimeout(r.Context(), projectWorkspaceRelayTimeout)
 	defer cancel()
 	resp, err := h.DaemonHub.RequestProjectWorkspace(ctx, runtimeID, protocol.DaemonProjectWorkspaceRequestPayload{
-		ProjectID: uuidToString(project.ID),
-		Method:    method,
-		Path:      routePath,
-		Query:     query,
-		Body:      string(body),
+		WorkspaceID: uuidToString(project.WorkspaceID),
+		ProjectID:   uuidToString(project.ID),
+		Method:      method,
+		Path:        routePath,
+		Query:       query,
+		Body:        string(body),
 	})
 	if err != nil {
 		if errors.Is(err, daemonws.ErrRuntimeNotConnected) || errors.Is(err, daemonws.ErrRuntimeBackpressure) {
@@ -450,6 +629,10 @@ func enrichProjectWorkspaceActivityDetails(activitySuffix string, details map[st
 			Command string `json:"command"`
 			Status  string `json:"status"`
 			Log     string `json:"log"`
+			Ports   []struct {
+				Port int    `json:"port"`
+				URL  string `json:"url"`
+			} `json:"ports"`
 		}
 		_ = json.Unmarshal([]byte(responseBody), &resp)
 		if resp.ID != "" {
@@ -475,12 +658,19 @@ func enrichProjectWorkspaceActivityDetails(activitySuffix string, details map[st
 		if strings.TrimSpace(resp.Log) != "" {
 			details["log"] = projectWorkspaceTextActivity(resp.Log, 8*1024)
 		}
+		if len(resp.Ports) > 0 {
+			details["ports"] = resp.Ports
+		}
 	case "script_stop":
 		var resp struct {
 			ID     string `json:"id"`
 			Name   string `json:"name"`
 			Status string `json:"status"`
 			Log    string `json:"log"`
+			Ports  []struct {
+				Port int    `json:"port"`
+				URL  string `json:"url"`
+			} `json:"ports"`
 		}
 		_ = json.Unmarshal([]byte(responseBody), &resp)
 		if resp.ID != "" {
@@ -491,6 +681,33 @@ func enrichProjectWorkspaceActivityDetails(activitySuffix string, details map[st
 		}
 		if resp.Status != "" {
 			details["status"] = resp.Status
+		}
+		if strings.TrimSpace(resp.Log) != "" {
+			details["log"] = projectWorkspaceTextActivity(resp.Log, 8*1024)
+		}
+		if len(resp.Ports) > 0 {
+			details["ports"] = resp.Ports
+		}
+	case "terminal_start", "terminal_input", "terminal_stop":
+		var resp struct {
+			ID       string `json:"id"`
+			Shell    string `json:"shell"`
+			Status   string `json:"status"`
+			ExitCode *int   `json:"exit_code"`
+			Log      string `json:"log"`
+		}
+		_ = json.Unmarshal([]byte(responseBody), &resp)
+		if resp.ID != "" {
+			details["session_id"] = resp.ID
+		}
+		if resp.Shell != "" {
+			details["shell"] = resp.Shell
+		}
+		if resp.Status != "" {
+			details["status"] = resp.Status
+		}
+		if resp.ExitCode != nil {
+			details["exit_code"] = *resp.ExitCode
 		}
 		if strings.TrimSpace(resp.Log) != "" {
 			details["log"] = projectWorkspaceTextActivity(resp.Log, 8*1024)
@@ -544,6 +761,11 @@ func redactProjectWorkspaceActivityText(raw string) (string, bool) {
 }
 
 func (h *Handler) loadRelayDeviceBinding(w http.ResponseWriter, r *http.Request, project db.Project, deviceID string) (db.ListProjectDeviceBindingsRow, bool) {
+	primaryRepoURL := h.primaryRepoURL(r.Context(), project.ID)
+	if primaryRepoURL == nil {
+		writeError(w, http.StatusConflict, "project primary GitHub repository is required")
+		return db.ListProjectDeviceBindingsRow{}, false
+	}
 	rows, err := h.Queries.ListProjectDeviceBindings(r.Context(), db.ListProjectDeviceBindingsParams{
 		ProjectID: project.ID, WorkspaceID: project.WorkspaceID,
 	})
@@ -554,6 +776,10 @@ func (h *Handler) loadRelayDeviceBinding(w http.ResponseWriter, r *http.Request,
 	for _, row := range rows {
 		if row.DeviceID != deviceID {
 			continue
+		}
+		if githubRepoURLKey(row.PrimaryRepoUrl) != githubRepoURLKey(*primaryRepoURL) {
+			writeError(w, http.StatusConflict, "target device binding does not match the project's primary repository")
+			return db.ListProjectDeviceBindingsRow{}, false
 		}
 		if !row.RuntimeID.Valid {
 			writeError(w, http.StatusConflict, "target device has no runtime binding")

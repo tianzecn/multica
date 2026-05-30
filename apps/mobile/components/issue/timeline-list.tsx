@@ -416,6 +416,7 @@ export function TimelineList({
               entry={item.entry}
               replies={item.replies}
               issueId={issue.id}
+              issue={issue}
               issueIdentifier={issue.identifier}
               highlightedCommentId={highlightedId}
             />

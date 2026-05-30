@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -32,11 +31,12 @@ type GitHubRepoCreator interface {
 }
 
 type CreateGitHubRepositoryInput struct {
-	Owner       string
-	OwnerType   string
-	Name        string
-	Description string
-	Visibility  string
+	InstallationID int64
+	Owner          string
+	OwnerType      string
+	Name           string
+	Description    string
+	Visibility     string
 }
 
 type CreatedGitHubRepository struct {
@@ -66,29 +66,30 @@ type CreateProjectGitHubRepositoryResponse struct {
 }
 
 type envGitHubRepoCreator struct {
-	client     *http.Client
-	token      string
-	apiBaseURL string
+	client      *http.Client
+	token       string
+	apiBaseURL  string
+	tokenSource GitHubInstallationTokenSource
 }
 
 func NewEnvGitHubRepoCreator() GitHubRepoCreator {
-	token := strings.TrimSpace(os.Getenv("GITHUB_REPO_CREATE_TOKEN"))
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
-	}
-	apiBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("GITHUB_API_BASE_URL")), "/")
-	if apiBaseURL == "" {
-		apiBaseURL = "https://api.github.com"
-	}
 	return &envGitHubRepoCreator{
-		client:     &http.Client{Timeout: 30 * time.Second},
-		token:      token,
-		apiBaseURL: apiBaseURL,
+		client:      &http.Client{Timeout: 30 * time.Second},
+		token:       githubFallbackToken("GITHUB_REPO_CREATE_TOKEN"),
+		apiBaseURL:  githubAPIBaseURL(),
+		tokenSource: NewEnvGitHubInstallationTokenSource(),
 	}
 }
 
 func (c *envGitHubRepoCreator) CreateRepository(ctx context.Context, req CreateGitHubRepositoryInput) (CreatedGitHubRepository, error) {
-	if strings.TrimSpace(c.token) == "" {
+	token, err := resolveGitHubAuthToken(ctx, c.tokenSource, c.token, req.InstallationID)
+	if err != nil {
+		if errors.Is(err, errGitHubAppAuthNotConfigured) {
+			return CreatedGitHubRepository{}, errGitHubRepoCreatorNotConfigured
+		}
+		return CreatedGitHubRepository{}, err
+	}
+	if strings.TrimSpace(token) == "" {
 		return CreatedGitHubRepository{}, errGitHubRepoCreatorNotConfigured
 	}
 	ownerType, err := normalizeGitHubOwnerType(req.OwnerType)
@@ -111,7 +112,7 @@ func (c *envGitHubRepoCreator) CreateRepository(ctx context.Context, req CreateG
 		return CreatedGitHubRepository{}, err
 	}
 	httpReq.Header.Set("Accept", "application/vnd.github+json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
@@ -305,6 +306,15 @@ func (h *Handler) CreateProjectGitHubRepository(w http.ResponseWriter, r *http.R
 			map[string]any{"workspace": workspaceToResponse(updatedWorkspace)},
 		)
 	}
+	h.recordProjectWorkspaceActivity(r, project.WorkspaceID, userID, "github_repo_create", map[string]any{
+		"project_id":           uuidToString(project.ID),
+		"repo":                 created.FullName,
+		"repo_url":             created.CloneURL,
+		"html_url":             created.HTMLURL,
+		"default_branch":       created.DefaultBranch,
+		"visibility":           created.Visibility,
+		"workspace_repo_added": repoAdded,
+	})
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -331,36 +341,43 @@ func normalizeCreateGitHubRepositoryRequest(ctx context.Context, queries *db.Que
 	if visibility != "private" && visibility != "public" {
 		return CreateGitHubRepositoryInput{}, errors.New("visibility must be private or public")
 	}
+	installationID, installedOwnerType, ok := inferGitHubInstallationForOwner(ctx, queries, workspaceID, owner)
+	if !ok {
+		return CreateGitHubRepositoryInput{}, errors.New("owner must be a connected GitHub installation")
+	}
 	ownerType := strings.TrimSpace(req.OwnerType)
 	if ownerType == "" {
-		if inferred, ok := inferGitHubOwnerType(ctx, queries, workspaceID, owner); ok {
-			ownerType = inferred
-		}
+		ownerType = installedOwnerType
 	}
 	ownerType, err := normalizeGitHubOwnerType(ownerType)
 	if err != nil {
 		return CreateGitHubRepositoryInput{}, err
 	}
+	installedOwnerType, _ = normalizeGitHubOwnerType(installedOwnerType)
+	if ownerType != installedOwnerType {
+		return CreateGitHubRepositoryInput{}, errors.New("owner_type does not match connected GitHub owner")
+	}
 	return CreateGitHubRepositoryInput{
-		Owner:       owner,
-		OwnerType:   ownerType,
-		Name:        name,
-		Description: description,
-		Visibility:  visibility,
+		InstallationID: installationID,
+		Owner:          owner,
+		OwnerType:      ownerType,
+		Name:           name,
+		Description:    description,
+		Visibility:     visibility,
 	}, nil
 }
 
-func inferGitHubOwnerType(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, owner string) (string, bool) {
+func inferGitHubInstallationForOwner(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, owner string) (int64, string, bool) {
 	rows, err := queries.ListGitHubInstallationsByWorkspace(ctx, workspaceID)
 	if err != nil {
-		return "", false
+		return 0, "", false
 	}
 	for _, row := range rows {
 		if strings.EqualFold(row.AccountLogin, owner) {
-			return row.AccountType, true
+			return row.InstallationID, row.AccountType, true
 		}
 	}
-	return "", false
+	return 0, "", false
 }
 
 func normalizeGitHubOwnerType(raw string) (string, error) {
@@ -414,6 +431,14 @@ func appendWorkspaceRepoIfMissing(ctx context.Context, queries workspaceRepoUpda
 		return db.Workspace{}, false, err
 	}
 	return updated, true, nil
+}
+
+func workspaceRepoDescriptionForGitURL(repoURL string) string {
+	key := githubRepoURLKey(repoURL)
+	if key != "" && !strings.Contains(key, "://") && strings.Contains(key, "/") {
+		return key
+	}
+	return strings.TrimSpace(repoURL)
 }
 
 func githubRepoURLKey(raw string) string {

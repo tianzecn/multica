@@ -1,3 +1,5 @@
+import type { TimelineEntry } from "./activity";
+
 export type ProjectStatus = "planned" | "in_progress" | "paused" | "completed" | "cancelled";
 
 export type ProjectPriority = "urgent" | "high" | "medium" | "low" | "none";
@@ -137,6 +139,15 @@ export interface ProjectWorkspace {
   active_tasks: ProjectActiveTask[];
 }
 
+export interface ProjectActivityExportResponse {
+  project_id: string;
+  workspace_id: string;
+  exported_at: string;
+  total: number;
+  truncated: boolean;
+  activity: TimelineEntry[];
+}
+
 export interface UpdateProjectWorkspaceConfigRequest {
   base_branch?: string;
   scope_path?: string;
@@ -151,6 +162,15 @@ export interface UpsertProjectDeviceBindingRequest {
   capabilities?: Record<string, unknown>;
   path_alias?: string;
   path_basename?: string;
+}
+
+export interface SetupProjectWorkspaceRequest {
+  local_path: string;
+  path_alias?: string;
+}
+
+export interface ProjectWorkspaceSetupResponse {
+  binding: ProjectDeviceBinding;
 }
 
 export interface CreateProjectGitHubRepositoryRequest {
@@ -184,9 +204,16 @@ export interface ProjectGitFile {
   status: string;
 }
 
+export interface ProjectGitRemote {
+  name: string;
+  fetch_url: string;
+  push_url: string;
+}
+
 export interface ProjectGitStatus {
   branch: string;
   remote: string;
+  remotes?: ProjectGitRemote[];
   dirty_count: number;
   untracked_count: number;
   ahead: number;
@@ -319,6 +346,12 @@ export interface ProjectScriptRun {
   finished_at?: string | null;
   exit_code?: number | null;
   log: string;
+  ports?: ProjectScriptPort[];
+}
+
+export interface ProjectScriptPort {
+  port: number;
+  url: string;
 }
 
 export interface ProjectScriptListResponse {

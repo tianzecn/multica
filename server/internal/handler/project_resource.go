@@ -46,6 +46,32 @@ func projectResourceToResponse(r db.ProjectResource) ProjectResourceResponse {
 	}
 }
 
+func projectResourceActivityDetails(project db.Project, resource db.ProjectResource, workspaceRepoAdded bool) map[string]any {
+	details := map[string]any{
+		"project_id":    uuidToString(project.ID),
+		"resource_id":   uuidToString(resource.ID),
+		"resource_type": resource.ResourceType,
+		"position":      resource.Position,
+	}
+	if resource.Label.Valid {
+		details["label"] = resource.Label.String
+	}
+	if resource.ResourceType == "github_repo" {
+		if ref, ok := parseGithubRepoRef(resource.ResourceRef); ok {
+			details["repo"] = workspaceRepoDescriptionForGitURL(ref.URL)
+			details["repo_url"] = ref.URL
+			details["repo_role"] = ref.Role
+			if ref.DefaultBranchHint != "" {
+				details["default_branch_hint"] = ref.DefaultBranchHint
+			}
+			if ref.Role == githubRepoRolePrimary {
+				details["workspace_repo_added"] = workspaceRepoAdded
+			}
+		}
+	}
+	return details
+}
+
 // CreateProjectResourceRequest is the body for POST /api/projects/{id}/resources.
 type CreateProjectResourceRequest struct {
 	ResourceType string          `json:"resource_type"`
@@ -126,6 +152,7 @@ func (h *Handler) validateGithubRepoResourceCreate(ctx context.Context, projectI
 	if !ok {
 		return errors.New("github_repo: url is required")
 	}
+	incomingKey := githubRepoURLKey(incoming.URL)
 	rows := h.listProjectResourcesForProject(ctx, projectID)
 	for _, row := range rows {
 		if row.ResourceType != "github_repo" {
@@ -135,7 +162,7 @@ func (h *Handler) validateGithubRepoResourceCreate(ctx context.Context, projectI
 		if !ok {
 			continue
 		}
-		if existing.URL == incoming.URL {
+		if githubRepoURLKey(existing.URL) == incomingKey {
 			return errors.New("this repository is already attached to the project")
 		}
 		if incoming.Role == githubRepoRolePrimary && existing.Role == githubRepoRolePrimary {
@@ -153,10 +180,11 @@ func validateGithubRepoResourceBatch(refs []json.RawMessage) error {
 		if !ok {
 			return fmt.Errorf("resources[%d]: github_repo: url is required", i)
 		}
-		if _, exists := seenURLs[payload.URL]; exists {
+		urlKey := githubRepoURLKey(payload.URL)
+		if _, exists := seenURLs[urlKey]; exists {
 			return fmt.Errorf("resources[%d]: this repository is already attached to the project", i)
 		}
-		seenURLs[payload.URL] = struct{}{}
+		seenURLs[urlKey] = struct{}{}
 		if payload.Role == githubRepoRolePrimary {
 			if hasPrimary {
 				return fmt.Errorf("resources[%d]: project already has a primary repository", i)
@@ -299,7 +327,15 @@ func (h *Handler) CreateProjectResource(w http.ResponseWriter, r *http.Request) 
 	}
 
 	creator, _ := h.parseUserUUIDOrZero(userID)
-	resource, err := h.Queries.CreateProjectResource(r.Context(), db.CreateProjectResourceParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	resource, err := qtx.CreateProjectResource(r.Context(), db.CreateProjectResourceParams{
 		ProjectID:    project.ID,
 		WorkspaceID:  project.WorkspaceID,
 		ResourceType: req.ResourceType,
@@ -316,6 +352,32 @@ func (h *Handler) CreateProjectResource(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "failed to create project resource")
 		return
 	}
+	var updatedWorkspace db.Workspace
+	workspaceRepoAdded := false
+	if req.ResourceType == "github_repo" {
+		ref, ok := parseGithubRepoRef(normalizedRef)
+		if ok && ref.Role == githubRepoRolePrimary {
+			workspace, added, err := appendWorkspaceRepoIfMissing(
+				r.Context(),
+				qtx,
+				project.WorkspaceID,
+				ref.URL,
+				workspaceRepoDescriptionForGitURL(ref.URL),
+			)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to update workspace repositories")
+				return
+			}
+			if added {
+				updatedWorkspace = workspace
+				workspaceRepoAdded = true
+			}
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit project resource create")
+		return
+	}
 
 	resp := projectResourceToResponse(resource)
 	h.publish(
@@ -324,6 +386,22 @@ func (h *Handler) CreateProjectResource(w http.ResponseWriter, r *http.Request) 
 		"member",
 		userID,
 		map[string]any{"resource": resp, "project_id": uuidToString(project.ID)},
+	)
+	if workspaceRepoAdded {
+		h.publish(
+			protocol.EventWorkspaceUpdated,
+			uuidToString(project.WorkspaceID),
+			"member",
+			userID,
+			map[string]any{"workspace": workspaceToResponse(updatedWorkspace)},
+		)
+	}
+	h.recordProjectWorkspaceActivity(
+		r,
+		project.WorkspaceID,
+		userID,
+		"project_resource_attached",
+		projectResourceActivityDetails(project, resource, workspaceRepoAdded),
 	)
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -366,6 +444,13 @@ func (h *Handler) DeleteProjectResource(w http.ResponseWriter, r *http.Request) 
 			"project_id":  uuidToString(project.ID),
 			"resource_id": uuidToString(resource.ID),
 		},
+	)
+	h.recordProjectWorkspaceActivity(
+		r,
+		project.WorkspaceID,
+		userID,
+		"project_resource_detached",
+		projectResourceActivityDetails(project, resource, false),
 	)
 	w.WriteHeader(http.StatusNoContent)
 }

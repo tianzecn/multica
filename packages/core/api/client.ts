@@ -93,9 +93,12 @@ import type {
   ProjectResource,
   CreateProjectResourceRequest,
   ListProjectResourcesResponse,
+  ProjectActivityExportResponse,
   ProjectWorkspace,
   ProjectWorkspaceConfig,
   ProjectDeviceBinding,
+  ProjectWorkspaceSetupResponse,
+  SetupProjectWorkspaceRequest,
   UpdateProjectWorkspaceConfigRequest,
   UpsertProjectDeviceBindingRequest,
   CreateProjectGitHubRepositoryRequest,
@@ -141,8 +144,13 @@ import type {
   WebhookDelivery,
   NotificationPreferenceResponse,
   NotificationPreferences,
+  CreateGitHubPullRequestRequest,
+  CreateGitHubPullRequestResponse,
+  CreateGitHubPullRequestReviewCommentRequest,
   GitHubPullRequest,
   GitHubPullRequestReview,
+  GitHubPullRequestReviewComment,
+  GitHubPullRequestReviewResolution,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
   Squad,
@@ -194,7 +202,9 @@ import {
   CommentsListSchema,
   CloudRuntimeNodeListSchema,
   CloudRuntimeNodeSchema,
+  CreateGitHubPullRequestResponseSchema,
   CreateAgentFromTemplateResponseSchema,
+  CreateProjectGitHubRepositoryResponseSchema,
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
   DashboardUsageByAgentListSchema,
@@ -213,8 +223,35 @@ import {
   EMPTY_CLOUD_RUNTIME_NODE,
   EMPTY_CLOUD_RUNTIME_NODE_LIST,
   EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE,
+  EMPTY_CREATE_GITHUB_PULL_REQUEST_RESPONSE,
+  EMPTY_CREATE_PROJECT_GITHUB_REPOSITORY_RESPONSE,
+  EMPTY_GITHUB_CONNECT_RESPONSE,
+  EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE,
+  EMPTY_GITHUB_PULL_REQUEST_REVIEW,
+  EMPTY_GITHUB_PULL_REQUEST_REVIEW_COMMENT,
+  EMPTY_GITHUB_PULL_REQUEST_REVIEW_RESOLUTION,
   EMPTY_GROUPED_ISSUES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
+  EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
+  EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
+  EMPTY_PROJECT_FILE_READ_RESPONSE,
+  EMPTY_PROJECT_FILE_TREE_RESPONSE,
+  EMPTY_PROJECT_FILE_WRITE_RESPONSE,
+  EMPTY_PROJECT_RESOURCE,
+  EMPTY_PROJECT_ACTIVITY_EXPORT_RESPONSE,
+  EMPTY_PROJECT_DEVICE_BINDING,
+  EMPTY_PROJECT_GIT_DIFF_RESPONSE,
+  EMPTY_PROJECT_GIT_LOG_RESPONSE,
+  EMPTY_PROJECT_GIT_OPERATION_RESPONSE,
+  EMPTY_PROJECT_GIT_STATUS,
+  EMPTY_PROJECT_SAFETY_SNAPSHOT_LIST_RESPONSE,
+  EMPTY_PROJECT_SCRIPT_LIST_RESPONSE,
+  EMPTY_PROJECT_SCRIPT_RUN,
+  EMPTY_PROJECT_TERMINAL_LIST_RESPONSE,
+  EMPTY_PROJECT_TERMINAL_SESSION,
+  EMPTY_PROJECT_WORKSPACE,
+  EMPTY_PROJECT_WORKSPACE_CONFIG,
+  EMPTY_PROJECT_WORKSPACE_SETUP_RESPONSE,
   EMPTY_SQUAD,
   EMPTY_SQUAD_LIST,
   EMPTY_SQUAD_MEMBER_STATUS_LIST,
@@ -223,8 +260,33 @@ import {
   EMPTY_LIST_WEBHOOK_DELIVERIES_RESPONSE,
   EMPTY_WEBHOOK_DELIVERY,
   GroupedIssuesResponseSchema,
+  GitHubConnectResponseSchema,
+  GitHubPullRequestListResponseSchema,
+  GitHubPullRequestReviewCommentResponseSchema,
+  GitHubPullRequestReviewResolutionSchema,
+  GitHubPullRequestReviewSchema,
   ListIssuesResponseSchema,
+  ListGitHubInstallationsResponseSchema,
+  ListProjectResourcesResponseSchema,
   ListWebhookDeliveriesResponseSchema,
+  ProjectDeviceBindingSchema,
+  ProjectFileReadResponseSchema,
+  ProjectFileTreeResponseSchema,
+  ProjectFileWriteResponseSchema,
+  ProjectGitDiffResponseSchema,
+  ProjectGitLogResponseSchema,
+  ProjectGitOperationResponseSchema,
+  ProjectGitStatusSchema,
+  ProjectResourceSchema,
+  ProjectActivityExportResponseSchema,
+  ProjectSafetySnapshotListResponseSchema,
+  ProjectScriptListResponseSchema,
+  ProjectScriptRunSchema,
+  ProjectTerminalListResponseSchema,
+  ProjectTerminalSessionSchema,
+  ProjectWorkspaceConfigSchema,
+  ProjectWorkspaceSchema,
+  ProjectWorkspaceSetupResponseSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
@@ -604,6 +666,7 @@ export class ApiClient {
     squad_id?: string;
     prompt: string;
     project_id?: string | null;
+    project_continue_on_dirty?: boolean;
   }): Promise<{ task_id: string }> {
     return this.fetch("/api/issues/quick-create", {
       method: "POST",
@@ -666,7 +729,14 @@ export class ApiClient {
     });
   }
 
-  async createComment(issueId: string, content: string, type?: string, parentId?: string, attachmentIds?: string[]): Promise<Comment> {
+  async createComment(
+    issueId: string,
+    content: string,
+    type?: string,
+    parentId?: string,
+    attachmentIds?: string[],
+    projectContinueOnDirty?: boolean,
+  ): Promise<Comment> {
     return this.fetch(`/api/issues/${issueId}/comments`, {
       method: "POST",
       body: JSON.stringify({
@@ -674,6 +744,7 @@ export class ApiClient {
         type: type ?? "comment",
         ...(parentId ? { parent_id: parentId } : {}),
         ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        ...(projectContinueOnDirty ? { project_continue_on_dirty: true } : {}),
       }),
     });
   }
@@ -1501,11 +1572,23 @@ export class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
-    attachmentIds?: string[],
+    attachmentIdsOrOptions?:
+      | string[]
+      | { attachmentIds?: string[]; projectContinueOnDirty?: boolean },
   ): Promise<SendChatMessageResponse> {
-    const body: { content: string; attachment_ids?: string[] } = { content };
+    const body: {
+      content: string;
+      attachment_ids?: string[];
+      project_continue_on_dirty?: boolean;
+    } = { content };
+    const attachmentIds = Array.isArray(attachmentIdsOrOptions)
+      ? attachmentIdsOrOptions
+      : attachmentIdsOrOptions?.attachmentIds;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
+    }
+    if (!Array.isArray(attachmentIdsOrOptions) && attachmentIdsOrOptions?.projectContinueOnDirty) {
+      body.project_continue_on_dirty = true;
     }
     return this.fetch(`/api/chat/sessions/${sessionId}/messages`, {
       method: "POST",
@@ -1932,23 +2015,53 @@ export class ApiClient {
   }
 
   async listProjectActivity(projectId: string): Promise<TimelineEntry[]> {
-    return this.fetch(`/api/projects/${projectId}/activity`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/activity`);
+    return parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
+      endpoint: "GET /api/projects/:id/activity",
+    });
+  }
+
+  async exportProjectActivity(
+    projectId: string,
+  ): Promise<ProjectActivityExportResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${projectId}/activity/export`,
+    );
+    return parseWithFallback(
+      raw,
+      ProjectActivityExportResponseSchema,
+      EMPTY_PROJECT_ACTIVITY_EXPORT_RESPONSE,
+      {
+        endpoint: "GET /api/projects/:id/activity/export",
+      },
+    );
   }
 
   // Project resources
   async listProjectResources(
     projectId: string,
   ): Promise<ListProjectResourcesResponse> {
-    return this.fetch(`/api/projects/${projectId}/resources`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/resources`);
+    return parseWithFallback(
+      raw,
+      ListProjectResourcesResponseSchema,
+      EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
+      {
+        endpoint: "GET /api/projects/:id/resources",
+      },
+    );
   }
 
   async createProjectResource(
     projectId: string,
     data: CreateProjectResourceRequest,
   ): Promise<ProjectResource> {
-    return this.fetch(`/api/projects/${projectId}/resources`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/resources`, {
       method: "POST",
       body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ProjectResourceSchema, EMPTY_PROJECT_RESOURCE, {
+      endpoint: "POST /api/projects/:id/resources",
     });
   }
 
@@ -1965,25 +2078,44 @@ export class ApiClient {
     projectId: string,
     data: CreateProjectGitHubRepositoryRequest,
   ): Promise<CreateProjectGitHubRepositoryResponse> {
-    return this.fetch(`/api/projects/${projectId}/github/repos`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/github/repos`, {
       method: "POST",
       body: JSON.stringify(data),
     });
+    return parseWithFallback(
+      raw,
+      CreateProjectGitHubRepositoryResponseSchema,
+      EMPTY_CREATE_PROJECT_GITHUB_REPOSITORY_RESPONSE,
+      {
+        endpoint: "POST /api/projects/:id/github/repos",
+      },
+    );
   }
 
   // Project workspace
   async getProjectWorkspace(projectId: string): Promise<ProjectWorkspace> {
-    return this.fetch(`/api/projects/${projectId}/workspace`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace`);
+    return parseWithFallback(raw, ProjectWorkspaceSchema, EMPTY_PROJECT_WORKSPACE, {
+      endpoint: "GET /api/projects/:id/workspace",
+    });
   }
 
   async updateProjectWorkspaceConfig(
     projectId: string,
     data: UpdateProjectWorkspaceConfigRequest,
   ): Promise<ProjectWorkspaceConfig> {
-    return this.fetch(`/api/projects/${projectId}/workspace/config`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/config`, {
       method: "PUT",
       body: JSON.stringify(data),
     });
+    return parseWithFallback(
+      raw,
+      ProjectWorkspaceConfigSchema,
+      EMPTY_PROJECT_WORKSPACE_CONFIG,
+      {
+        endpoint: "PUT /api/projects/:id/workspace/config",
+      },
+    );
   }
 
   async upsertProjectDeviceBinding(
@@ -1991,10 +2123,18 @@ export class ApiClient {
     deviceId: string,
     data: UpsertProjectDeviceBindingRequest,
   ): Promise<ProjectDeviceBinding> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}`, {
       method: "PUT",
       body: JSON.stringify(data),
     });
+    return parseWithFallback(
+      raw,
+      ProjectDeviceBindingSchema,
+      EMPTY_PROJECT_DEVICE_BINDING,
+      {
+        endpoint: "PUT /api/projects/:id/workspace/bindings/:deviceId",
+      },
+    );
   }
 
   async deleteProjectDeviceBinding(
@@ -2006,32 +2146,82 @@ export class ApiClient {
     });
   }
 
+  async bindProjectWorkspaceOnRuntime(
+    projectId: string,
+    runtimeId: string,
+    data: SetupProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspaceSetupResponse> {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/runtimes/${encodeURIComponent(runtimeId)}/bind`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(
+      raw,
+      ProjectWorkspaceSetupResponseSchema,
+      EMPTY_PROJECT_WORKSPACE_SETUP_RESPONSE,
+      {
+        endpoint: "POST /api/projects/:id/workspace/runtimes/:runtimeId/bind",
+      },
+    );
+  }
+
+  async cloneProjectWorkspaceOnRuntime(
+    projectId: string,
+    runtimeId: string,
+    data: SetupProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspaceSetupResponse> {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/runtimes/${encodeURIComponent(runtimeId)}/clone`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(
+      raw,
+      ProjectWorkspaceSetupResponseSchema,
+      EMPTY_PROJECT_WORKSPACE_SETUP_RESPONSE,
+      {
+        endpoint: "POST /api/projects/:id/workspace/runtimes/:runtimeId/clone",
+      },
+    );
+  }
+
   async getProjectDeviceGitStatus(
     projectId: string,
     deviceId: string,
   ): Promise<ProjectGitStatus> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/status`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/status`);
+    return parseWithFallback(raw, ProjectGitStatusSchema, EMPTY_PROJECT_GIT_STATUS, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/status",
+    });
   }
 
   async getProjectDeviceGitDiff(
     projectId: string,
     deviceId: string,
   ): Promise<ProjectGitDiffResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/diff`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/diff`);
+    return parseWithFallback(raw, ProjectGitDiffResponseSchema, EMPTY_PROJECT_GIT_DIFF_RESPONSE, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/diff",
+    });
   }
 
   async getProjectDeviceGitLog(
     projectId: string,
     deviceId: string,
   ): Promise<ProjectGitLogResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/log`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/log`);
+    return parseWithFallback(raw, ProjectGitLogResponseSchema, EMPTY_PROJECT_GIT_LOG_RESPONSE, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/log",
+    });
   }
 
   async getProjectDeviceSafetySnapshots(
     projectId: string,
     deviceId: string,
   ): Promise<ProjectSafetySnapshotListResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/snapshots`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/snapshots`);
+    return parseWithFallback(raw, ProjectSafetySnapshotListResponseSchema, EMPTY_PROJECT_SAFETY_SNAPSHOT_LIST_RESPONSE, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/git/snapshots",
+    });
   }
 
   async runProjectDeviceGitOperation(
@@ -2040,9 +2230,12 @@ export class ApiClient {
     operation: ProjectGitOperation,
     data: ProjectGitOperationRequest = {},
   ): Promise<ProjectGitOperationResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/${operation}`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/git/${operation}`, {
       method: "POST",
       body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ProjectGitOperationResponseSchema, EMPTY_PROJECT_GIT_OPERATION_RESPONSE, {
+      endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/git/:operation",
     });
   }
 
@@ -2052,7 +2245,10 @@ export class ApiClient {
     path?: string,
   ): Promise<ProjectFileTreeResponse> {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/tree${query}`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/tree${query}`);
+    return parseWithFallback(raw, ProjectFileTreeResponseSchema, EMPTY_PROJECT_FILE_TREE_RESPONSE, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/files/tree",
+    });
   }
 
   async readProjectDeviceFile(
@@ -2060,7 +2256,10 @@ export class ApiClient {
     deviceId: string,
     path: string,
   ): Promise<ProjectFileReadResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/read?path=${encodeURIComponent(path)}`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/read?path=${encodeURIComponent(path)}`);
+    return parseWithFallback(raw, ProjectFileReadResponseSchema, EMPTY_PROJECT_FILE_READ_RESPONSE, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/files/read",
+    });
   }
 
   async writeProjectDeviceFile(
@@ -2068,9 +2267,12 @@ export class ApiClient {
     deviceId: string,
     data: ProjectFileWriteRequest,
   ): Promise<ProjectFileWriteResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/write`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/files/write`, {
       method: "PUT",
       body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ProjectFileWriteResponseSchema, EMPTY_PROJECT_FILE_WRITE_RESPONSE, {
+      endpoint: "PUT /api/projects/:id/workspace/bindings/:deviceId/files/write",
     });
   }
 
@@ -2078,7 +2280,10 @@ export class ApiClient {
     projectId: string,
     deviceId: string,
   ): Promise<ProjectScriptListResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts`);
+    return parseWithFallback(raw, ProjectScriptListResponseSchema, EMPTY_PROJECT_SCRIPT_LIST_RESPONSE, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/scripts",
+    });
   }
 
   async runProjectDeviceScript(
@@ -2086,9 +2291,12 @@ export class ApiClient {
     deviceId: string,
     data: ProjectScriptRunRequest,
   ): Promise<ProjectScriptRun> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/run`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/run`, {
       method: "POST",
       body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ProjectScriptRunSchema, EMPTY_PROJECT_SCRIPT_RUN, {
+      endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/scripts/run",
     });
   }
 
@@ -2097,9 +2305,12 @@ export class ApiClient {
     deviceId: string,
     runId: string,
   ): Promise<ProjectScriptRun> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/${encodeURIComponent(runId)}/stop`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/scripts/${encodeURIComponent(runId)}/stop`, {
       method: "POST",
       body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, ProjectScriptRunSchema, EMPTY_PROJECT_SCRIPT_RUN, {
+      endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/scripts/:runId/stop",
     });
   }
 
@@ -2107,16 +2318,22 @@ export class ApiClient {
     projectId: string,
     deviceId: string,
   ): Promise<ProjectTerminalListResponse> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal`);
+    return parseWithFallback(raw, ProjectTerminalListResponseSchema, EMPTY_PROJECT_TERMINAL_LIST_RESPONSE, {
+      endpoint: "GET /api/projects/:id/workspace/bindings/:deviceId/terminal",
+    });
   }
 
   async startProjectDeviceTerminal(
     projectId: string,
     deviceId: string,
   ): Promise<ProjectTerminalSession> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/start`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/start`, {
       method: "POST",
       body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, ProjectTerminalSessionSchema, EMPTY_PROJECT_TERMINAL_SESSION, {
+      endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/terminal/start",
     });
   }
 
@@ -2126,9 +2343,12 @@ export class ApiClient {
     sessionId: string,
     data: ProjectTerminalInputRequest,
   ): Promise<ProjectTerminalSession> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/input`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/input`, {
       method: "POST",
       body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ProjectTerminalSessionSchema, EMPTY_PROJECT_TERMINAL_SESSION, {
+      endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/terminal/:sessionId/input",
     });
   }
 
@@ -2137,9 +2357,12 @@ export class ApiClient {
     deviceId: string,
     sessionId: string,
   ): Promise<ProjectTerminalSession> {
-    return this.fetch(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/stop`, {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/workspace/bindings/${encodeURIComponent(deviceId)}/terminal/${encodeURIComponent(sessionId)}/stop`, {
       method: "POST",
       body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, ProjectTerminalSessionSchema, EMPTY_PROJECT_TERMINAL_SESSION, {
+      endpoint: "POST /api/projects/:id/workspace/bindings/:deviceId/terminal/:sessionId/stop",
     });
   }
 
@@ -2405,11 +2628,22 @@ export class ApiClient {
 
   // GitHub integration
   async getGitHubConnectURL(workspaceId: string): Promise<GitHubConnectResponse> {
-    return this.fetch(`/api/workspaces/${workspaceId}/github/connect`);
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/github/connect`);
+    return parseWithFallback(raw, GitHubConnectResponseSchema, EMPTY_GITHUB_CONNECT_RESPONSE, {
+      endpoint: "GET /api/workspaces/:workspaceId/github/connect",
+    });
   }
 
   async listGitHubInstallations(workspaceId: string): Promise<ListGitHubInstallationsResponse> {
-    return this.fetch(`/api/workspaces/${workspaceId}/github/installations`);
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/github/installations`);
+    return parseWithFallback(
+      raw,
+      ListGitHubInstallationsResponseSchema,
+      EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
+      {
+        endpoint: "GET /api/workspaces/:workspaceId/github/installations",
+      },
+    );
   }
 
   async deleteGitHubInstallation(workspaceId: string, installationId: string): Promise<void> {
@@ -2419,19 +2653,103 @@ export class ApiClient {
   }
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
-    return this.fetch(`/api/issues/${issueId}/pull-requests`);
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/pull-requests`);
+    return parseWithFallback(
+      raw,
+      GitHubPullRequestListResponseSchema,
+      EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE,
+      {
+        endpoint: "GET /api/issues/:id/pull-requests",
+      },
+    );
   }
 
   async listProjectPullRequests(projectId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
-    return this.fetch(`/api/projects/${projectId}/pull-requests`);
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/pull-requests`);
+    return parseWithFallback(
+      raw,
+      GitHubPullRequestListResponseSchema,
+      EMPTY_GITHUB_PULL_REQUEST_LIST_RESPONSE,
+      {
+        endpoint: "GET /api/projects/:id/pull-requests",
+      },
+    );
+  }
+
+  async createProjectPullRequest(
+    projectId: string,
+    request: CreateGitHubPullRequestRequest,
+  ): Promise<CreateGitHubPullRequestResponse> {
+    const raw = await this.fetch<unknown>(`/api/projects/${projectId}/pull-requests`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    return parseWithFallback(
+      raw,
+      CreateGitHubPullRequestResponseSchema,
+      EMPTY_CREATE_GITHUB_PULL_REQUEST_RESPONSE,
+      {
+        endpoint: "POST /api/projects/:id/pull-requests",
+      },
+    );
   }
 
   async getProjectPullRequestReview(
     projectId: string,
     pullRequestId: string,
   ): Promise<GitHubPullRequestReview> {
-    return this.fetch(
+    const raw = await this.fetch<unknown>(
       `/api/projects/${projectId}/pull-requests/${pullRequestId}/review`,
+    );
+    return parseWithFallback(
+      raw,
+      GitHubPullRequestReviewSchema,
+      EMPTY_GITHUB_PULL_REQUEST_REVIEW,
+      {
+        endpoint: "GET /api/projects/:id/pull-requests/:pullRequestId/review",
+      },
+    );
+  }
+
+  async createProjectPullRequestReviewComment(
+    projectId: string,
+    pullRequestId: string,
+    request: CreateGitHubPullRequestReviewCommentRequest,
+  ): Promise<GitHubPullRequestReviewComment> {
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${projectId}/pull-requests/${pullRequestId}/review/comments`,
+      {
+        method: "POST",
+        body: JSON.stringify(request),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      GitHubPullRequestReviewCommentResponseSchema,
+      EMPTY_GITHUB_PULL_REQUEST_REVIEW_COMMENT,
+      {
+        endpoint: "POST /api/projects/:id/pull-requests/:pullRequestId/review/comments",
+      },
+    );
+  }
+
+  async resolveProjectPullRequestReviewThread(
+    projectId: string,
+    pullRequestId: string,
+    commentId: number,
+  ): Promise<GitHubPullRequestReviewResolution> {
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${projectId}/pull-requests/${pullRequestId}/review/comments/${commentId}/resolve`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      GitHubPullRequestReviewResolutionSchema,
+      EMPTY_GITHUB_PULL_REQUEST_REVIEW_RESOLUTION,
+      {
+        endpoint:
+          "POST /api/projects/:id/pull-requests/:pullRequestId/review/comments/:commentId/resolve",
+      },
     );
   }
 }

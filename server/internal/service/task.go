@@ -393,15 +393,35 @@ func (s *TaskService) willRetryTask(task db.AgentTaskQueue) bool {
 	return task.IssueID.Valid || task.ChatSessionID.Valid
 }
 
+// EnqueueIssueTaskOptions carries task-context choices for issue-bound agent
+// runs. Keep this small: the issue row remains the source of truth and the
+// context only stores explicit execution consent that cannot be inferred later.
+type EnqueueIssueTaskOptions struct {
+	ProjectContinueOnDirty bool
+}
+
+func marshalIssueTaskContext(opts EnqueueIssueTaskOptions) ([]byte, error) {
+	if !opts.ProjectContinueOnDirty {
+		return nil, nil
+	}
+	return json.Marshal(map[string]bool{"project_continue_on_dirty": true})
+}
+
 // EnqueueTaskForIssue creates a queued task for an agent-assigned issue.
-// No context snapshot is stored — the agent fetches all data it needs at
-// runtime via the multica CLI.
+// The agent fetches all issue data it needs at runtime via the multica CLI;
+// only explicit execution consent is stored in context.
 func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, triggerCommentID ...pgtype.UUID) (db.AgentTaskQueue, error) {
+	return s.EnqueueTaskForIssueWithOptions(ctx, issue, EnqueueIssueTaskOptions{}, triggerCommentID...)
+}
+
+// EnqueueTaskForIssueWithOptions creates an issue task with optional execution
+// context, such as the user's consent to snapshot a dirty project workspace.
+func (s *TaskService) EnqueueTaskForIssueWithOptions(ctx context.Context, issue db.Issue, opts EnqueueIssueTaskOptions, triggerCommentID ...pgtype.UUID) (db.AgentTaskQueue, error) {
 	var commentID pgtype.UUID
 	if len(triggerCommentID) > 0 {
 		commentID = triggerCommentID[0]
 	}
-	return s.enqueueIssueTask(ctx, issue, commentID, false)
+	return s.enqueueIssueTask(ctx, issue, commentID, false, opts)
 }
 
 // enqueueIssueTask is the shared implementation behind EnqueueTaskForIssue
@@ -409,7 +429,7 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 // daemon claim handler skips the (agent_id, issue_id) resume lookup — the
 // user already judged the prior output bad, a fresh agent session is the
 // expected behavior.
-func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool, opts EnqueueIssueTaskOptions) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -429,6 +449,11 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
+	contextJSON, err := marshalIssueTaskContext(opts)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("marshal issue task context: %w", err)
+	}
+
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:           issue.AssigneeID,
 		RuntimeID:         agent.RuntimeID,
@@ -436,6 +461,7 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 		Priority:          priorityToInt(issue.Priority),
 		TriggerCommentID:  triggerCommentID,
 		TriggerSummary:    s.buildCommentTriggerSummary(ctx, triggerCommentID),
+		Context:           contextJSON,
 		ForceFreshSession: pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 	})
 	if err != nil {
@@ -464,7 +490,13 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 // Unlike EnqueueTaskForIssue, this takes an explicit agent ID rather than
 // deriving it from the issue assignee.
 func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, false)
+	return s.EnqueueTaskForMentionWithOptions(ctx, issue, agentID, triggerCommentID, EnqueueIssueTaskOptions{})
+}
+
+// EnqueueTaskForMentionWithOptions is the context-aware variant used when a
+// member explicitly continues a project run despite a dirty workspace.
+func (s *TaskService) EnqueueTaskForMentionWithOptions(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, opts EnqueueIssueTaskOptions) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, false, opts)
 }
 
 // EnqueueTaskForSquadLeader is the leader-role variant of EnqueueTaskForMention.
@@ -474,10 +506,16 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 // as a worker (do not skip). This matters for agents that are simultaneously
 // the leader and a worker of the same squad — see migration 090.
 func (s *TaskService) EnqueueTaskForSquadLeader(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, triggerCommentID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTask(ctx, issue, leaderID, triggerCommentID, true, false)
+	return s.EnqueueTaskForSquadLeaderWithOptions(ctx, issue, leaderID, triggerCommentID, EnqueueIssueTaskOptions{})
 }
 
-func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, forceFreshSession bool) (db.AgentTaskQueue, error) {
+// EnqueueTaskForSquadLeaderWithOptions is the context-aware leader-role
+// variant for project workspaces.
+func (s *TaskService) EnqueueTaskForSquadLeaderWithOptions(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, triggerCommentID pgtype.UUID, opts EnqueueIssueTaskOptions) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTask(ctx, issue, leaderID, triggerCommentID, true, false, opts)
+}
+
+func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, forceFreshSession bool, opts EnqueueIssueTaskOptions) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -492,6 +530,11 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
+	contextJSON, err := marshalIssueTaskContext(opts)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("marshal mention task context: %w", err)
+	}
+
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:           agentID,
 		RuntimeID:         agent.RuntimeID,
@@ -499,6 +542,7 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 		Priority:          priorityToInt(issue.Priority),
 		TriggerCommentID:  triggerCommentID,
 		TriggerSummary:    s.buildCommentTriggerSummary(ctx, triggerCommentID),
+		Context:           contextJSON,
 		IsLeaderTask:      pgtype.Bool{Bool: isLeader, Valid: isLeader},
 		ForceFreshSession: pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 	})
@@ -531,12 +575,13 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 // onto the agent's Instructions, matching the behavior of issue-bound
 // tasks assigned to the squad.
 type QuickCreateContext struct {
-	Type        string `json:"type"`
-	Prompt      string `json:"prompt"`
-	RequesterID string `json:"requester_id"`
-	WorkspaceID string `json:"workspace_id"`
-	ProjectID   string `json:"project_id,omitempty"`
-	SquadID     string `json:"squad_id,omitempty"`
+	Type                   string `json:"type"`
+	Prompt                 string `json:"prompt"`
+	RequesterID            string `json:"requester_id"`
+	WorkspaceID            string `json:"workspace_id"`
+	ProjectID              string `json:"project_id,omitempty"`
+	SquadID                string `json:"squad_id,omitempty"`
+	ProjectContinueOnDirty bool   `json:"project_continue_on_dirty,omitempty"`
 }
 
 // QuickCreateContextType marks a task as a quick-create job.
@@ -557,7 +602,7 @@ const QuickCreateContextType = "quick_create"
 // The handler has already resolved it to the squad's leader agent for
 // agentID; the squadID hint is stamped into the task context so the daemon
 // claim handler can inject the squad-leader briefing on dispatch.
-func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt string, projectID pgtype.UUID) (db.AgentTaskQueue, error) {
+func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt string, projectID pgtype.UUID, projectContinueOnDirty bool) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
@@ -580,6 +625,9 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	}
 	if squadID.Valid {
 		payload.SquadID = util.UUIDToString(squadID)
+	}
+	if projectContinueOnDirty {
+		payload.ProjectContinueOnDirty = true
 	}
 	contextJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -615,7 +663,11 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 
 // EnqueueChatTask creates a queued task for a chat session.
 // Unlike issue tasks, chat tasks have no issue_id.
-func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSession) (db.AgentTaskQueue, error) {
+type EnqueueChatTaskOptions struct {
+	ProjectContinueOnDirty bool
+}
+
+func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSession, opts ...EnqueueChatTaskOptions) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, chatSession.AgentID)
 	if err != nil {
 		slog.Error("chat task enqueue failed", "chat_session_id", util.UUIDToString(chatSession.ID), "error", err)
@@ -628,12 +680,22 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
+	var contextJSON []byte
+	if len(opts) > 0 && opts[0].ProjectContinueOnDirty {
+		var err error
+		contextJSON, err = json.Marshal(map[string]bool{"project_continue_on_dirty": true})
+		if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("marshal chat task context: %w", err)
+		}
+	}
+
 	task, err := s.Queries.CreateChatTask(ctx, db.CreateChatTaskParams{
 		AgentID:       chatSession.AgentID,
 		RuntimeID:     agent.RuntimeID,
 		Priority:      2, // medium priority for chat
 		ChatSessionID: chatSession.ID,
 		ProjectID:     chatSession.ProjectID,
+		Context:       contextJSON,
 	})
 	if err != nil {
 		slog.Error("chat task enqueue failed", "chat_session_id", util.UUIDToString(chatSession.ID), "error", err)
@@ -1487,9 +1549,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool) (db.AgentTaskQueue, error) {
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
-		return s.enqueueIssueTask(ctx, issue, triggerCommentID, true)
+		return s.enqueueIssueTask(ctx, issue, triggerCommentID, true, EnqueueIssueTaskOptions{})
 	}
-	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, isLeader, true)
+	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, isLeader, true, EnqueueIssueTaskOptions{})
 }
 
 // HandleFailedTasks runs the post-failure side effects for a batch of

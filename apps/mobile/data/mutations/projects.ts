@@ -17,13 +17,18 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   CreateProjectRequest,
+  CreateProjectGitHubRepositoryRequest,
+  CreateProjectGitHubRepositoryResponse,
   CreateProjectResourceRequest,
+  CreateGitHubPullRequestRequest,
+  GitHubPullRequest,
   Project,
   ProjectFileWriteRequest,
   ProjectGitOperation,
   ProjectGitOperationRequest,
   ProjectResource,
   ProjectWorkspace,
+  SetupProjectWorkspaceRequest,
   UpdateProjectWorkspaceConfigRequest,
   UpdateProjectRequest,
 } from "@multica/core/types";
@@ -66,6 +71,7 @@ export function useWriteProjectDeviceFile(
     },
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
       qc.invalidateQueries({
         queryKey: projectKeys.deviceGitStatus(wsId, projectId, deviceId),
       });
@@ -92,6 +98,50 @@ export function useUpdateProjectWorkspaceConfig(projectId: string) {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
+    },
+  });
+}
+
+export function useSetupProjectWorkspace(
+  projectId: string,
+  mode: "bind" | "clone",
+) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationKey: ["setupProjectWorkspace", projectId, mode] as const,
+    mutationFn: ({
+      runtimeId,
+      data,
+    }: {
+      runtimeId: string;
+      data: SetupProjectWorkspaceRequest;
+    }) =>
+      mode === "bind"
+        ? api.bindProjectWorkspaceOnRuntime(projectId, runtimeId, data)
+        : api.cloneProjectWorkspaceOnRuntime(projectId, runtimeId, data),
+    onSuccess: ({ binding }) => {
+      qc.setQueryData<ProjectWorkspace>(
+        projectKeys.workspace(wsId, projectId),
+        (old) => {
+          if (!old) return old;
+          const exists = old.bindings.some((b) => b.device_id === binding.device_id);
+          return {
+            ...old,
+            bindings: exists
+              ? old.bindings.map((b) =>
+                  b.device_id === binding.device_id ? binding : b,
+                )
+              : [...old.bindings, binding],
+          };
+        },
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
     },
   });
 }
@@ -210,6 +260,35 @@ export function useCreateProjectResource(projectId: string) {
           : old,
       );
     },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
+    },
+  });
+}
+
+export function useCreateProjectGitHubRepository(projectId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationKey: ["createProjectGitHubRepository", projectId] as const,
+    mutationFn: (body: CreateProjectGitHubRepositoryRequest) =>
+      api.createProjectGitHubRepository(projectId, body),
+    onSuccess: (created: CreateProjectGitHubRepositoryResponse) => {
+      qc.setQueryData<ProjectResource[]>(
+        projectKeys.resources(wsId, projectId),
+        (old) =>
+          old
+            ? [
+                ...old.filter((r) => r.id !== created.resource.id),
+                created.resource,
+              ]
+            : [created.resource],
+      );
+      qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.resources(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
+    },
   });
 }
 
@@ -250,6 +329,9 @@ export function useDeleteProjectResource(projectId: string) {
           : old,
       );
     },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
+    },
   });
 }
 
@@ -274,12 +356,40 @@ export function useRunProjectDeviceGitOperation(
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: projectKeys.workspace(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
       qc.invalidateQueries({
         queryKey: projectKeys.deviceGitStatus(wsId, projectId, deviceId),
       });
       qc.invalidateQueries({
+        queryKey: projectKeys.deviceGitLog(wsId, projectId, deviceId),
+      });
+      qc.invalidateQueries({
         queryKey: projectKeys.deviceGitSnapshots(wsId, projectId, deviceId),
       });
+    },
+  });
+}
+
+export function useCreateProjectPullRequest(projectId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationKey: ["createProjectPullRequest", projectId] as const,
+    mutationFn: (data: CreateGitHubPullRequestRequest) =>
+      api.createProjectPullRequest(projectId, data),
+    onSuccess: (resp) => {
+      qc.setQueryData<GitHubPullRequest[]>(projectKeys.pullRequests(wsId, projectId), (old) => {
+        if (!Array.isArray(old)) return [resp.pull_request];
+        return [
+          resp.pull_request,
+          ...old.filter((pr) => pr.id !== resp.pull_request.id),
+        ];
+      });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: projectKeys.pullRequests(wsId, projectId) });
+      qc.invalidateQueries({ queryKey: projectKeys.activity(wsId, projectId) });
     },
   });
 }

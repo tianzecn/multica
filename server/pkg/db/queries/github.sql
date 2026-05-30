@@ -94,11 +94,25 @@ WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $
 -- name: GetPullRequestByProject :one
 SELECT pr.*
 FROM github_pull_request pr
-JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-JOIN issue i ON i.id = ipr.issue_id
-WHERE i.project_id = sqlc.arg('project_id')
-  AND pr.id = sqlc.arg('pull_request_id')
-  AND pr.workspace_id = i.workspace_id
+WHERE pr.id = sqlc.arg('pull_request_id')
+  AND (
+    EXISTS (
+      SELECT 1
+      FROM project_pull_request ppr
+      JOIN project p ON p.id = ppr.project_id
+      WHERE ppr.project_id = sqlc.arg('project_id')
+        AND ppr.pull_request_id = pr.id
+        AND p.workspace_id = pr.workspace_id
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM issue_pull_request ipr
+      JOIN issue i ON i.id = ipr.issue_id
+      WHERE i.project_id = sqlc.arg('project_id')
+        AND ipr.pull_request_id = pr.id
+        AND i.workspace_id = pr.workspace_id
+    )
+  )
 LIMIT 1;
 
 -- name: ListPullRequestsByIssue :many
@@ -158,15 +172,23 @@ WHERE ipr.issue_id = sqlc.arg('issue_id')
 ORDER BY pr.pr_created_at DESC;
 
 -- name: ListPullRequestsByProject :many
--- Returns PRs linked to any issue in the project, with the same current-head
--- check aggregation used by the issue sidebar. DISTINCT ON keeps a PR that is
--- linked to multiple project issues from rendering more than once.
+-- Returns PRs linked directly to the project or to any issue in the project,
+-- with the same current-head check aggregation used by the issue sidebar.
+-- DISTINCT ON keeps a PR that is linked through multiple paths from rendering
+-- more than once.
 WITH project_prs AS (
     SELECT DISTINCT pr.id, pr.head_sha
     FROM github_pull_request pr
-    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-    JOIN issue i ON i.id = ipr.issue_id
-    WHERE i.project_id = sqlc.arg('project_id')
+    JOIN (
+        SELECT ppr.pull_request_id
+        FROM project_pull_request ppr
+        WHERE ppr.project_id = sqlc.arg('project_id')
+        UNION
+        SELECT ipr.pull_request_id
+        FROM issue_pull_request ipr
+        JOIN issue i ON i.id = ipr.issue_id
+        WHERE i.project_id = sqlc.arg('project_id')
+    ) links ON links.pull_request_id = pr.id
 ),
 per_app_latest AS (
     SELECT DISTINCT ON (cs.pr_id, cs.app_id)
@@ -209,7 +231,17 @@ ORDER BY pr.pr_created_at DESC;
 
 -- name: ListIssueIDsForPullRequest :many
 SELECT issue_id FROM issue_pull_request
-WHERE pull_request_id = $1;
+WHERE issue_pull_request.pull_request_id = $1;
+
+-- name: ListProjectIDsForPullRequest :many
+SELECT project_id FROM project_pull_request
+WHERE project_pull_request.pull_request_id = $1
+UNION
+SELECT DISTINCT i.project_id
+FROM issue_pull_request ipr
+JOIN issue i ON i.id = ipr.issue_id
+WHERE ipr.pull_request_id = $1
+  AND i.project_id IS NOT NULL;
 
 -- name: GetSiblingPullRequestStateCountsForIssue :one
 -- Returns, for the PRs linked to an issue excluding one PR by id (the PR
@@ -261,6 +293,14 @@ INSERT INTO issue_pull_request (
     $1, $2, sqlc.narg('linked_by_type'), sqlc.narg('linked_by_id')
 )
 ON CONFLICT (issue_id, pull_request_id) DO NOTHING;
+
+-- name: LinkProjectToPullRequest :exec
+INSERT INTO project_pull_request (
+    project_id, pull_request_id, linked_by_type, linked_by_id
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT (project_id, pull_request_id) DO NOTHING;
 
 -- name: UnlinkIssueFromPullRequest :exec
 DELETE FROM issue_pull_request

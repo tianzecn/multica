@@ -1,11 +1,13 @@
 ---
 title: 项目
-description: 把相关的 issue 归为一组当成一个单元来跟进 —— 有优先级、状态、进度和负责人。
+description: 把项目 issue、本地工作目录、primary GitHub 仓库、智能体会话和显式 Git 同步连接成一个长期开发工作空间。
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Multica 里的**项目**（project）是相关 [issue](/issues) 的容器。当一摊工作比单个 issue 大、又比整个工作区小的时候用它 —— 一次发布、一次迁移、一个分多块做的功能、一个会拆出多个线索的调研。
+Multica 里的**项目**（project）是一个长期开发工作空间：相关 [issue](/issues)、一个设备本地工作目录、一个默认可写的 primary GitHub 仓库、项目级 [智能体](/agents) 会话，以及显式 Git 同步工作流。
+
+当一摊工作需要稳定的代码上下文时用它 —— 一次发布、一次迁移、一个分多块做的功能、一个会拆出多个线索的调研。智能体默认在 Project 本地目录里工作。GitHub 负责协作和持久化；Multica 展示状态、diff、未提交改动、ahead/behind、活动和 review 状态，但 commit 和 push 都是显式用户动作。
 
 每个项目有名字、图标、描述、**负责人**（lead，可以是成员，也可以是 [智能体](/agents)）、**状态**（`planned` / `in_progress` / `paused` / `completed` / `cancelled`）、**优先级**（`urgent` / `high` / `medium` / `low` / `none`），以及一个根据关联 issue 状态自动算出来的**进度**百分比。
 
@@ -21,9 +23,39 @@ Multica 里的**项目**（project）是相关 [issue](/issues) 的容器。当�
 
 侧边栏 **Workspace → Projects** 链接始终展示工作区里所有项目；pin 只是在这之上的个人快捷方式。
 
+## 本地工作区和 GitHub 同步
+
+每个要改代码的 Project 都应该有：
+
+- **primary GitHub 仓库** —— 默认唯一可写的仓库。
+- 每台会运行智能体或本地工具的设备上的**本地文件夹绑定**。
+- 可选的 **related 仓库** —— 默认只作为参考上下文，除非后续工作流明确扩展。
+
+你可以从任意方向开始：
+
+- **新建空白项目** —— 创建 Project，再按需创建或绑定私有 GitHub 仓库，并 clone 到空本地文件夹。
+- **使用现有文件夹** —— 绑定一个本地 Git root；如果没有 `.git`，Multica 会引导你先 init、创建或绑定仓库。
+- **绑定 GitHub 项目** —— 绑定或创建 primary repo，再通过选中的在线设备 clone 到本地。
+
+Web 和 Mobile 会通过选中的在线 Desktop daemon 中继本地文件、Git、脚本和终端操作。一个 Project 绑定多台设备时，编辑或同步前必须先选择目标设备。服务端只保存设备元数据和路径别名；完整绝对路径只留在 daemon profile 里。
+
+## Git 工作流
+
+Multica 让 Git 操作保持可见且显式：
+
+- 后台 status、diff、log、fetch 属于安全读侧操作。
+- pull、rebase、commit、push、snapshot、PR 创建都是明确动作。
+- 智能体运行时以 Project 本地目录作为 `cwd`，并切到持久任务分支，例如 `multica/<project>/<task>`。
+- 脏工作树默认阻止新的写任务；如果用户明确继续，先创建 Multica safety snapshot。
+- base branch 更新只允许 fast-forward；任务分支会 rebase 到最新 base。冲突会 fail closed，并给出恢复步骤。
+
+Project 页面会显示 branch、base branch、dirty 和 untracked 数量、ahead/behind、remotes、last fetch、活跃任务、文件 diff、safety snapshots、脚本、终端会话、PR review 和 Project activity。
+
+Project activity 按项目数据治理。文件、Git、终端、脚本、PR 和智能体操作都会记录为 Project activity；可上传文本 diff 时会先尽量脱敏检测到的 secret，过大或二进制内容只保留摘要。删除 Project 会删除对应 Project activity 历史；解绑 repo 或本地文件夹不会抹掉历史。Project activity export 接口会包含这些 activity 和 diff 历史，用于工作区数据导出流程。
+
 ## 关联 resources
 
-每个项目有一个 **Resources** 区，可以挂 GitHub 仓库。挂上之后，被分配到这个项目里 issue 的 [智能体](/agents) 在执行 task 时可以读写这些仓库 —— Multica 会把仓库 URL 作为上下文传给 [守护进程](/daemon-runtimes)。
+每个项目有一个 **Resources** 区，可以挂 GitHub 仓库。`primary` repo 定义默认可写的 Project workspace；`related` repo 会作为参考上下文传给 daemon，但不是默认写入目标。
 
 Resources 是项目级别的；多个项目要共享同一个仓库，要分别挂上。
 

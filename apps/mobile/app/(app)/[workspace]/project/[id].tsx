@@ -223,7 +223,7 @@ export default function ProjectDetail() {
             }}
           />
           <View className="h-3" />
-          <ProjectWorkspaceSection projectId={id} />
+          <ProjectWorkspaceSection projectId={id} projectTitle={project.title} />
           <View className="h-3" />
           <ProjectResourcesSection
             projectId={id}

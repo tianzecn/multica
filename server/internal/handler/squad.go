@@ -1022,7 +1022,11 @@ func (h *Handler) isSquadLeaderReady(ctx context.Context, issue db.Issue) bool {
 }
 
 // enqueueSquadLeaderTask triggers the squad leader agent for an issue assigned to a squad.
-func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) {
+func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string, opts ...service.EnqueueIssueTaskOptions) {
+	var taskOpts service.EnqueueIssueTaskOptions
+	if len(opts) > 0 {
+		taskOpts = opts[0]
+	}
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,
@@ -1040,7 +1044,7 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 		return
 	}
 
-	if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, squad.LeaderID, triggerCommentID); err != nil {
+	if _, err := h.TaskService.EnqueueTaskForSquadLeaderWithOptions(ctx, issue, squad.LeaderID, triggerCommentID, taskOpts); err != nil {
 		slog.Warn("enqueue squad leader task failed",
 			"issue_id", uuidToString(issue.ID),
 			"squad_id", uuidToString(squad.ID),

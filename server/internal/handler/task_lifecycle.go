@@ -66,7 +66,8 @@ type PinTaskSessionRequest struct {
 
 func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
-	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
+	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
 		return
 	}
 
@@ -85,7 +86,7 @@ func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 		params.SessionID = pgtype.Text{String: req.SessionID, Valid: true}
 	}
 	if req.WorkDir != "" {
-		params.WorkDir = pgtype.Text{String: req.WorkDir, Valid: true}
+		params.WorkDir = pgtype.Text{String: taskStoredWorkDir(task, req.WorkDir), Valid: true}
 	}
 	if err := h.Queries.UpdateAgentTaskSession(r.Context(), params); err != nil {
 		slog.Warn("pin-session failed", "task_id", taskID, "error", err)

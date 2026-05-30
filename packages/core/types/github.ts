@@ -60,6 +60,21 @@ export interface GitHubPullRequest {
   changed_files?: number;
 }
 
+export interface CreateGitHubPullRequestRequest {
+  title: string;
+  body?: string;
+  head: string;
+  base?: string;
+  draft?: boolean;
+  maintainer_can_modify?: boolean;
+  issue_id?: string;
+}
+
+export interface CreateGitHubPullRequestResponse {
+  pull_request: GitHubPullRequest;
+  linked_issue_ids: string[];
+}
+
 export interface GitHubPullRequestReviewFile {
   filename: string;
   status: string;
@@ -89,6 +104,20 @@ export interface GitHubPullRequestReviewComment {
   resolved?: boolean | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CreateGitHubPullRequestReviewCommentRequest {
+  body: string;
+  path?: string;
+  commit_id?: string;
+  line?: number;
+  side?: "LEFT" | "RIGHT" | string;
+  in_reply_to_id?: number;
+}
+
+export interface GitHubPullRequestReviewResolution {
+  comment_id: number;
+  resolved: boolean;
 }
 
 export interface GitHubPullRequestReviewSummary {

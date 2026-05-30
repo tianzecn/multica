@@ -91,6 +91,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   return (
     <div
       {...dropZoneProps}
+      data-testid="issue-comment-composer"
       className={cn(
         "relative flex flex-col rounded-lg bg-card pb-8 ring-1 ring-border",
         isExpanded ? "h-[70vh]" : "max-h-56",
@@ -101,6 +102,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
           ref={editorRef}
           defaultValue={initialDraft}
           placeholder={t(($) => $.comment.leave_comment_placeholder)}
+          ariaLabel={t(($) => $.comment.leave_comment_placeholder)}
           onUpdate={(md) => {
             setIsEmpty(!md.trim());
             // Debounced upstream (debounceMs=100). Persist on every tick so a
@@ -141,6 +143,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
           onClick={handleSubmit}
           disabled={isEmpty}
           loading={submitting}
+          ariaLabel={t(($) => $.comment.send_tooltip)}
           tooltip={`${t(($) => $.comment.send_tooltip)} · ${formatShortcut(modKey, enterKey)}`}
         />
       </div>

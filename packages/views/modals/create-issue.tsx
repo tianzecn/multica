@@ -37,6 +37,7 @@ import { ContentEditor, type ContentEditorRef, TitleEditor, useFileDropZone, Fil
 import { StatusIcon, StatusPicker, PriorityPicker, AssigneePicker, StartDatePicker, DueDatePicker } from "../issues/components";
 import { BacklogAgentHintContent } from "../issues/components/backlog-agent-hint-dialog";
 import { ProjectPicker } from "../projects/components/project-picker";
+import { useProjectDirtyWorktreeConsentForIssue } from "../projects/use-project-dirty-worktree-consent";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
@@ -170,6 +171,35 @@ export function ManualCreatePanel({
 
   const createIssueMutation = useCreateIssue();
   const updateIssueMutation = useUpdateIssue();
+  const { confirmProjectDirtyContinue } =
+    useProjectDirtyWorktreeConsentForIssue({
+      message: t(($) => $.create_issue.agent.dirty_snapshot_confirm),
+    });
+  const handleMoveBacklogHintToTodo = async () => {
+    if (!backlogHintIssueId) return;
+    try {
+      const issue = await api.getIssue(backlogHintIssueId);
+      const dirtyChoice = await confirmProjectDirtyContinue(issue, {
+        status: "todo",
+      });
+      if (!dirtyChoice.proceed) return;
+      await updateIssueMutation.mutateAsync({
+        id: backlogHintIssueId,
+        status: "todo",
+        ...(dirtyChoice.projectContinueOnDirty
+          ? { project_continue_on_dirty: true }
+          : {}),
+      });
+      setBacklogHintIssueId(null);
+      onClose();
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.backlog_hint.toast_status_failed),
+      );
+    }
+  };
   const resetForNextIssue = () => {
     setTitle("");
     setStatus("todo");
@@ -198,6 +228,28 @@ export function ManualCreatePanel({
     if (!title.trim() || submitting) return;
     setSubmitting(true);
     try {
+      const projectTaskMayStart =
+        !!projectId &&
+        !!assigneeId &&
+        (assigneeType === "agent" || assigneeType === "squad") &&
+        status !== "backlog";
+      const dirtyChoice = projectTaskMayStart
+        ? await confirmProjectDirtyContinue(
+            {
+              project_id: projectId,
+              assignee_type: assigneeType,
+              assignee_id: assigneeId,
+              status,
+            } as Issue,
+            {
+              assignee_type: assigneeType,
+              assignee_id: assigneeId,
+              status,
+            },
+          )
+        : { proceed: true, projectContinueOnDirty: false };
+      if (!dirtyChoice.proceed) return;
+
       const issue = await createIssueMutation.mutateAsync({
         title: title.trim(),
         description: descEditorRef.current?.getMarkdown()?.trim() || undefined,
@@ -210,6 +262,9 @@ export function ManualCreatePanel({
         attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
         parent_issue_id: parentIssueId,
         project_id: projectId,
+        ...(dirtyChoice.projectContinueOnDirty
+          ? { project_continue_on_dirty: true }
+          : {}),
       });
 
       // Link queued children to the new parent. Deferred to after create
@@ -384,19 +439,7 @@ export function ManualCreatePanel({
               localStorage.setItem("multica:backlog-agent-hint-dismissed", "true");
             }}
             onMoveToTodo={() => {
-              updateIssueMutation.mutate(
-                { id: backlogHintIssueId, status: "todo" },
-                {
-                  onError: (err) =>
-                    toast.error(
-                      err instanceof Error && err.message
-                        ? err.message
-                        : t(($) => $.backlog_hint.toast_status_failed),
-                    ),
-                },
-              );
-              setBacklogHintIssueId(null);
-              onClose();
+              void handleMoveBacklogHintToTodo();
             }}
           />
         ) : (

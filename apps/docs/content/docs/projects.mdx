@@ -1,11 +1,13 @@
 ---
 title: Projects
-description: Group related issues and track them as one unit — with priority, status, progress, and an owner.
+description: Keep a long-lived development workspace that connects project issues, a local working directory, a primary GitHub repository, agents, and explicit Git sync.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-A **project** in Multica is a container for related [issues](/issues). Use it when a body of work is bigger than one issue but smaller than a full workspace — a launch, a migration, a feature with multiple parts, an investigation that branches into several threads.
+A **project** in Multica is a long-lived development workspace: related [issues](/issues), one device-local working directory, one writable primary GitHub repository, project-scoped [agent](/agents) sessions, and an explicit Git sync workflow.
+
+Use it when a body of work needs durable code context — a launch, a migration, a feature with multiple parts, or an investigation that branches into several threads. Agents work in the Project's local directory by default. GitHub is the collaboration and persistence target; Multica shows status, diffs, uncommitted changes, ahead/behind, activity, and review state, but commit and push are explicit user actions.
 
 Each project has a name, an icon, a description, a **lead** (a member or an [agent](/agents)), a **status** (`planned` / `in_progress` / `paused` / `completed` / `cancelled`), a **priority** (`urgent` / `high` / `medium` / `low` / `none`), and a **progress** percentage that's auto-derived from the status of its linked issues.
 
@@ -21,9 +23,39 @@ Click the pin icon in a project's top-right corner to add it to your sidebar's p
 
 The sidebar **Workspace → Projects** link always shows every project in the workspace; pinning is a personal shortcut on top of that.
 
+## Local workspace and GitHub sync
+
+Every code-writing Project should have:
+
+- A **primary GitHub repository** — the only repository writable by default.
+- A **local folder binding** on each device that will run agents or local tools.
+- Optional **related repositories** — reference context only unless a later workflow explicitly expands them.
+
+You can start from any direction:
+
+- **New blank project** — create the Project, then optionally create or bind a private GitHub repo and clone it into an empty local folder.
+- **Existing folder** — bind a local Git root; if it has no `.git` directory, Multica guides you to initialize, create, or bind a repo first.
+- **GitHub project** — bind or create the primary repo, then clone it through the selected online device.
+
+Web and Mobile relay local file, Git, script, and terminal operations through the selected online Desktop daemon. When multiple devices are bound, choose the target device before editing or syncing. The server stores device metadata and path aliases only; absolute local paths stay on the daemon profile.
+
+## Git workflow
+
+Multica keeps Git operations visible and explicit:
+
+- Background status, diff, log, and fetch are safe read-side operations.
+- Pull, rebase, commit, push, snapshot, and PR creation are deliberate actions.
+- Agent runs use the Project local directory as `cwd` and switch onto persistent task branches such as `multica/<project>/<task>`.
+- Dirty worktrees block new write tasks by default; continuing from dirty work first creates a Multica safety snapshot.
+- Base branch updates are fast-forward only, and task branches rebase onto the latest base. Conflicts fail closed with recovery steps.
+
+The Project page shows branch, base branch, dirty and untracked counts, ahead/behind, remotes, last fetch, active tasks, file diffs, safety snapshots, scripts, terminal sessions, PR review, and Project activity.
+
+Project activity is governed as project data. File, Git, terminal, script, PR, and agent operations are recorded as Project activity; text diffs are redacted for detected secrets before upload when practical, and large or binary content is summarized. Deleting a Project deletes its Project activity history, while unbinding a repo or local folder leaves the history intact. The Project activity export endpoint includes that activity and diff history for workspace data export workflows.
+
 ## Attaching resources
 
-Each project has a **Resources** section where you attach GitHub repositories. Once attached, any [agent](/agents) assigned to issues in this project can read and write to those repos when executing tasks — Multica passes the repo URLs as context to the [daemon](/daemon-runtimes).
+Each project has a **Resources** section where you attach GitHub repositories. A `primary` repo defines the writable Project workspace. `related` repos are passed to the daemon as reference context, not as default write targets.
 
 Resources are per-project; if multiple projects share a repo, attach it to each one.
 

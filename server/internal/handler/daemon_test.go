@@ -1714,6 +1714,233 @@ func TestStartTask_AutopilotRunOnlyTask_ResolvesWorkspace(t *testing.T) {
 	}
 }
 
+func TestProjectAgentTaskLifecycleActivityAuditsStartAndCompleteWithoutWorkDirPath(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	project := createProjectWithPrimaryRepo(t, "Project agent activity", "https://github.com/acme/agent-activity.git")
+	t.Cleanup(func() { deleteProjectForTest(project.ID) })
+	agentID := createHandlerTestAgent(t, "project-agent-activity", nil)
+	runtimeID := handlerTestRuntimeID(t)
+
+	issueID, taskID := createProjectAgentActivityTask(t, project.ID, agentID, runtimeID, "dispatched")
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	startReq := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/start", nil, testWorkspaceID, "project-agent-activity")
+	startReq = withURLParam(startReq, "taskId", taskID)
+	startW := httptest.NewRecorder()
+	testHandler.StartTask(startW, startReq)
+	if startW.Code != http.StatusOK {
+		t.Fatalf("StartTask: expected 200, got %d: %s", startW.Code, startW.Body.String())
+	}
+
+	completeReq := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete", map[string]string{
+		"output":     "left an uncommitted diff",
+		"session_id": "session-project-activity",
+		"work_dir":   "/Users/office/private/project-agent-activity",
+	}, testWorkspaceID, "project-agent-activity")
+	completeReq = withURLParam(completeReq, "taskId", taskID)
+	completeW := httptest.NewRecorder()
+	testHandler.CompleteTask(completeW, completeReq)
+	if completeW.Code != http.StatusOK {
+		t.Fatalf("CompleteTask: expected 200, got %d: %s", completeW.Code, completeW.Body.String())
+	}
+
+	rows, err := testPool.Query(ctx, `
+		SELECT action, actor_type, actor_id::text, details::text
+		FROM activity_log
+		WHERE workspace_id = $1 AND issue_id IS NULL AND details->>'project_id' = $2
+		  AND action IN ('project_agent_task_started', 'project_agent_task_completed')
+		ORDER BY created_at ASC, id ASC
+	`, testWorkspaceID, project.ID)
+	if err != nil {
+		t.Fatalf("query project agent activity: %v", err)
+	}
+	defer rows.Close()
+
+	got := map[string]string{}
+	for rows.Next() {
+		var action, actorType, actorID, details string
+		if err := rows.Scan(&action, &actorType, &actorID, &details); err != nil {
+			t.Fatalf("scan project agent activity: %v", err)
+		}
+		if actorType != "agent" || actorID != agentID {
+			t.Fatalf("activity actor = %s/%s, want agent/%s", actorType, actorID, agentID)
+		}
+		if strings.Contains(details, "/Users/office/private") || strings.Contains(details, "work_dir") {
+			t.Fatalf("activity details leaked local path/work_dir: %s", details)
+		}
+		if !strings.Contains(details, `"task_id": "`+taskID+`"`) || !strings.Contains(details, `"task_kind": "direct"`) {
+			t.Fatalf("activity details missing task metadata: %s", details)
+		}
+		got[action] = details
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate project agent activity: %v", err)
+	}
+	if got["project_agent_task_started"] == "" || got["project_agent_task_completed"] == "" {
+		t.Fatalf("missing project agent lifecycle activities: %#v", got)
+	}
+	if !strings.Contains(got["project_agent_task_completed"], `"has_workdir": true`) {
+		t.Fatalf("completed activity should record only workdir presence, got: %s", got["project_agent_task_completed"])
+	}
+
+	var storedWorkDir, storedResult string
+	if err := testPool.QueryRow(ctx, `SELECT COALESCE(work_dir, ''), COALESCE(result::text, '') FROM agent_task_queue WHERE id = $1`, taskID).Scan(&storedWorkDir, &storedResult); err != nil {
+		t.Fatalf("read completed task work_dir: %v", err)
+	}
+	if storedWorkDir != projectTaskWorkDirMarker(project.ID) {
+		t.Fatalf("completed project task work_dir = %q, want project marker", storedWorkDir)
+	}
+	if strings.Contains(storedResult, "/Users/office/private") {
+		t.Fatalf("completed project task result leaked local path: %s", storedResult)
+	}
+}
+
+func TestProjectAgentTaskFailActivityAuditsFailureWithoutWorkDirPath(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	project := createProjectWithPrimaryRepo(t, "Project agent failure activity", "https://github.com/acme/agent-fail-activity.git")
+	t.Cleanup(func() { deleteProjectForTest(project.ID) })
+	agentID := createHandlerTestAgent(t, "project-agent-fail-activity", nil)
+	runtimeID := handlerTestRuntimeID(t)
+
+	issueID, taskID := createProjectAgentActivityTask(t, project.ID, agentID, runtimeID, "running")
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	failReq := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/fail", map[string]string{
+		"error":          "conflict requires human recovery",
+		"failure_reason": "agent_error",
+		"work_dir":       "/Users/office/private/project-agent-fail-activity",
+	}, testWorkspaceID, "project-agent-fail-activity")
+	failReq = withURLParam(failReq, "taskId", taskID)
+	failW := httptest.NewRecorder()
+	testHandler.FailTask(failW, failReq)
+	if failW.Code != http.StatusOK {
+		t.Fatalf("FailTask: expected 200, got %d: %s", failW.Code, failW.Body.String())
+	}
+
+	var actorType, actorID, details string
+	if err := testPool.QueryRow(ctx, `
+		SELECT actor_type, actor_id::text, details::text
+		FROM activity_log
+		WHERE workspace_id = $1 AND issue_id IS NULL AND details->>'project_id' = $2
+		  AND action = 'project_agent_task_failed'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, testWorkspaceID, project.ID).Scan(&actorType, &actorID, &details); err != nil {
+		t.Fatalf("query failed project agent activity: %v", err)
+	}
+	if actorType != "agent" || actorID != agentID {
+		t.Fatalf("activity actor = %s/%s, want agent/%s", actorType, actorID, agentID)
+	}
+	if strings.Contains(details, "/Users/office/private") || strings.Contains(details, "work_dir") {
+		t.Fatalf("activity details leaked local path/work_dir: %s", details)
+	}
+	for _, want := range []string{
+		`"task_id": "` + taskID + `"`,
+		`"task_kind": "direct"`,
+		`"failure_reason": "agent_error"`,
+		`"has_workdir": true`,
+	} {
+		if !strings.Contains(details, want) {
+			t.Fatalf("failed activity details missing %s: %s", want, details)
+		}
+	}
+
+	var storedWorkDir string
+	if err := testPool.QueryRow(ctx, `SELECT COALESCE(work_dir, '') FROM agent_task_queue WHERE id = $1`, taskID).Scan(&storedWorkDir); err != nil {
+		t.Fatalf("read failed task work_dir: %v", err)
+	}
+	if storedWorkDir != projectTaskWorkDirMarker(project.ID) {
+		t.Fatalf("failed project task work_dir = %q, want project marker", storedWorkDir)
+	}
+}
+
+func TestProjectAgentTaskPinSessionStoresProjectMarkerInsteadOfWorkDirPath(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	project := createProjectWithPrimaryRepo(t, "Project agent pin activity", "https://github.com/acme/agent-pin-activity.git")
+	t.Cleanup(func() { deleteProjectForTest(project.ID) })
+	agentID := createHandlerTestAgent(t, "project-agent-pin-activity", nil)
+	runtimeID := handlerTestRuntimeID(t)
+
+	issueID, taskID := createProjectAgentActivityTask(t, project.ID, agentID, runtimeID, "running")
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/session", map[string]string{
+		"session_id": "session-project-pin",
+		"work_dir":   "/Users/office/private/project-agent-pin-activity",
+	}, testWorkspaceID, "project-agent-pin-activity")
+	req = withURLParam(req, "taskId", taskID)
+	w := httptest.NewRecorder()
+	testHandler.PinTaskSession(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("PinTaskSession: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var sessionID, storedWorkDir string
+	if err := testPool.QueryRow(ctx, `SELECT COALESCE(session_id, ''), COALESCE(work_dir, '') FROM agent_task_queue WHERE id = $1`, taskID).Scan(&sessionID, &storedWorkDir); err != nil {
+		t.Fatalf("read pinned task session: %v", err)
+	}
+	if sessionID != "session-project-pin" {
+		t.Fatalf("session_id = %q, want session-project-pin", sessionID)
+	}
+	if storedWorkDir != projectTaskWorkDirMarker(project.ID) {
+		t.Fatalf("pinned project task work_dir = %q, want project marker", storedWorkDir)
+	}
+}
+
+func createProjectAgentActivityTask(t *testing.T, projectID, agentID, runtimeID, status string) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, project_id, title, status, priority, creator_id, creator_type, number, position
+		) VALUES (
+			$1, $2, 'project agent lifecycle', 'todo', 'medium', $3, 'member',
+			(SELECT COALESCE(MAX(number), 91000) + 1 FROM issue WHERE workspace_id = $1),
+			0
+		)
+		RETURNING id
+	`, testWorkspaceID, projectID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create project issue: %v", err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, project_id, status, priority, dispatched_at, started_at
+		) VALUES (
+			$1, $2, $3, $4, $5, 0, now(), CASE WHEN $5 = 'running' THEN now() ELSE NULL END
+		)
+		RETURNING id
+	`, agentID, runtimeID, issueID, projectID, status).Scan(&taskID); err != nil {
+		t.Fatalf("create project agent task: %v", err)
+	}
+
+	return issueID, taskID
+}
+
 // ClaimTaskByRuntime must surface the issue's project primary github_repo as
 // resp.Repos and hide both workspace-bound repos and related repos. Related
 // repos remain in ProjectResources as context, but they are not default
@@ -1741,8 +1968,10 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
 	if _, err := testPool.Exec(ctx, `
-		INSERT INTO project_workspace_config (project_id, workspace_id, base_branch)
-		VALUES ($1, $2, 'develop')
+		INSERT INTO project_workspace_config (
+			project_id, workspace_id, base_branch, scope_path, verification_commands
+		)
+		VALUES ($1, $2, 'develop', 'packages/app', '["pnpm typecheck","go test ./..."]'::jsonb)
 	`, projectID, testWorkspaceID); err != nil {
 		t.Fatalf("create project workspace config: %v", err)
 	}
@@ -1806,6 +2035,8 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 			Repos             []RepoData            `json:"repos"`
 			ProjectID         string                `json:"project_id"`
 			ProjectBaseBranch string                `json:"project_base_branch"`
+			ProjectScopePath  string                `json:"project_scope_path"`
+			ProjectVerify     []string              `json:"project_verification_commands"`
 			ProjectResources  []ProjectResourceData `json:"project_resources"`
 		} `json:"task"`
 	}
@@ -1820,6 +2051,12 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	}
 	if resp.Task.ProjectBaseBranch != "develop" {
 		t.Errorf("project_base_branch = %q, want develop", resp.Task.ProjectBaseBranch)
+	}
+	if resp.Task.ProjectScopePath != "packages/app" {
+		t.Errorf("project_scope_path = %q, want packages/app", resp.Task.ProjectScopePath)
+	}
+	if len(resp.Task.ProjectVerify) != 2 || resp.Task.ProjectVerify[0] != "pnpm typecheck" || resp.Task.ProjectVerify[1] != "go test ./..." {
+		t.Errorf("project_verification_commands = %+v", resp.Task.ProjectVerify)
 	}
 	if len(resp.Task.Repos) != 1 || resp.Task.Repos[0].URL != projectRepoURL {
 		t.Fatalf("expected resp.Repos to contain only the primary project repo URL, got %+v", resp.Task.Repos)

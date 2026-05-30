@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { X, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
@@ -17,7 +18,10 @@ import {
 import type { UpdateIssueRequest } from "@multica/core/types";
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { useBatchUpdateIssues, useBatchDeleteIssues } from "@multica/core/issues/mutations";
+import { issueDetailOptions } from "@multica/core/issues/queries";
+import { useWorkspaceId } from "@multica/core/hooks";
 import { StatusPicker, PriorityPicker, AssigneePicker } from "./pickers";
+import { useProjectDirtyWorktreeConsentForIssue } from "../../projects/use-project-dirty-worktree-consent";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
 
@@ -33,9 +37,16 @@ export function BatchActionToolbar({
   placement?: "fixed-bottom" | "inline";
 }) {
   const { t } = useT("issues");
+  const queryClient = useQueryClient();
+  const wsId = useWorkspaceId();
   const selectedIds = useIssueSelectionStore((s) => s.selectedIds);
   const clear = useIssueSelectionStore((s) => s.clear);
   const count = selectedIds.size;
+  const ids = Array.from(selectedIds);
+  const { confirmAnyProjectDirtyContinue } =
+    useProjectDirtyWorktreeConsentForIssue({
+      message: t(($) => $.detail.dirty_snapshot_confirm),
+    });
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
@@ -47,11 +58,27 @@ export function BatchActionToolbar({
 
   if (count === 0) return null;
 
-  const ids = Array.from(selectedIds);
-
   const handleBatchUpdate = async (updates: Partial<UpdateIssueRequest>) => {
     try {
-      await batchUpdate.mutateAsync({ ids, updates });
+      const selectedIssues = await Promise.all(
+        ids.map((id) =>
+          queryClient.ensureQueryData(issueDetailOptions(wsId, id)),
+        ),
+      );
+      const dirtyChoice = await confirmAnyProjectDirtyContinue(
+        selectedIssues,
+        updates,
+      );
+      if (!dirtyChoice.proceed) return;
+      await batchUpdate.mutateAsync({
+        ids,
+        updates: {
+          ...updates,
+          ...(dirtyChoice.projectContinueOnDirty
+            ? { project_continue_on_dirty: true }
+            : {}),
+        },
+      });
       toast.success(t(($) => $.batch.update_success, { count }));
     } catch (err) {
       toast.error(
@@ -173,4 +200,3 @@ export function BatchActionToolbar({
     </>
   );
 }
-
