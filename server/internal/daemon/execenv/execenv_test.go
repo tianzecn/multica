@@ -998,6 +998,10 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 			s := string(data)
 			for _, want := range []string{
 				"## Background Task Safety",
+				// The orphan rule is scoped to run-owned work — an unscoped
+				// "anything still running" would sweep in external systems
+				// (GitHub Actions) the section later says NOT to wait for.
+				"any run-owned work still active is orphaned",
 				"Do NOT end your turn while background tasks",
 				"wait for a future notification/reminder",
 				"run the work synchronously instead",
@@ -5480,14 +5484,12 @@ func TestInjectRuntimeConfigAssignmentTriggerScansRootsFirst(t *testing.T) {
 			t.Errorf("assignment Workflow regressed mandatory scan-first catch-up, missing %q\n---\n%s", want, s)
 		}
 	}
-	// Older context must remain reachable through pagination. The cursor label
-	// and flags are documented in `## Available Commands` rather than restated
-	// inside the step (MUL-5372), so assert the label itself, not the literal
-	// `Next thread cursor: ...` stderr line the old step-3 copy quoted.
+	// Older context must remain reachable through pagination. The cursor
+	// labels and flags now live in the CLI's own --help (MUL-5442, pinned by
+	// TestIssueCommentListHelpCarriesReadContract in cmd/multica); the brief
+	// keeps a pointer in the flag reference.
 	for _, want := range []string{
-		"Next thread cursor",
-		"--before",
-		"--before-id",
+		"paging cursors, and full flag semantics: `--help`",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("assignment Workflow missing older-history pagination guidance %q\n---\n%s", want, s)
@@ -5542,11 +5544,11 @@ func TestInjectRuntimeConfigCatchUpScansRootsFirst(t *testing.T) {
 		"multica issue comment list issue-1 --roots-only --summary --output json",
 		// ...followed by an explicit, bounded drill-down.
 		"multica issue comment list issue-1 --thread <thread-id> --tail 30 --output json",
-		// The saturation semantics that made --recent 10 misleading are stated
-		// once, in the flag reference rather than in the step.
+		// The headline saturation warning stays in the flag reference; the
+		// deep semantics (per-thread cap, root-thread saturation) moved to the
+		// CLI's own --help (MUL-5442) and are pinned there
+		// (TestIssueCommentListHelpCarriesReadContract in cmd/multica).
 		"caps THREADS, not comments",
-		"no per-thread cap",
-		"fewer than N root threads",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("brief missing bounded catch-up guidance %q\n---\n%s", want, s)
@@ -5611,30 +5613,22 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 	withSection := wantSection{
 		present: []string{
 			"## Issue Metadata",
-			"high-signal scratchpad",
 			"**Read on entry.**",
 			"**Write on exit.**",
-			"**What NOT to pin.**",
-			"**Recommended keys**",
-			// Recommended-key list — both lea's killer-use-case keys
-			// (pr_number, pipeline_status) and the broader set from
-			// review must be named so the workspace converges on shared
-			// vocabulary.
-			"pr_url",
-			"pr_number",
-			"pipeline_status",
-			"deploy_url",
-			"external_issue_url",
-			"waiting_on",
-			"blocked_reason",
-			"decision",
-			// Safety boundaries — these are the negative rules that
-			// keep metadata from rotting into a second description /
-			// log dump.
-			"No secrets, tokens, or API keys",
-			"No logs",
-			"runtime bookkeeping",
-			"snake_case ASCII",
+			"Hints, not truth",
+			// MUL-5442: the brief keeps only what the interface cannot
+			// express — the read stance, the re-read bar, and the two
+			// write-time boundaries (secrets, length). The full ban list
+			// and the key-naming conventions live in the
+			// multica-working-on-issues skill, pinned by
+			// TestWorkingOnIssuesSkillCoversIssueLoopContracts so this
+			// pointer cannot dangle. The recommended-keys block was
+			// removed outright: metadata is deliberately free-form custom
+			// state (owner decision on MUL-5442), not a vocabulary the
+			// platform curates in every brief.
+			"never secrets or long content",
+			"multica issue metadata delete",
+			"the `multica-working-on-issues` skill",
 		},
 	}
 	withoutSection := wantSection{
