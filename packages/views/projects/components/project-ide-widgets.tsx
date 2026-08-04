@@ -27,7 +27,7 @@ export function ProjectCodeEditor({
   if (!Editor) {
     return (
       <Textarea
-        className="min-h-44 resize-y font-mono text-[11px] leading-4"
+        className="min-h-44 resize-y font-mono text-micro leading-4"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         spellCheck={false}
@@ -73,7 +73,7 @@ export function ProjectDiffViewer({
 
   if (!Editor) {
     return (
-      <pre className="max-h-52 overflow-auto rounded bg-background/80 p-2 text-[10px] leading-4 text-muted-foreground">
+      <pre className="max-h-52 overflow-auto rounded bg-background/80 p-2 text-micro leading-4 text-muted-foreground">
         {value}
       </pre>
     );
@@ -163,7 +163,7 @@ export function ProjectTerminalLog({ log }: { log: string }) {
   return (
     <div className="mt-1">
       {!ready ? (
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/90 p-2 font-mono text-[10px] leading-4 text-white">
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/90 p-2 font-mono text-micro leading-4 text-white">
           {log || "$ "}
         </pre>
       ) : null}

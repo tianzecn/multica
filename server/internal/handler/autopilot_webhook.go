@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -305,28 +308,28 @@ func selectedHeadersJSON(headers http.Header) []byte {
 // autopilots. It runs OUTSIDE the authenticated route group: the bearer
 // token in the URL path IS the credential.
 //
-// Flow (persist-first, sync-dispatch):
+// Flow (persist-first, synchronous admission + durable async dispatch):
 //
-//  1. Per-IP rate limit (gate before any DB I/O).
+//  1. High absolute per-IP ceiling plus a non-consuming check for prior
+//     bad-credential debt (both before DB I/O).
 //  2. Token lookup. ErrNoRows → 404; other DB errors → 500.
-//  3. Per-token rate limit.
-//  4. Read raw body (capped). Oversized → 413.
-//  5. Normalize JSON envelope. Invalid → 400 (no persistence — there is no
+//  3. Read raw body (capped). Oversized → 413.
+//  4. Normalize JSON envelope. Invalid → 400 (no persistence — there is no
 //     dedupe identifier we can trust from an unparsable body).
-//  6. Extract dedupe key from headers per provider.
-//  7. Verify signature (or `not_required` when no secret is configured).
-//  8. INSERT webhook_delivery row (status=queued). On dedupe collision (23505
+//  5. Extract dedupe key from headers per provider.
+//  6. Verify signature (or `not_required` when no secret is configured).
+//  7. INSERT webhook_delivery row (status=queued). On dedupe collision (23505
 //     against `(trigger_id, dedupe_key)`) treat as duplicate: bump
 //     attempt_count on the existing row and return its delivery_id +
 //     autopilot_run_id with 200.
-//  9. If signature invalid/missing: UPDATE delivery → rejected, return 401.
-//  10. If trigger disabled / autopilot paused / archived: UPDATE delivery →
+//  8. If signature invalid/missing: charge bad-credential debt, UPDATE
+//     delivery → rejected, return 401.
+//  9. If trigger disabled / autopilot paused / archived: UPDATE delivery →
 //     ignored, return 200.
-//  11. Dispatch the autopilot synchronously. UPDATE delivery → dispatched
-//     (with autopilot_run_id) or failed. Return 200 (skipped runs surface
-//     their `reason`).
-//  12. Bump last_fired_at after dispatch — even on the skipped path — so the
-//     trigger's "last seen" is accurate.
+//  10. Create or reuse the delivery's idempotent run, persist the compatible
+//     200 accepted/skipped acknowledgement, and wake the database-leased
+//     worker. The worker re-checks state/filter scope, dispatches idempotently,
+//     and bumps last_fired_at.
 //
 // Response shapes:
 //   - 200 {"status":"accepted",  "delivery_id", "run_id", "autopilot_id", "trigger_id"}
@@ -337,7 +340,7 @@ func selectedHeadersJSON(headers http.Header) []byte {
 //   - 401 {"status":"rejected",  "delivery_id", "reason":"..."}    — signature failure
 //   - 404 {"error":"webhook not found"}                            — unknown token
 //   - 413 {"error":"payload too large"}                            — body exceeded cap
-//   - 429 {"error":"rate limit exceeded"}                          — over per-IP/token budget
+//   - 429 {"error":"rate limit exceeded"}                          — IP safety/debt gate
 //   - 500 {"error":"..."}                                          — internal failure
 func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
@@ -346,16 +349,17 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 1. Per-IP rate limit BEFORE we hit Postgres. Bounds the DB-probe blast
-	//    radius for an attacker spraying random tokens. A spray of bad
-	//    signatures still counts here — fast-path 429 stops budget burn.
-	if h.WebhookIPRateLimiter != nil {
-		if ip := h.clientIPForRateLimit(r); ip != "" {
-			if !h.WebhookIPRateLimiter.Allow(r.Context(), ip) {
-				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
-				return
-			}
-		}
+	// 1. Always retain a high absolute ceiling. The lower shared-IP limiter
+	//    tracks only requests already classified as bad credentials, so a NAT
+	//    full of legitimate GitHub hooks does not consume its budget.
+	ip := h.clientIPForRateLimit(r)
+	if ip != "" && h.WebhookAbsoluteIPRateLimiter != nil && !h.WebhookAbsoluteIPRateLimiter.Allow(r.Context(), ip) {
+		writeWebhookRateLimit(w, r, h.WebhookAbsoluteIPRateLimiter, ip, "absolute_ip", h.Metrics)
+		return
+	}
+	if ip != "" && h.WebhookIPRateLimiter != nil && !webhookLimiterCheck(r.Context(), h.WebhookIPRateLimiter, ip) {
+		writeWebhookRateLimit(w, r, h.WebhookIPRateLimiter, ip, "bad_credential_ip", h.Metrics)
+		return
 	}
 
 	// 2. Token lookup. Distinguish "no row" from "DB error": collapsing both
@@ -365,6 +369,9 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 	trigRow, err := h.Queries.GetWebhookTriggerByToken(r.Context(), pgtype.Text{String: token, Valid: true})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			if ip != "" && h.WebhookIPRateLimiter != nil {
+				h.WebhookIPRateLimiter.Allow(r.Context(), ip)
+			}
 			writeError(w, http.StatusNotFound, "webhook not found")
 			return
 		}
@@ -375,15 +382,7 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 
 	middleware.SetWebhookTriggerID(r, uuidToString(trigRow.ID))
 
-	// 3. Per-token rate limit.
-	if h.WebhookRateLimiter != nil {
-		if !h.WebhookRateLimiter.Allow(r.Context(), token) {
-			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
-			return
-		}
-	}
-
-	// 4. Body size cap + JSON validation. http.MaxBytesReader stops the read
+	// 3. Body size cap + JSON validation. http.MaxBytesReader stops the read
 	//    mid-stream once the cap is exceeded so an oversized payload is
 	//    rejected before being fully buffered.
 	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
@@ -398,7 +397,7 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 5. Cross-check autopilot/workspace consistency BEFORE we persist the
+	// 4. Cross-check autopilot/workspace consistency BEFORE we persist the
 	//    delivery — webhook_delivery.workspace_id is NOT NULL and a stale FK
 	//    row would otherwise fail INSERT after we've already paid the body
 	//    read. Same ErrNoRows-vs-DB-error split as token lookup.
@@ -424,7 +423,7 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 6. Normalize body. Invalid JSON → 400 without persistence: we have no
+	// 5. Normalize body. Invalid JSON → 400 without persistence: we have no
 	//    dedupe identifier from the body, and replaying an unparsable payload
 	//    is not useful.
 	envelope, err := normalizeWebhookPayload(body, r.Header)
@@ -437,8 +436,7 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "failed to encode envelope")
 		return
 	}
-
-	// 7. Provider + dedupe + signature.
+	// 6. Provider + dedupe + signature.
 	provider := trigRow.Provider
 	if provider == "" {
 		provider = "generic"
@@ -446,7 +444,7 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 	dedupeKey, dedupeSource := extractDedupeKey(provider, r.Header)
 	sigStatus := verifyWebhookSignatureForProvider(provider, trigRow.SigningSecret.String, r.Header, body)
 
-	// 8. Persist (INSERT delivery). Dedupe collision → bump existing row.
+	// 7. Persist (INSERT delivery). Dedupe collision → bump existing row.
 	delivery, dup, err := h.persistInboundDelivery(r, persistDeliveryInput{
 		WorkspaceID:     autopilot.WorkspaceID,
 		AutopilotID:     autopilot.ID,
@@ -470,20 +468,40 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 	}
 	if dup {
 		// A previous delivery already covered this dedupe key. Return the
-		// original delivery_id + (possibly empty) run_id with 200 so the
-		// caller can correlate.
+		// original delivery_id + admitted run_id with 200 so the caller can
+		// correlate. The delivery row is not linked until worker completion,
+		// so retrying before then must fall back to the run's durable delivery
+		// anchor.
 		resp := map[string]any{
 			"status":      "duplicate",
 			"delivery_id": uuidToString(delivery.ID),
 		}
-		if delivery.AutopilotRunID.Valid {
-			resp["run_id"] = uuidToString(delivery.AutopilotRunID)
+		runID := delivery.AutopilotRunID
+		if !runID.Valid {
+			run, runErr := h.Queries.GetAutopilotRunByWebhookDelivery(r.Context(), delivery.ID)
+			switch {
+			case runErr == nil:
+				runID = run.ID
+			case !errors.Is(runErr, pgx.ErrNoRows):
+				slog.Error("webhook: resolve duplicate run failed",
+					"delivery_id", uuidToString(delivery.ID),
+					"error", runErr,
+				)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+		}
+		if runID.Valid {
+			resp["run_id"] = uuidToString(runID)
+		}
+		if delivery.Status == deliveryStatusQueued && h.WebhookDeliveryWorker != nil {
+			h.WebhookDeliveryWorker.Notify()
 		}
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	// 9. Signature failure → rejected delivery + 401. No dispatch, no replay.
+	// 8. Signature failure → rejected delivery + 401. No dispatch, no replay.
 	//    Providers will look for 4xx feedback when their secret is wrong.
 	if sigStatus == sigStatusInvalid || sigStatus == sigStatusMissing {
 		reason := "invalid_signature"
@@ -495,12 +513,15 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 			"delivery_id": uuidToString(delivery.ID),
 			"reason":      reason,
 		}
+		if ip != "" && h.WebhookIPRateLimiter != nil {
+			h.WebhookIPRateLimiter.Allow(r.Context(), ip)
+		}
 		h.finaliseDeliveryTerminal(r, delivery.ID, deliveryStatusRejected, http.StatusUnauthorized, respBody, reason)
 		writeJSON(w, http.StatusUnauthorized, respBody)
 		return
 	}
 
-	// 10. Trigger disabled / autopilot paused / archived → ignored. We return
+	// 9. Trigger disabled / autopilot paused / archived → ignored. We return
 	//     200 so the sender's webhook-retry machinery doesn't keep hammering
 	//     us; the "ignored" status + delivery row makes the no-op visible if
 	//     the operator inspects the delivery log.
@@ -523,54 +544,46 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 11. Dispatch synchronously. DispatchAutopilot publishes WS events,
-	//     persists trigger_payload on autopilot_run, runs the admission
-	//     check (offline runtime → skipped), and bumps last_run_at.
-	run, err := h.AutopilotService.DispatchAutopilot(
-		r.Context(),
-		autopilot,
-		trigRow.ID,
-		"webhook",
-		envelopeBytes,
-	)
-	if err != nil {
-		slog.Warn("webhook dispatch failed",
-			"trigger_id", uuidToString(trigRow.ID),
-			"autopilot_id", uuidToString(autopilot.ID),
-			"error", err,
-		)
-		respBody := map[string]any{"error": "failed to dispatch autopilot"}
-		// DispatchAutopilot may return a non-nil run alongside an error
-		// (e.g. when the run row was created but the downstream dispatch
-		// failed). Link the run on the delivery anyway so the Deliveries
-		// UI can show which run row corresponds to the failure.
-		if run != nil {
-			h.finaliseDeliveryWithRun(r, delivery.ID, deliveryStatusFailed, run.ID, http.StatusInternalServerError, respBody)
-		} else {
-			h.finaliseDeliveryTerminal(r, delivery.ID, deliveryStatusFailed, http.StatusInternalServerError, respBody, err.Error())
+	// 10. Event filter scope → ignored. If the trigger declares a concrete
+	//     event_filters list and the incoming event is outside that scope,
+	//     record an ignored delivery without creating an expensive run/task.
+	if !webhookEventAllowedByTriggerScope(trigRow.EventFilters, envelope) {
+		respBody := map[string]any{
+			"status":      "ignored",
+			"delivery_id": uuidToString(delivery.ID),
+			"reason":      "event_filtered",
+			"event":       envelope.Event,
 		}
-		writeJSON(w, http.StatusInternalServerError, respBody)
+		h.finaliseDeliveryTerminal(r, delivery.ID, deliveryStatusIgnored, http.StatusOK, respBody, "event_filtered")
+		writeJSON(w, http.StatusOK, respBody)
 		return
 	}
 
-	// 12. Bump last_fired_at after dispatch returns — including the skipped
-	//     path — so paused early-returns above don't corrupt "last fired".
-	if err := h.Queries.TouchAutopilotTriggerFiredAt(r.Context(), trigRow.ID); err != nil {
-		slog.Warn("webhook: failed to touch last_fired_at",
+	// 11. Allocate the idempotent run synchronously so existing webhook clients
+	//     keep the v0.4.0 response contract. The queued delivery remains the
+	//     durable dispatch source: the worker resumes this run after the response
+	//     and can recover it after a process crash.
+	run, err := h.AutopilotService.AdmitAutopilotWebhookDelivery(
+		r.Context(),
+		autopilot,
+		trigRow.ID,
+		envelopeBytes,
+		delivery.ID,
+	)
+	if err != nil {
+		slog.Warn("webhook admission failed",
 			"trigger_id", uuidToString(trigRow.ID),
+			"autopilot_id", uuidToString(autopilot.ID),
+			"delivery_id", uuidToString(delivery.ID),
 			"error", err,
 		)
+		if h.WebhookDeliveryWorker != nil {
+			h.WebhookDeliveryWorker.Notify()
+		}
+		writeError(w, http.StatusInternalServerError, "failed to admit autopilot")
+		return
 	}
 
-	// 13. Persist the linkage delivery → run.
-	//
-	// The delivery row is always `dispatched` once we reach here: from the
-	// ingress's perspective we handed the payload off to the autopilot
-	// machinery and got a run id back. The autopilot may have skipped the
-	// run (e.g. runtime offline) — that's reflected in the response status
-	// + reason and in the linked run row, not in the delivery status. This
-	// keeps the delivery enum tight and the Deliveries UI unambiguous
-	// (`run.status` is the source of truth for what the run did).
 	respBody := map[string]any{
 		"status":       "accepted",
 		"delivery_id":  uuidToString(delivery.ID),
@@ -588,9 +601,169 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 			respBody["reason"] = run.FailureReason.String
 		}
 	}
-	h.finaliseDeliveryWithRun(r, delivery.ID, deliveryStatusDispatched, run.ID, http.StatusOK, respBody)
-
+	bodyJSON, _ := json.Marshal(respBody)
+	if _, err := h.Queries.AcknowledgeWebhookDelivery(r.Context(), db.AcknowledgeWebhookDeliveryParams{
+		ID:             delivery.ID,
+		ResponseStatus: pgtype.Int4{Int32: http.StatusOK, Valid: true},
+		ResponseBody:   pgtype.Text{String: string(bodyJSON), Valid: true},
+	}); err != nil {
+		slog.Warn("webhook: persist acknowledgement metadata failed",
+			"delivery_id", uuidToString(delivery.ID),
+			"error", err,
+		)
+	}
+	if h.WebhookDeliveryWorker != nil {
+		h.WebhookDeliveryWorker.Notify()
+	}
 	writeJSON(w, http.StatusOK, respBody)
+}
+
+// ── Event filter helpers ────────────────────────────────────────────────────
+
+// WebhookEventFilter declares one event and an optional list of actions.
+// A nil/empty Actions means "any action" for this event.
+type WebhookEventFilter struct {
+	Event   string   `json:"event"`
+	Actions []string `json:"actions,omitempty"`
+}
+
+// validateWebhookEventFilters enforces the contract at the HTTP boundary so
+// that malformed shapes never reach the database. The matcher (read path)
+// trusts whatever is stored — see webhookEventAllowedByTriggerScope.
+func validateWebhookEventFilters(filters []WebhookEventFilter) error {
+	for i, f := range filters {
+		if strings.TrimSpace(f.Event) == "" {
+			return fmt.Errorf("event_filters[%d].event must not be empty", i)
+		}
+		for j, a := range f.Actions {
+			if strings.TrimSpace(a) == "" {
+				return fmt.Errorf("event_filters[%d].actions[%d] must not be empty", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+// encodeWebhookEventFilters returns the JSONB bytes to persist for a CREATE.
+// nil/empty input maps to nil bytes (column stays NULL → matcher allows
+// every event), so we never write an explicit `[]` on create.
+func encodeWebhookEventFilters(filters []WebhookEventFilter) ([]byte, error) {
+	if len(filters) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(filters)
+}
+
+// encodeWebhookEventFiltersAlways always returns non-nil bytes, even for an
+// empty slice (`[]byte("[]")`). The UPDATE handler uses this so an explicit
+// empty array in the PATCH body can overwrite (via COALESCE) the existing
+// row to a cleared state — passing nil would be indistinguishable from
+// "field omitted, leave alone".
+func encodeWebhookEventFiltersAlways(filters []WebhookEventFilter) ([]byte, error) {
+	if filters == nil {
+		filters = []WebhookEventFilter{}
+	}
+	return json.Marshal(filters)
+}
+
+// webhookEventAllowedByTriggerScope returns true when the trigger has no
+// filters (NULL / empty) or when the incoming envelope matches at least one
+// declared filter.
+func webhookEventAllowedByTriggerScope(eventFilters []byte, envelope WebhookEnvelope) bool {
+	if len(eventFilters) == 0 {
+		return true
+	}
+	var filters []WebhookEventFilter
+	if err := json.Unmarshal(eventFilters, &filters); err != nil {
+		// Strict write-time validation should prevent malformed bytes
+		// from ever reaching this branch. If a corrupt row somehow
+		// exists, fail closed — silently widening the allowlist on a
+		// "only allow X" policy is worse than dropping events until an
+		// operator notices.
+		slog.Warn("webhook: malformed event_filters, denying", "error", err)
+		return false
+	}
+	if len(filters) == 0 {
+		return true
+	}
+	_, eventName, eventAction := splitWebhookEvent(envelope.Event)
+	actionCandidates := webhookActionCandidates(eventAction, envelope.EventPayload)
+	for _, f := range filters {
+		if f.Event != eventName {
+			continue
+		}
+		if len(f.Actions) == 0 {
+			return true
+		}
+		for _, action := range actionCandidates {
+			for _, allowed := range f.Actions {
+				if action == allowed {
+					return true
+				}
+			}
+		}
+		// Intentionally do NOT return false here: the UI allows several
+		// filters that share the same event name (e.g. two workflow_run
+		// rows covering disjoint actions). Earlier code short-circuited
+		// on the first event-name hit, which made one row silently shadow
+		// the others depending on iteration order — see PR #3231 review.
+		// Keep scanning so any later filter still gets its chance.
+	}
+	return false
+}
+
+// splitWebhookEvent splits a normalized event like "github.workflow_run.completed"
+// into (provider, eventName, action). For unqualified events it returns ("", event, "").
+func splitWebhookEvent(event string) (provider, name, action string) {
+	parts := strings.Split(event, ".")
+	if isKnownProvider(parts[0]) {
+		if len(parts) >= 3 {
+			return parts[0], parts[1], strings.Join(parts[2:], ".")
+		}
+		if len(parts) == 2 {
+			return parts[0], parts[1], ""
+		}
+		return parts[0], "", ""
+	}
+	if len(parts) >= 2 {
+		return "", parts[0], strings.Join(parts[1:], ".")
+	}
+	return "", event, ""
+}
+
+func isKnownProvider(prefix string) bool {
+	switch prefix {
+	case "github", "gitlab", "bitbucket", "gitea":
+		return true
+	}
+	return false
+}
+
+// webhookActionCandidates extracts possible action values from the event
+// action suffix and from well-known payload fields.
+func webhookActionCandidates(eventAction string, payload json.RawMessage) []string {
+	seen := map[string]struct{}{}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		seen[v] = struct{}{}
+	}
+	add(eventAction)
+	var obj map[string]any
+	if err := json.Unmarshal(payload, &obj); err == nil {
+		for _, key := range []string{"action", "state", "conclusion", "status"} {
+			if v, ok := obj[key].(string); ok {
+				add(v)
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	return out
 }
 
 // ── Persistence helpers ─────────────────────────────────────────────────────
@@ -689,6 +862,7 @@ func (h *Handler) finaliseDeliveryTerminal(
 			"error", err,
 		)
 	}
+	h.Metrics.RecordWebhookDelivery(h.deliveryProvider(r.Context(), id), status)
 }
 
 // finaliseDeliveryWithRun records a delivery that produced (or was admission-
@@ -716,9 +890,42 @@ func (h *Handler) finaliseDeliveryWithRun(
 			"error", err,
 		)
 	}
+	h.Metrics.RecordWebhookDelivery(h.deliveryProvider(r.Context(), id), status)
+}
+
+// deliveryProvider best-effort reads the provider for a delivery id so the
+// webhook delivery metric carries useful provenance. On lookup failure we
+// fall back to "generic" — the metric must always be incremented exactly
+// once per finalise call so the dashboard counts line up with autopilot_run
+// volume.
+func (h *Handler) deliveryProvider(ctx context.Context, id pgtype.UUID) string {
+	if h.Queries == nil {
+		return "generic"
+	}
+	row, err := h.Queries.GetWebhookDelivery(ctx, id)
+	if err != nil || row.Provider == "" {
+		return "generic"
+	}
+	return row.Provider
 }
 
 // ── Rate-limit / IP plumbing ────────────────────────────────────────────────
+
+func writeWebhookRateLimit(w http.ResponseWriter, r *http.Request, limiter WebhookRateLimiter, key, gate string, metrics *obsmetrics.BusinessMetrics) {
+	retryAfter := time.Second
+	if limiter != nil {
+		if retry := webhookLimiterRetryAfter(r.Context(), limiter, key); retry > 0 {
+			retryAfter = retry
+		}
+	}
+	seconds := int64((retryAfter + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	metrics.RecordWebhookRateLimited(gate)
+	writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+}
 
 // clientIPForRateLimit returns the IP used as a rate-limit bucket key.
 //

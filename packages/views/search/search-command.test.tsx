@@ -39,9 +39,15 @@ const {
   mockMembers,
   mockAgents,
   mockProjects,
+  mockSquads,
   mockOpenModal,
   mockToastSuccess,
   mockClipboardWrite,
+  mockTimeline,
+  mockCommentCollapseAll,
+  mockCommentExpandAll,
+  mockResolvedCollapseAll,
+  mockResolvedExpandAll,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockSearchIssues: vi.fn(),
@@ -66,19 +72,69 @@ const {
       avatar_url: string | null;
     }>,
   },
-  mockAgents: { current: [] as Array<Record<string, unknown>> },
-  mockProjects: { current: [] as Array<Record<string, unknown>> },
+  mockAgents: {
+    current: [] as Array<{
+      id: string;
+      name: string;
+      avatar_url: string | null;
+    }>,
+  },
+  mockProjects: {
+    current: [] as Array<{
+      id: string;
+      title: string;
+      icon?: string | null;
+    }>,
+  },
+  mockSquads: {
+    current: [] as Array<{
+      id: string;
+      name: string;
+      avatar_url: string | null;
+    }>,
+  },
   mockOpenModal: vi.fn(),
   mockToastSuccess: vi.fn(),
   mockClipboardWrite: vi.fn(() => Promise.resolve()),
+  mockTimeline: { current: [] as Array<Record<string, unknown>> },
+  mockCommentCollapseAll: vi.fn(),
+  mockCommentExpandAll: vi.fn(),
+  mockResolvedCollapseAll: vi.fn(),
+  mockResolvedExpandAll: vi.fn(),
 }));
 
 vi.mock("@multica/core/api", () => ({
   api: {
+    getBaseUrl: () => "http://127.0.0.1:8080",
     searchIssues: mockSearchIssues,
     searchProjects: mockSearchProjects,
     searchChannels: mockSearchChannels,
     searchChatSessions: mockSearchChatSessions,
+  },
+}));
+
+vi.mock("../common/actor-avatar", () => ({
+  ActorAvatar: ({
+    actorType,
+    actorId,
+  }: {
+    actorType: string;
+    actorId: string;
+  }) => {
+    const name =
+      actorType === "member"
+        ? mockMembers.current.find((m) => m.user_id === actorId)?.name
+        : actorType === "agent"
+          ? mockAgents.current.find((a) => a.id === actorId)?.name
+          : actorType === "squad"
+            ? mockSquads.current.find((s) => s.id === actorId)?.name
+            : undefined;
+    return (
+      <span
+        data-testid="issue-assignee-avatar"
+        title={name ?? `${actorType}:${actorId}`}
+      />
+    );
   },
 }));
 
@@ -99,6 +155,18 @@ vi.mock("@multica/core/issues/stores", () => {
         wsId ? (state.byWorkspace[wsId] ?? EMPTY) : EMPTY,
     openCreateIssueWithPreference: (data?: Record<string, unknown> | null) =>
       mockOpenModal("quick-create-issue", data ?? null),
+    useCommentCollapseStore: Object.assign(vi.fn(), {
+      getState: () => ({
+        collapseAll: mockCommentCollapseAll,
+        expandAll: mockCommentExpandAll,
+      }),
+    }),
+    useResolvedExpandStore: Object.assign(vi.fn(), {
+      getState: () => ({
+        collapseAll: mockResolvedCollapseAll,
+        expandAll: mockResolvedExpandAll,
+      }),
+    }),
   };
 });
 
@@ -106,7 +174,10 @@ vi.mock("@multica/core", () => ({
   useWorkspaceId: () => "ws-test",
 }));
 
-vi.mock("@multica/core/paths", () => ({
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  // Spread the real module so pure helpers (resolveRouteIconName, used to
+  // derive each nav page's icon from its href) stay intact.
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
   useWorkspacePaths: () => ({
     inbox: () => "/ws-test/inbox",
     myIssues: () => "/ws-test/my-issues",
@@ -122,6 +193,8 @@ vi.mock("@multica/core/paths", () => ({
     settings: () => "/ws-test/settings",
     issueDetail: (id: string) => `/ws-test/issues/${id}`,
     memberDetail: (id: string) => `/ws-test/members/${id}`,
+    agentDetail: (id: string) => `/ws-test/agents/${id}`,
+    squadDetail: (id: string) => `/ws-test/squads/${id}`,
     projectDetail: (id: string) => `/ws-test/projects/${id}`,
     projectIssues: (id: string) => `/ws-test/projects/${id}/issues`,
     conversationDetail: (id: string) => `/ws-test/conversations/${id}`,
@@ -133,11 +206,15 @@ vi.mock("@multica/core/issues/queries", () => ({
   issueDetailOptions: (_wsId: string, id: string) => ({
     queryKey: ["issues", "ws-test", "detail", id],
   }),
+  issueTimelineOptions: (id: string) => ({
+    queryKey: ["issues", "timeline", id],
+  }),
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: () => ({ queryKey: ["workspaces", "ws-test", "agents"] }),
   memberListOptions: () => ({ queryKey: ["workspaces", "ws-test", "members"] }),
+  squadListOptions: () => ({ queryKey: ["workspaces", "ws-test", "squads"] }),
 }));
 
 vi.mock("@multica/core/projects/queries", () => ({
@@ -168,7 +245,10 @@ vi.mock("@tanstack/react-query", () => ({
     if (key[0] === "workspaces" && key[2] === "agents") {
       return { data: mockAgents.current };
     }
-    if (key[0] === "projects" && key[2] === "list") {
+    if (key[0] === "workspaces" && key[2] === "squads") {
+      return { data: mockSquads.current };
+    }
+    if (key[0] === "projects") {
       return { data: mockProjects.current };
     }
     if (opts.enabled === false) return { data: undefined };
@@ -176,6 +256,12 @@ vi.mock("@tanstack/react-query", () => ({
   },
   useQueries: (opts: { queries: Array<{ queryKey: readonly unknown[] }> }) =>
     opts.queries.map((q) => ({ data: resolveIssue(q.queryKey) })),
+  useQueryClient: () => ({
+    ensureQueryData: (opts: { queryKey: readonly unknown[] }) =>
+      opts.queryKey[1] === "timeline"
+        ? Promise.resolve(mockTimeline.current)
+        : Promise.reject(new Error(`unexpected key ${String(opts.queryKey)}`)),
+  }),
 }));
 
 vi.mock("../navigation", () => ({
@@ -203,6 +289,8 @@ describe("SearchCommand", () => {
     mockSearchChatSessions.mockReset().mockResolvedValue({ sessions: [] });
     mockRecentItems.current = [];
     mockAllIssues.current = [];
+    mockAgents.current = [];
+    mockSquads.current = [];
     mockSetTheme.mockReset();
     mockTheme.current = "system";
     mockPathname.current = "/ws-test/issues";
@@ -213,6 +301,11 @@ describe("SearchCommand", () => {
     mockOpenModal.mockReset();
     mockToastSuccess.mockReset();
     mockClipboardWrite.mockReset().mockResolvedValue(undefined);
+    mockTimeline.current = [];
+    mockCommentCollapseAll.mockReset();
+    mockCommentExpandAll.mockReset();
+    mockResolvedCollapseAll.mockReset();
+    mockResolvedExpandAll.mockReset();
 
     // cmdk calls scrollIntoView on the first selected item, which jsdom doesn't implement
     Element.prototype.scrollIntoView = vi.fn();
@@ -460,6 +553,81 @@ describe("SearchCommand", () => {
     writeSpy.mockRestore();
   });
 
+  it("hides fold/unfold-all-comments commands off issue detail routes", async () => {
+    const user = userEvent.setup();
+    mockPathname.current = "/ws-test/projects";
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "fold");
+
+    expect(screen.queryByText("Fold All Comments")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unfold All Comments")).not.toBeInTheDocument();
+  });
+
+  it("folds all comments on the current issue, including expanded resolved threads", async () => {
+    const user = userEvent.setup();
+    mockPathname.current = "/ws-test/issues/issue-1";
+    mockAllIssues.current = [
+      { id: "issue-1", identifier: "MUL-42", title: "Demo", status: "todo" },
+    ];
+    mockTimeline.current = [
+      { type: "activity", id: "act-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T00:00:00Z", action: "status_changed" },
+      { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
+      { type: "comment", id: "reply-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T02:00:00Z", parent_id: "root-1" },
+      { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
+    ];
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "fold");
+
+    const foldItem = await screen.findByText(
+      (_, el) => el?.textContent === "Fold All Comments" && el?.tagName === "SPAN",
+    );
+    await user.click(foldItem);
+
+    await waitFor(() => {
+      // Root comments only — replies fold with their thread, activities are not comments.
+      expect(mockCommentCollapseAll).toHaveBeenCalledWith("issue-1", ["root-1", "root-2"]);
+    });
+    expect(mockResolvedCollapseAll).toHaveBeenCalledWith("issue-1");
+    expect(mockCommentExpandAll).not.toHaveBeenCalled();
+    expect(useSearchStore.getState().open).toBe(false);
+  });
+
+  it("unfolds all comments and expands resolved threads", async () => {
+    const user = userEvent.setup();
+    mockPathname.current = "/ws-test/issues/issue-1";
+    mockAllIssues.current = [
+      { id: "issue-1", identifier: "MUL-42", title: "Demo", status: "todo" },
+    ];
+    mockTimeline.current = [
+      { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
+      { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
+      // root-3 is reply-resolved: the resolution lives on the reply.
+      { type: "comment", id: "root-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T04:00:00Z", parent_id: null },
+      { type: "comment", id: "reply-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T05:00:00Z", parent_id: "root-3", resolved_at: "2026-01-02T01:00:00Z" },
+    ];
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "unfold");
+
+    const unfoldItem = await screen.findByText(
+      (_, el) => el?.textContent === "Unfold All Comments" && el?.tagName === "SPAN",
+    );
+    await user.click(unfoldItem);
+
+    await waitFor(() => {
+      expect(mockCommentExpandAll).toHaveBeenCalledWith("issue-1");
+    });
+    // Only threads carrying a resolution get seeded into the expand set.
+    expect(mockResolvedExpandAll).toHaveBeenCalledWith("issue-1", ["root-2", "root-3"]);
+    expect(mockCommentCollapseAll).not.toHaveBeenCalled();
+    expect(useSearchStore.getState().open).toBe(false);
+  });
+
   it("filters theme commands by query keywords", async () => {
     const user = userEvent.setup();
     renderSearch();
@@ -532,6 +700,90 @@ describe("SearchCommand", () => {
     expect(screen.queryByText("deleted-issue")).not.toBeInTheDocument();
   });
 
+  it("shows the assignee avatar instead of status text for issue search results", async () => {
+    const user = userEvent.setup();
+    mockMembers.current = [
+      {
+        id: "member-1",
+        workspace_id: "ws-test",
+        user_id: "user-1",
+        role: "member",
+        created_at: "2026-01-01T00:00:00Z",
+        name: "Alice Zhang",
+        email: "alice@example.com",
+        avatar_url: null,
+      },
+    ];
+    mockSearchIssues.mockResolvedValue({
+      issues: [
+        {
+          id: "issue-assigned",
+          workspace_id: "ws-test",
+          number: 101,
+          identifier: "MUL-101",
+          title: "Assigned search result",
+          description: null,
+          status: "in_review",
+          priority: "none",
+          assignee_type: "member",
+          assignee_id: "user-1",
+          creator_type: "member",
+          creator_id: "user-1",
+          parent_issue_id: null,
+          project_id: null,
+          position: 0,
+          start_date: null,
+          due_date: null,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          match_source: "title",
+        },
+      ],
+      total: 1,
+    });
+
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "assigned");
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByText((_, el) =>
+            el?.textContent === "Assigned search result" &&
+            el?.tagName === "SPAN",
+          ),
+        ).toBeInTheDocument();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(screen.getByTitle("Alice Zhang")).toBeInTheDocument();
+    expect(screen.queryByText("In Review")).not.toBeInTheDocument();
+  });
+
+  it("shows the assignee avatar instead of status text for recent issues", () => {
+    mockRecentItems.current = [{ id: "issue-1", visitedAt: 1000 }];
+    mockAgents.current = [{ id: "agent-1", name: "Niko", avatar_url: null }];
+    mockAllIssues.current = [
+      {
+        id: "issue-1",
+        identifier: "MUL-1",
+        title: "Recent assigned issue",
+        status: "done",
+        assignee_type: "agent",
+        assignee_id: "agent-1",
+      },
+    ];
+
+    renderSearch();
+
+    expect(screen.getByText("Recent assigned issue")).toBeInTheDocument();
+    expect(screen.getByTitle("Niko")).toBeInTheDocument();
+    expect(screen.queryByText("Done")).not.toBeInTheDocument();
+  });
+
   it("renders description and comment snippets regardless of match_source", async () => {
     const user = userEvent.setup();
     mockSearchIssues.mockResolvedValue({
@@ -592,54 +844,50 @@ describe("SearchCommand", () => {
     ).toBeInTheDocument();
   });
 
-  it("searches channels and navigates to the channel detail route", async () => {
+  it("lets Home/End edit the query caret instead of hijacking result navigation", async () => {
     const user = userEvent.setup();
-    mockSearchChannels.mockResolvedValue({
-      channels: [
-        {
-          id: "channel-1",
-          workspace_id: "ws-test",
-          group_id: null,
-          slug: "launch-room",
-          name: "Launch Room",
-          description: "Product launch coordination",
-          visibility: "private",
-          proactivity: "active",
-          mention_issue_search_enabled: true,
-          instructions: "",
-          summary: "",
-          project_id: "project-1",
-          default_project_id: "project-1",
-          default_assignee_type: null,
-          default_assignee_id: null,
-          position: 0,
-          created_by: "user-1",
-          archived_at: null,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-          has_unread: true,
-        },
-      ],
-      total: 1,
-    });
     renderSearch();
 
-    const input = screen.getByPlaceholderText("Type a command or search...");
-    await user.type(input, "launch");
+    const input = screen.getByPlaceholderText(
+      "Type a command or search...",
+    ) as HTMLInputElement;
+    await user.type(input, "new");
 
+    // "new" surfaces New Issue + New Project, so cmdk has a multi-item list.
     await waitFor(() => {
-      expect(screen.getByText("Channels")).toBeInTheDocument();
       expect(
-        screen.getByText((_, el) => el?.textContent === "Launch Room" && el?.tagName === "SPAN"),
+        screen.getByText((_, el) => el?.textContent === "New Issue" && el?.tagName === "SPAN"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText((_, el) => el?.textContent === "New Project" && el?.tagName === "SPAN"),
       ).toBeInTheDocument();
     });
 
-    const channelItem = await screen.findByText(
-      (_, el) => el?.textContent === "Launch Room" && el?.tagName === "SPAN",
-    );
-    await user.click(channelItem);
+    const selectedValue = () =>
+      document
+        .querySelector('[cmdk-item=""][aria-selected="true"]')
+        ?.getAttribute("data-value") ?? null;
 
-    expect(mockPush).toHaveBeenCalledWith("/ws-test/channels/launch-room");
-    expect(useSearchStore.getState().open).toBe(false);
+    // cmdk auto-selects the first item; Arrow keys must still move that selection.
+    const first = selectedValue();
+    expect(first).not.toBeNull();
+
+    await user.keyboard("{ArrowDown}");
+    expect(selectedValue()).not.toBe(first);
+
+    await user.keyboard("{ArrowUp}");
+    expect(selectedValue()).toBe(first);
+
+    // Home moves the text caret to the start — it must NOT jump the result list.
+    await user.keyboard("{Home}");
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(0);
+    expect(selectedValue()).toBe(first);
+
+    // End moves the caret to the end — again leaving the result selection alone.
+    await user.keyboard("{End}");
+    expect(input.selectionStart).toBe(input.value.length);
+    expect(input.selectionEnd).toBe(input.value.length);
+    expect(selectedValue()).toBe(first);
   });
 });

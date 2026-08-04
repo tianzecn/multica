@@ -74,9 +74,9 @@ export function ChannelsPage() {
       <PageHeader className="justify-between px-5">
         <div className="flex min-w-0 items-center gap-2">
           <Hash className="size-4 text-muted-foreground" />
-          <h1 className="truncate text-sm font-medium">{t(($) => $.page.title)}</h1>
+          <h1 className="truncate text-body font-medium">{t(($) => $.page.title)}</h1>
           {!isLoading && channels.length > 0 && (
-            <span className="font-mono text-xs tabular-nums text-muted-foreground">{channels.length}</span>
+            <span className="font-mono text-caption tabular-nums text-muted-foreground">{channels.length}</span>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -99,7 +99,7 @@ export function ChannelsPage() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder={t(($) => $.page.search_placeholder)}
-              className="h-8 pl-8 text-sm"
+              className="h-8 pl-8 text-body"
             />
           </div>
         </div>
@@ -108,8 +108,8 @@ export function ChannelsPage() {
           <ChannelsSkeleton />
         ) : filtered.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-            <Hash className="size-10 text-muted-foreground/50" />
-            <p className="text-sm text-muted-foreground">
+            <Hash className="size-10 text-faint-foreground" />
+            <p className="text-body text-muted-foreground">
               {channels.length === 0 && showArchived ? "还没有归档频道" : channels.length === 0 ? t(($) => $.page.empty) : t(($) => $.page.empty_search)}
             </p>
           </div>
@@ -119,8 +119,8 @@ export function ChannelsPage() {
               {grouped.map((group) => (
                 <section key={group.key} className="min-w-0">
                   <div className="mb-2 flex items-center gap-2 px-1">
-                    <h2 className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{group.name}</h2>
-                    <span className="font-mono text-[11px] text-muted-foreground/70">{group.channels.length}</span>
+                    <h2 className="text-caption font-medium uppercase tracking-normal text-muted-foreground">{group.name}</h2>
+                    <span className="font-mono text-micro text-muted-foreground">{group.channels.length}</span>
                   </div>
                   <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                     {group.channels.map((channel) => (
@@ -193,14 +193,14 @@ function ChannelTile({
         </div>
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
-            <p className="truncate text-sm font-medium">{channel.name}</p>
-            {isArchived && <Badge variant="outline" className="h-5 shrink-0 rounded-[4px] px-1.5 text-[10px]">已归档</Badge>}
+            <p className="truncate text-body font-medium">{channel.name}</p>
+            {isArchived && <Badge variant="outline" className="h-5 shrink-0 rounded-[4px] px-1.5 text-micro">已归档</Badge>}
           </div>
-          <p className="truncate font-mono text-xs text-muted-foreground">#{channel.slug}</p>
+          <p className="truncate font-mono text-caption text-muted-foreground">#{channel.slug}</p>
         </div>
       </div>
       {channel.description && (
-        <p className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">{channel.description}</p>
+        <p className="mt-3 line-clamp-2 text-caption leading-5 text-muted-foreground">{channel.description}</p>
       )}
     </>
   );
@@ -251,14 +251,14 @@ function ProjectSelect({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
-        className="h-9 rounded-md border bg-background px-3 text-sm disabled:opacity-70"
+        className="h-9 rounded-md border bg-background px-3 text-body disabled:opacity-70"
       >
         <option value="">未归属项目</option>
         {projects.map((project) => (
           <option key={project.id} value={project.id}>{project.title}</option>
         ))}
       </select>
-      <p className="text-xs leading-5 text-muted-foreground">
+      <p className="text-caption leading-5 text-muted-foreground">
         所属项目会作为频道内新建 Issue 和 @ Issue 搜索的默认上下文。
       </p>
     </div>
@@ -404,7 +404,7 @@ export function CreateChannelDialog({
                 id="channel-group"
                 value={groupId}
                 onChange={(event) => setGroupId(event.target.value)}
-                className="h-9 rounded-md border bg-background px-3 text-sm"
+                className="h-9 rounded-md border bg-background px-3 text-body"
               >
                 <option value="">{t(($) => $.create.group_none)}</option>
                 {groups.map((group) => (
@@ -442,7 +442,7 @@ export function CreateChannelDialog({
           <div className="flex items-center justify-between gap-4 rounded-md border p-3">
             <div className="min-w-0">
               <Label htmlFor="channel-issue-mention-search">Issue @ 补全</Label>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              <p className="mt-1 text-caption leading-5 text-muted-foreground">
                 输入 @ 时允许搜索并插入 Issue。讨论型频道可以关闭它，让 @ 只显示频道成员。
               </p>
             </div>
@@ -455,7 +455,7 @@ export function CreateChannelDialog({
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-3">
               <Label>AI 同事</Label>
-              <span className="text-xs text-muted-foreground">已选择 {selectedAgentIds.length} 位</span>
+              <span className="text-caption text-muted-foreground">已选择 {selectedAgentIds.length} 位</span>
             </div>
             <div className="grid min-h-72 overflow-hidden rounded-md border md:grid-cols-[minmax(0,1fr)_260px]">
               <div className="flex min-h-0 flex-col border-b md:border-b-0 md:border-r">
@@ -466,13 +466,13 @@ export function CreateChannelDialog({
                       value={memberSearch}
                       onChange={(event) => setMemberSearch(event.target.value)}
                       placeholder="搜索工作区智能体"
-                      className="h-8 pl-8 text-sm"
+                      className="h-8 pl-8 text-body"
                     />
                   </div>
                 </div>
                 <div className="max-h-64 overflow-y-auto p-1">
                   {filteredAgents.length === 0 ? (
-                    <p className="px-3 py-8 text-center text-xs text-muted-foreground">没有可加入的智能体</p>
+                    <p className="px-3 py-8 text-center text-caption text-muted-foreground">没有可加入的智能体</p>
                   ) : (
                     filteredAgents.map((agent) => {
                       const checked = selectedAgentSet.has(agent.id);
@@ -482,20 +482,20 @@ export function CreateChannelDialog({
                           type="button"
                           onClick={() => toggleAgent(agent.id)}
                           className={cn(
-                            "flex w-full min-w-0 items-center gap-3 rounded-md px-2 py-2 text-left text-sm hover:bg-accent/70",
+                            "flex w-full min-w-0 items-center gap-3 rounded-md px-2 py-2 text-left text-body hover:bg-accent/70",
                             checked && "bg-accent",
                           )}
                         >
                           <span onClick={(event) => event.stopPropagation()}>
                             <Checkbox checked={checked} onCheckedChange={() => toggleAgent(agent.id)} />
                           </span>
-                          <ActorAvatar actorType="agent" actorId={agent.id} size={28} showStatusDot />
+                          <ActorAvatar actorType="agent" actorId={agent.id} size="md" showStatusDot />
                           <span className="min-w-0 flex-1">
                             <span className="flex min-w-0 items-center gap-1.5">
                               <span className="truncate font-medium">{agent.name}</span>
-                              <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">AI</Badge>
+                              <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-micro">AI</Badge>
                             </span>
-                            <span className="block truncate text-xs text-muted-foreground">{agent.description || agent.id}</span>
+                            <span className="block truncate text-caption text-muted-foreground">{agent.description || agent.id}</span>
                           </span>
                         </button>
                       );
@@ -505,19 +505,19 @@ export function CreateChannelDialog({
               </div>
               <div className="flex min-h-0 flex-col bg-muted/20">
                 <div className="border-b px-3 py-2">
-                  <p className="text-xs font-medium">已选成员</p>
-                  <p className="mt-1 text-xs text-muted-foreground">频道创建者会自动包含在内。</p>
+                  <p className="text-caption font-medium">已选成员</p>
+                  <p className="mt-1 text-caption text-muted-foreground">频道创建者会自动包含在内。</p>
                 </div>
                 <div className="max-h-64 overflow-y-auto p-2">
                   {selectedAgents.length === 0 ? (
-                    <p className="px-1 py-8 text-center text-xs text-muted-foreground">还没有选择 AI 同事</p>
+                    <p className="px-1 py-8 text-center text-caption text-muted-foreground">还没有选择 AI 同事</p>
                   ) : (
                     <div className="grid gap-1.5">
                       {selectedAgents.map((agent) => (
                         <div key={agent.id} className="flex min-w-0 items-center gap-2 rounded-md bg-background px-2 py-2">
-                          <ActorAvatar actorType="agent" actorId={agent.id} size={24} showStatusDot />
-                          <span className="min-w-0 flex-1 truncate text-sm">{agent.name}</span>
-                          <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">AI</Badge>
+                          <ActorAvatar actorType="agent" actorId={agent.id} size="md" showStatusDot />
+                          <span className="min-w-0 flex-1 truncate text-body">{agent.name}</span>
+                          <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-micro">AI</Badge>
                           <Button
                             type="button"
                             size="icon"
@@ -540,14 +540,14 @@ export function CreateChannelDialog({
               <label
                 key={value}
                 className={cn(
-                  "flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm",
+                  "flex cursor-pointer items-start gap-2 rounded-md border p-3 text-body",
                   visibility === value && "border-primary bg-accent/50",
                 )}
               >
                 <RadioGroupItem value={value} className="mt-0.5" />
                 <span>
                   <span className="block font-medium">{t(($) => $.create.visibility[value].label)}</span>
-                  <span className="block text-xs leading-5 text-muted-foreground">{t(($) => $.create.visibility[value].description)}</span>
+                  <span className="block text-caption leading-5 text-muted-foreground">{t(($) => $.create.visibility[value].description)}</span>
                 </span>
               </label>
             ))}

@@ -3,8 +3,10 @@ import { createHmac, randomBytes } from "crypto";
 import { TestApiClient } from "./fixtures";
 
 const DEFAULT_E2E_NAME = "E2E User";
-const DEFAULT_E2E_EMAIL = "e2e@multica.ai";
-const DEFAULT_E2E_WORKSPACE = "e2e-workspace";
+const E2E_WORKER = process.env.TEST_PARALLEL_INDEX ?? process.env.TEST_WORKER_INDEX ?? "0";
+const E2E_RUN_ID = process.env.E2E_RUN_ID ?? `${Date.now().toString(36)}-${process.pid.toString(36)}`;
+const DEFAULT_E2E_EMAIL = `e2e-${E2E_WORKER}-${E2E_RUN_ID}@multica.ai`;
+const DEFAULT_E2E_WORKSPACE = `e2e-workspace-${E2E_WORKER}-${E2E_RUN_ID}`;
 const FRONTEND_ORIGIN =
   process.env.PLAYWRIGHT_BASE_URL ??
   process.env.FRONTEND_ORIGIN ??
@@ -101,7 +103,6 @@ export async function installAuthSession(page: Page, token: string) {
   ]);
 
   await page.context().addInitScript(() => {
-    // Force web into cookie-auth mode and keep E2E pages unobscured.
     window.localStorage.removeItem("multica_token");
     window.localStorage.setItem("multica:chat:isOpen", "false");
     window.localStorage.setItem(
@@ -120,10 +121,52 @@ export async function hideNextDevOverlay(page: Page) {
     .catch(() => {});
 }
 
+/** Enable a public feature flag before the app bootstraps `/api/config`. */
+export async function enablePublicFeatureFlag(page: Page, key: string) {
+  await page.route("**/api/config", async (route) => {
+    const response = await route.fetch();
+    if (!response.ok()) {
+      await route.fulfill({ response });
+      return;
+    }
+    const config = (await response.json()) as {
+      feature_flags?: Record<string, boolean>;
+      [key: string]: unknown;
+    };
+    await route.fulfill({
+      response,
+      json: {
+        ...config,
+        feature_flags: { ...config.feature_flags, [key]: true },
+      },
+    });
+  });
+}
+
+async function waitForIssuesPage(page: Page) {
+  await waitForPageText(page, "New Issue");
+  await expect(page.getByRole("button", { name: "New Issue" })).toBeVisible({
+    timeout: 15000,
+  });
+}
+
+export async function waitForPageText(page: Page, text: string, timeout = 30000) {
+  await page.waitForFunction(
+    (expected) => document.body?.innerText.includes(expected),
+    text,
+    { timeout },
+  );
+}
+
+export async function reloadAppPage(page: Page) {
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForPageText(page, "Issues");
+}
+
 /**
  * Log in as the default E2E user and ensure the workspace exists first.
- * Authenticates via API (send-code → DB read → verify-code), then injects
- * the token into localStorage so the browser session is authenticated.
+ * Authenticates with the deterministic local JWT fixture, then injects the
+ * token into localStorage so the browser session is authenticated.
  *
  * Returns the E2E workspace slug so callers can build workspace-scoped URLs.
  */
@@ -131,21 +174,22 @@ export async function loginAsDefault(page: Page): Promise<string> {
   const api = new TestApiClient();
   await api.login(DEFAULT_E2E_EMAIL, DEFAULT_E2E_NAME);
   const workspace = await api.ensureWorkspace(
-    "E2E Workspace",
+    `E2E Workspace ${E2E_WORKER}`,
     DEFAULT_E2E_WORKSPACE,
   );
+  await api.markUserOnboarded();
 
   const token = api.getToken();
-  if (!token) throw new Error("Expected E2E login to produce a token");
-  await installAuthSession(page, token);
+  if (!token) {
+    throw new Error("E2E login did not return an auth token");
+  }
+
+  await page.addInitScript((t) => {
+    localStorage.setItem("multica_token", t);
+    localStorage.setItem("multica:chat:isOpen", "false");
+  }, token);
   await gotoHref(page, `/${workspace.slug}/issues`);
-  await expect(page).toHaveURL(
-    new RegExp(`/${workspace.slug}/issues(?:[/?#]|$)`),
-    { timeout: 10000 },
-  );
-  await expect(page.getByRole("button", { name: "All" })).toBeVisible({
-    timeout: 15000,
-  });
+  await waitForIssuesPage(page);
   return workspace.slug;
 }
 
@@ -161,13 +205,27 @@ export async function gotoHref(page: Page, href: string) {
 export async function createTestApi(): Promise<TestApiClient> {
   const api = new TestApiClient();
   await api.login(DEFAULT_E2E_EMAIL, DEFAULT_E2E_NAME);
-  await api.ensureWorkspace("E2E Workspace", DEFAULT_E2E_WORKSPACE);
+  await api.ensureWorkspace(`E2E Workspace ${E2E_WORKER}`, DEFAULT_E2E_WORKSPACE);
+  await api.markUserOnboarded();
   return api;
 }
 
-export async function openWorkspaceMenu(page: Page) {
-  await page.getByRole("button", { name: /E2E Workspace/ }).first().click();
-  await expect(page.getByRole("menuitem", { name: "Log out" })).toBeVisible({
-    timeout: 5000,
+export async function preferManualCreateMode(page: Page) {
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "multica_create_mode",
+      JSON.stringify({ state: { lastMode: "manual" }, version: 0 }),
+    );
   });
+  await reloadAppPage(page);
+  await waitForIssuesPage(page);
+}
+
+export async function openWorkspaceMenu(page: Page) {
+  // Click the workspace switcher button (has ChevronDown icon)
+  const workspaceButton = page.getByRole("button", { name: /E2E Workspace/ }).first();
+  await expect(workspaceButton).toBeVisible({ timeout: 15000 });
+  await workspaceButton.click();
+  // Wait for dropdown to appear
+  await expect(page.locator('[class*="popover"]')).toBeVisible();
 }

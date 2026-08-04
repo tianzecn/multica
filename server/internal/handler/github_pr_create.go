@@ -227,7 +227,7 @@ func (h *Handler) CreateProjectPullRequest(w http.ResponseWriter, r *http.Reques
 
 	linkedIssueIDs := h.linkCreatedProjectPullRequest(r.Context(), project, pr.ID, explicitIssue, req, input, userID)
 	projectIDs := h.listProjectIDsForPullRequest(r.Context(), pr.ID)
-	resp := githubPullRequestToResponse(pr)
+	resp := githubPullRequestToResponse(pr, h.PRRefresh.Enabled())
 	h.recordProjectWorkspaceActivity(r, project.WorkspaceID, userID, "github_pr_create", map[string]any{
 		"pull_request_id":  resp.ID,
 		"pull_request_url": resp.HtmlURL,

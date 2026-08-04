@@ -1,49 +1,121 @@
 import { test, expect } from "@playwright/test";
-import { hideNextDevOverlay, installAuthSession } from "./helpers";
-import { TestApiClient } from "./fixtures";
+import {
+  enablePublicFeatureFlag,
+  loginAsDefault,
+  waitForPageText,
+} from "./helpers";
 
 test.describe("Settings", () => {
   test("updating workspace name reflects in sidebar immediately", async ({
     page,
   }) => {
-    const api = new TestApiClient();
-    await api.login(`settings-${Date.now()}@example.com`, "Settings User");
-    const token = api.getToken();
-    const workspace = await api.ensureWorkspace(
-      "Settings Workspace",
-      `settings-${Date.now()}`,
-    );
-    if (!token) throw new Error("Expected E2E login to produce a token");
-    await installAuthSession(page, token);
-    await page.goto(`/${workspace.slug}/settings?tab=workspace`);
-    await hideNextDevOverlay(page);
+    const workspaceSlug = await loginAsDefault(page);
 
-    // Read the current workspace name from the sidebar
-    const sidebarName = page.locator('[data-sidebar="menu-button"]').first();
-    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "General" })).toBeVisible();
-    const originalName = "Settings Workspace";
+    await page.goto(`/${workspaceSlug}/settings?tab=workspace`, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, "General");
 
-    // Change workspace name
-    const nameInput = page.locator('input[type="text"]').first();
-    await nameInput.clear();
+    const nameInput = page.getByRole("textbox", { name: "Name" });
+    const originalName = await nameInput.inputValue();
     const newName = "Renamed WS " + Date.now();
-    await nameInput.fill(newName);
+    try {
+      await nameInput.fill(newName);
+      await expect(page.getByText("Workspace settings saved").first()).toBeVisible({
+        timeout: 10000,
+      });
 
-    // Save
-    await page
-      .locator("button", { hasText: "Save" })
-      .evaluate((button: HTMLButtonElement) => button.click());
+      // Auto-save updates the React Query workspace record, so the sidebar
+      // reflects the new name without a manual save or page refresh.
+      await expect(
+        page.getByRole("button", { name: new RegExp(newName) }).first(),
+      ).toBeVisible();
+    } finally {
+      await nameInput.fill(originalName);
+      await expect(page.getByText("Workspace settings saved").first()).toBeVisible({
+        timeout: 10000,
+      });
+      await expect(
+        page.getByRole("button", { name: new RegExp(originalName) }).first(),
+      ).toBeVisible();
+    }
+  });
 
-    // Sidebar should reflect the new name WITHOUT page refresh
-    await expect(sidebarName).toContainText(newName, { timeout: 10000 });
+  // Composio connect flow, fully mocked at the network boundary so it runs
+  // without a configured COMPOSIO_API_KEY or a live Composio project. The
+  // backend redirect is simulated by pointing the init endpoint's redirect_url
+  // straight back at the settings page with ?connected=<slug> — exercising the
+  // frontend's callback toast + connections refresh (MUL-3718) end to end.
+  test("connecting a Composio toolkit shows a toast and refreshes the list", async ({
+    page,
+  }) => {
+    await enablePublicFeatureFlag(page, "composio_mcp_apps");
+    const workspaceSlug = await loginAsDefault(page);
+    const settingsUrl = `/${workspaceSlug}/settings?tab=integrations`;
 
-    // Restore original name so other tests aren't affected
-    await nameInput.clear();
-    await nameInput.fill(originalName);
-    await page
-      .locator("button", { hasText: "Save" })
-      .evaluate((button: HTMLButtonElement) => button.click());
-    await expect(sidebarName).toContainText(originalName, { timeout: 10000 });
+    // Stateful: connections is empty until the (mocked) connect flow lands.
+    let connected = false;
+
+    await page.route("**/api/integrations/composio/toolkits", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { slug: "notion", name: "Notion", connectable: true },
+        ]),
+      }),
+    );
+
+    await page.route("**/api/integrations/composio/connections", (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          connected
+            ? [
+                {
+                  id: "conn-notion-1",
+                  toolkit_slug: "notion",
+                  status: "active",
+                  connected_at: new Date().toISOString(),
+                  last_used_at: null,
+                },
+              ]
+            : [],
+        ),
+      });
+    });
+
+    await page.route("**/api/integrations/composio/connect/init", (route) => {
+      // Composio would 302 through its hosted consent and back to our callback,
+      // which emits CallbackRedirect's slug-less shape:
+      // `/settings?tab=integrations&connected=<slug>`. The web proxy's
+      // legacy-route redirect then prepends the last workspace slug, landing on
+      // the real settings route. Mock that exact backend shape (NOT the final
+      // slugged URL) so the test exercises the same redirect path real users hit.
+      connected = true;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          redirect_url: `/settings?tab=integrations&connected=notion`,
+        }),
+      });
+    });
+
+    await page.goto(settingsUrl, { waitUntil: "domcontentloaded" });
+    await waitForPageText(page, "Composio");
+
+    // Notion starts disconnected → click Connect.
+    await page.getByRole("button", { name: /^Connect$/ }).first().click();
+
+    // Success toast from the simulated callback redirect.
+    await expect(page.getByText("Connected").first()).toBeVisible({ timeout: 10000 });
+
+    // List refreshed without a manual reload: the Notion card now offers
+    // Disconnect, and the one-shot ?connected param has been stripped.
+    await expect(
+      page.getByRole("button", { name: /Disconnect/ }).first(),
+    ).toBeVisible({ timeout: 10000 });
+    await expect(page).not.toHaveURL(/connected=notion/);
   });
 });

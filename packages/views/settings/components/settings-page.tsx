@@ -15,13 +15,21 @@ import {
   Plug,
   Archive,
   Hash,
+  MessageCircle,
+  Tags,
+  Keyboard,
+  ListTodo,
+  Zap,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
+import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
+import { ChatTab } from "./chat-tab";
+import { IssueTab } from "./issue-tab";
 import { TokensTab } from "./tokens-tab";
 import { WorkspaceTab } from "./workspace-tab";
 import { MembersTab } from "./members-tab";
@@ -30,6 +38,10 @@ import { GitHubTab } from "./github-tab";
 import { IntegrationsTab } from "./integrations-tab";
 import { LabsTab } from "./labs-tab";
 import { NotificationsTab } from "./notifications-tab";
+import { LabelsTab } from "./labels-tab";
+import { PropertiesTab } from "./properties-tab";
+import { QuickActionsTab } from "./quick-actions-tab";
+import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
 import { ArchivedChannelsTab } from "./archived-channels-tab";
 import { ArchivedConversationsTab } from "./archived-conversations-tab";
 import { RuntimesPage } from "../../runtimes";
@@ -37,10 +49,13 @@ import { DashboardPage } from "../../dashboard";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
 
-const ACCOUNT_TAB_KEYS = ["profile", "preferences", "notifications", "tokens"] as const;
+const ACCOUNT_TAB_KEYS = ["profile", "preferences", "shortcuts", "issue", "chat", "notifications", "tokens"] as const;
 const ACCOUNT_TAB_ICONS = {
   profile: User,
   preferences: SlidersHorizontal,
+  shortcuts: Keyboard,
+  issue: ListTodo,
+  chat: MessageCircle,
   notifications: Bell,
   tokens: Key,
 } as const;
@@ -56,6 +71,9 @@ const WORKSPACE_TAB_KEYS = [
   "integrations",
   "labs",
   "members",
+  "labels",
+  "properties",
+  "quick_actions",
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
@@ -68,6 +86,9 @@ const WORKSPACE_TAB_VALUES = {
   integrations: "integrations",
   labs: "labs",
   members: "members",
+  labels: "labels",
+  properties: "properties",
+  quick_actions: "quick-actions",
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
@@ -80,6 +101,9 @@ const WORKSPACE_TAB_ICONS = {
   integrations: Plug,
   labs: FlaskConical,
   members: Users,
+  labels: Tags,
+  properties: SlidersHorizontal,
+  quick_actions: Zap,
 } as const;
 
 const DEFAULT_TAB = "profile";
@@ -89,34 +113,46 @@ const TAB_LABEL_FALLBACKS = {
   en: {
     profile: "Profile",
     preferences: "Preferences",
+    shortcuts: "Keyboard Shortcuts",
+    issue: "Issues",
+    chat: "Chat",
     notifications: "Notifications",
     tokens: "API Tokens",
-    archivedConversations: "Archived Conversations",
-    archivedChannels: "Archived Channels",
     general: "General",
     usage: "Usage",
     runtimes: "Runtimes",
+    archivedConversations: "Archived Conversations",
+    archivedChannels: "Archived Channels",
     repositories: "Repositories",
     github: "GitHub",
     integrations: "Integrations",
     labs: "Labs",
     members: "Members",
+    labels: "Labels",
+    properties: "Properties",
+    quick_actions: "Quick Actions",
   },
   zh: {
     profile: "个人资料",
     preferences: "偏好设置",
+    shortcuts: "键盘快捷键",
+    issue: "Issue",
+    chat: "聊天",
     notifications: "通知",
     tokens: "API 令牌",
-    archivedConversations: "已归档对话",
-    archivedChannels: "已归档频道",
     general: "通用",
     usage: "用量",
     runtimes: "运行时",
+    archivedConversations: "已归档对话",
+    archivedChannels: "已归档频道",
     repositories: "代码仓库",
     github: "GitHub",
     integrations: "集成",
     labs: "实验室",
     members: "成员",
+    labels: "标签",
+    properties: "属性",
+    quick_actions: "快捷操作",
   },
 } as const;
 
@@ -127,6 +163,17 @@ function resolveSettingsLabel(value: string, key: string, fallback: string) {
 function getTabLabelFallbacks(language?: string) {
   return language?.startsWith("zh") ? TAB_LABEL_FALLBACKS.zh : TAB_LABEL_FALLBACKS.en;
 }
+
+// Legacy `?tab=…` values that have been collapsed into another tab. Old
+// bookmarks still land on the correct surface without us preserving a
+// dead TabsContent entry. Lark used to be its own top-level workspace
+// tab; it now lives inside Integrations.
+const LEGACY_WORKSPACE_TAB_REDIRECTS: Record<string, string> = {
+  lark: "integrations",
+};
+
+const SETTINGS_TAB_TRIGGER_CLASS =
+  "h-8 shrink-0 px-2.5 hover:bg-surface-hover data-active:!bg-surface-selected data-active:!text-surface-selected-foreground data-active:hover:!bg-surface-selected md:!w-full md:px-2 md:after:hidden";
 
 export interface ExtraSettingsTab {
   value: string;
@@ -153,6 +200,7 @@ export function SettingsPage({
   const tabFallbacks = getTabLabelFallbacks(i18n.resolvedLanguage ?? i18n.language);
   const workspaceName = useCurrentWorkspace()?.name;
   const navigation = useNavigation();
+  const isMobile = useIsMobile();
 
   // Whitelist of valid tab values; unknown ?tab=… values silently fall back to
   // the default. Whitelisting also blocks junk like ?tab=<script> from
@@ -168,8 +216,11 @@ export function SettingsPage({
   );
 
   const tabFromUrl = navigation.searchParams.get(TAB_QUERY_KEY);
+  const candidateTab = tabFromUrl
+    ? LEGACY_WORKSPACE_TAB_REDIRECTS[tabFromUrl] ?? tabFromUrl
+    : null;
   const activeTab =
-    tabFromUrl && validTabs.has(tabFromUrl) ? tabFromUrl : DEFAULT_TAB;
+    candidateTab && validTabs.has(candidateTab) ? candidateTab : DEFAULT_TAB;
   const isFullBleedTab =
     activeTab === WORKSPACE_TAB_VALUES.usage ||
     activeTab === WORKSPACE_TAB_VALUES.runtimes;
@@ -186,41 +237,59 @@ export function SettingsPage({
     <Tabs
       value={activeTab}
       onValueChange={handleTabChange}
-      orientation="vertical"
-      className="flex-1 min-h-0 gap-0 flex flex-col md:flex-row md:overflow-hidden overflow-y-auto"
+      orientation={isMobile ? "horizontal" : "vertical"}
+      className="flex flex-1 min-h-0 flex-col gap-0 overflow-y-auto md:flex-row md:overflow-hidden"
     >
-      {/* Left nav (stacks on top on mobile, sidebar on md+) */}
-      <div className="shrink-0 md:w-52 border-b md:border-b-0 md:border-r md:overflow-y-auto p-3 md:p-4">
-        <h1 className="text-sm font-semibold mb-4 px-2">{t(($) => $.page.title)}</h1>
-        <TabsList variant="line" className="flex-col items-stretch w-full">
+      {/* Structural navigation; bounded setting groups remain in the content surface.
+          Stays on the content surface color (no shell tint): the desktop's active
+          tab merges into the card top, and a tinted panel under the first tabs
+          breaks that seam (MUL-4439). Zoning comes from the divider instead. */}
+      <div className="shrink-0 overflow-x-auto border-b border-surface-border p-2 md:w-56 md:overflow-y-auto md:border-b-0 md:border-r md:p-4">
+        <h1 className="sr-only text-body font-semibold md:not-sr-only md:mb-4 md:px-2">{t(($) => $.page.title)}</h1>
+        <TabsList
+          variant="line"
+          className="flex w-max min-w-full flex-row items-center gap-1 p-0 md:w-full md:flex-col md:items-stretch"
+        >
           {/* My Account group */}
-          <span className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">
+          <span className="hidden px-2 pb-1 pt-2 text-caption font-medium text-muted-foreground md:block">
             {t(($) => $.page.my_account)}
           </span>
           {ACCOUNT_TAB_KEYS.map((key) => {
             const Icon = ACCOUNT_TAB_ICONS[key];
             return (
-              <TabsTrigger key={key} value={key}>
+              <TabsTrigger
+                key={key}
+                value={key}
+                className={SETTINGS_TAB_TRIGGER_CLASS}
+              >
                 <Icon className="h-4 w-4" />
                 {resolveSettingsLabel(t(($) => $.page.tabs[key]), `page.tabs.${key}`, tabFallbacks[key])}
               </TabsTrigger>
             );
           })}
           {extraAccountTabs?.map((tab) => (
-            <TabsTrigger key={tab.value} value={tab.value}>
+            <TabsTrigger
+              key={tab.value}
+              value={tab.value}
+              className={SETTINGS_TAB_TRIGGER_CLASS}
+            >
               <tab.icon className="h-4 w-4" />
               {tab.label}
             </TabsTrigger>
           ))}
 
           {/* Workspace group */}
-          <span className="px-2 pb-1 pt-4 text-xs font-medium text-muted-foreground truncate">
+          <span className="hidden truncate px-2 pb-1 pt-4 text-caption font-medium text-muted-foreground md:block">
             {workspaceName ?? t(($) => $.page.workspace_fallback)}
           </span>
           {WORKSPACE_TAB_KEYS.map((key) => {
             const Icon = WORKSPACE_TAB_ICONS[key];
             return (
-              <TabsTrigger key={key} value={WORKSPACE_TAB_VALUES[key]}>
+              <TabsTrigger
+                key={key}
+                value={WORKSPACE_TAB_VALUES[key]}
+                className={SETTINGS_TAB_TRIGGER_CLASS}
+              >
                 <Icon className="h-4 w-4" />
                 {resolveSettingsLabel(
                   t(($) => $.page.tabs[key]),
@@ -234,15 +303,31 @@ export function SettingsPage({
       </div>
 
       {/* Right content */}
-      <div className={cn("flex-1 min-w-0", isFullBleedTab ? "min-h-0 overflow-hidden" : "md:overflow-y-auto")}>
+      <div
+        className={cn(
+          "min-w-0 flex-1",
+          isFullBleedTab ? "min-h-0 overflow-hidden" : "md:overflow-y-auto",
+        )}
+      >
         <div
           className={cn(
-            "w-full mx-auto",
-            isFullBleedTab ? "flex h-full min-h-[520px] flex-col" : "max-w-3xl p-4 md:p-6",
+            "mx-auto w-full",
+            isFullBleedTab
+              ? "flex h-full min-h-[520px] flex-col"
+              : "p-4 sm:p-6 md:p-8",
+            !isFullBleedTab &&
+              (activeTab === "labels" ||
+              activeTab === "properties" ||
+              activeTab === "quick-actions"
+                ? "max-w-5xl"
+                : "max-w-3xl"),
           )}
         >
           <TabsContent value="profile"><AccountTab /></TabsContent>
           <TabsContent value="preferences"><PreferencesTab /></TabsContent>
+          <TabsContent value="shortcuts"><KeyboardShortcutsTab /></TabsContent>
+          <TabsContent value="issue"><IssueTab /></TabsContent>
+          <TabsContent value="chat"><ChatTab /></TabsContent>
           <TabsContent value="notifications"><NotificationsTab /></TabsContent>
           <TabsContent value="tokens"><TokensTab /></TabsContent>
           <TabsContent value="archivedConversations"><ArchivedConversationsTab /></TabsContent>
@@ -259,6 +344,9 @@ export function SettingsPage({
           <TabsContent value="integrations"><IntegrationsTab /></TabsContent>
           <TabsContent value="labs"><LabsTab /></TabsContent>
           <TabsContent value="members"><MembersTab /></TabsContent>
+          <TabsContent value="labels"><LabelsTab /></TabsContent>
+          <TabsContent value="properties"><PropertiesTab /></TabsContent>
+          <TabsContent value="quick-actions"><QuickActionsTab /></TabsContent>
           {extraAccountTabs?.map((tab) => (
             <TabsContent key={tab.value} value={tab.value}>{tab.content}</TabsContent>
           ))}

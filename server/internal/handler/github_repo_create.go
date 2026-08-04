@@ -303,7 +303,7 @@ func (h *Handler) CreateProjectGitHubRepository(w http.ResponseWriter, r *http.R
 			uuidToString(project.WorkspaceID),
 			"member",
 			userID,
-			map[string]any{"workspace": workspaceToResponse(updatedWorkspace)},
+			map[string]any{"workspace": h.workspaceToResponse(updatedWorkspace)},
 		)
 	}
 	h.recordProjectWorkspaceActivity(r, project.WorkspaceID, userID, "github_repo_create", map[string]any{

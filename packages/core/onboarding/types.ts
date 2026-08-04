@@ -1,12 +1,8 @@
 export type OnboardingStep =
   | "welcome"
-  | "source"
-  | "role"
-  | "use_case"
+  | "about_you"
   | "workspace"
-  | "runtime"
-  | "agent"
-  | "first_issue";
+  | "runtime";
 
 /**
  * Exit path from the onboarding flow. Sent to
@@ -27,6 +23,7 @@ export type Source =
   | "social_x"
   | "social_linkedin"
   | "social_youtube"
+  | "social_github"
   | "social_other"
   | "blog_newsletter"
   | "ai_assistant"
@@ -58,15 +55,26 @@ export type UseCase =
   | "other";
 
 /**
- * Questionnaire shape. `source` and `use_case` allow multiple values
- * (users hear about us through several channels and use Multica for
- * several things); `role` stays single-select since the agent template
- * recommendation wants a primary identity.
+ * Questionnaire shape. `use_case` allows multiple values (users hire
+ * Multica for several jobs at once); `source` and `role` are single-
+ * select — for `source` we capture the primary acquisition channel
+ * for clean self-reported-attribution math (the array shape is
+ * preserved for back-compat with v2 multi-select rows; the client
+ * now always commits a one-element array), and `role` stays single
+ * because downstream personalization (the Helper "About me" context)
+ * wants a primary identity.
  *
- * `*_skipped: true` distinguishes an explicit Skip click from a slot
- * the user never reached. Both states are "unknown" for recommendation
- * purposes; the skip marker exists for analytics and so future
- * re-prompts can avoid nagging users who already declined.
+ * `role` / `use_case` are collected in-flow on the About-you step;
+ * `source` is no longer asked during onboarding — it is collected
+ * after the user has seen agents complete work, via the workspace
+ * source-backfill prompt (see `needs-backfill.ts`). The slots stay in
+ * this one shape because they share the same JSONB column and PATCH
+ * endpoint.
+ *
+ * `*_skipped: true` distinguishes an explicit Skip / decline from a
+ * slot the user never reached. Both states are "unknown" for
+ * personalization purposes; the skip marker exists for analytics and
+ * so future re-prompts can avoid nagging users who already declined.
  *
  * Backward compat: prior versions of this app wrote `source` and
  * `use_case` as a single string. `mergeQuestionnaire` in

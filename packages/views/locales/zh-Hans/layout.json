@@ -1,9 +1,10 @@
 {
   "nav": {
     "inbox": "收件箱",
-    "my_issues": "我的任务",
+    "chat": "聊天",
+    "my_issues": "我的 issue",
     "conversations": "对话",
-    "issues": "任务",
+    "issues": "Issues",
     "projects": "项目",
     "channels": "频道",
     "autopilots": "自动化",
@@ -11,14 +12,30 @@
     "squads": "小队",
     "usage": "用量",
     "runtimes": "运行时",
-    "skills": "技能",
+    "skills": "Skills",
     "settings": "设置"
+  },
+  "tab": {
+    "issue": "Issue",
+    "project": "项目",
+    "autopilot": "自动化",
+    "agent": "智能体",
+    "member": "成员",
+    "squad": "小队",
+    "skill": "Skill",
+    "machine": "机器",
+    "runtime": "运行时",
+    "attachment": "附件",
+    "create_agent": "创建智能体",
+    "unknown": "未知页面"
   },
   "help": {
     "trigger": "帮助",
     "docs": "文档",
     "changelog": "更新日志",
-    "feedback": "反馈"
+    "discord": "Discord",
+    "feedback": "反馈",
+    "server_version": "服务器版本 {{version}}"
   },
   "workspace_loader": {
     "loading_workspace": "正在加载工作区...",
@@ -76,6 +93,10 @@
     "show_fewer_conversations": "收起",
     "workspace_group": "工作区",
     "configure_group": "配置",
-    "unread_overflow": "99+"
+    "unread_overflow": "99+",
+    "discord_card": {
+      "title": "加入我们的 Discord",
+      "dismiss": "关闭"
+    }
   }
 }

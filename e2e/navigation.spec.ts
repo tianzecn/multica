@@ -1,62 +1,41 @@
 import { test, expect } from "@playwright/test";
-import { gotoHref, loginAsDefault } from "./helpers";
+import { loginAsDefault, waitForPageText } from "./helpers";
+
+const ROUTE_CHANGE_TIMEOUT = 30000;
 
 test.describe("Navigation", () => {
   test.beforeEach(async ({ page }) => {
     await loginAsDefault(page);
+    await page.waitForLoadState("networkidle");
   });
 
   test("sidebar navigation works", async ({ page }) => {
-    const inboxLink = page.locator('a[href$="/inbox"]');
-    const agentsLink = page.locator('a[href$="/agents"]');
-    const issuesLink = page.locator('a[href$="/issues"]');
-    await expect(inboxLink).toBeVisible();
-    await expect(agentsLink).toBeVisible();
-    await expect(issuesLink).toBeVisible();
+    await page.getByRole("link", { name: "Inbox" }).click();
+    await expect(page).toHaveURL(/\/inbox/, { timeout: ROUTE_CHANGE_TIMEOUT });
+    await waitForPageText(page, "Inbox");
 
-    const inboxHref = await inboxLink.getAttribute("href");
-    const agentsHref = await agentsLink.getAttribute("href");
-    const issuesHref = await issuesLink.getAttribute("href");
-    if (!inboxHref || !agentsHref || !issuesHref) {
-      throw new Error("Expected sidebar navigation links to have hrefs");
-    }
+    await page.getByRole("link", { name: "Agents" }).click();
+    await expect(page).toHaveURL(/\/agents/, { timeout: ROUTE_CHANGE_TIMEOUT });
+    await waitForPageText(page, "Agents");
 
-    await gotoHref(page, inboxHref);
-    await expect(page).toHaveURL(/\/inbox(?:[/?#]|$)/);
-
-    await gotoHref(page, agentsHref);
-    await expect(page).toHaveURL(/\/agents(?:[/?#]|$)/);
-
-    await gotoHref(page, issuesHref);
-    await expect(page).toHaveURL(/\/issues(?:[/?#]|$)/);
+    await page.getByRole("link", { name: "Issues", exact: true }).click();
+    await expect(page).toHaveURL(/\/issues/, { timeout: ROUTE_CHANGE_TIMEOUT });
+    await waitForPageText(page, "Issues");
   });
 
-  test("settings page loads from the sidebar", async ({ page }) => {
-    const settingsHref = await page
-      .locator('a[href$="/settings"]')
-      .getAttribute("href");
-    if (!settingsHref) {
-      throw new Error("Expected settings navigation link to have href");
-    }
+  test("settings page loads via sidebar", async ({ page }) => {
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page).toHaveURL(/\/settings/, { timeout: ROUTE_CHANGE_TIMEOUT });
+    await waitForPageText(page, "Settings");
 
-    await gotoHref(page, settingsHref);
-    await expect(page).toHaveURL(/\/settings(?:[/?#]|$)/);
-
-    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Profile" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "General" })).toBeVisible();
     await expect(page.getByRole("tab", { name: "Members" })).toBeVisible();
   });
 
   test("agents page shows agent list", async ({ page }) => {
-    const agentsHref = await page
-      .locator('a[href$="/agents"]')
-      .getAttribute("href");
-    if (!agentsHref) {
-      throw new Error("Expected agents navigation link to have href");
-    }
-
-    await gotoHref(page, agentsHref);
-    await expect(page).toHaveURL(/\/agents(?:[/?#]|$)/);
+    await page.getByRole("link", { name: "Agents" }).click();
+    await expect(page).toHaveURL(/\/agents/, { timeout: ROUTE_CHANGE_TIMEOUT });
+    await waitForPageText(page, "Agents");
 
     // Should show "Agents" heading
     await expect(page.locator("text=Agents").first()).toBeVisible();

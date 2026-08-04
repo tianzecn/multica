@@ -30,6 +30,9 @@ export interface FileAttachResult {
    *  comment delete). */
   id: string;
   url: string;
+  /** Durable URL to persist in markdown. Falls back to the legacy raw URL
+   *  only when talking to a server that predates `markdown_url`. */
+  markdownUrl: string;
   filename: string;
 }
 
@@ -65,6 +68,7 @@ export function useFileAttach() {
         return {
           id: attachment.id,
           url: attachment.url,
+          markdownUrl: attachment.markdown_url || attachment.url,
           filename: attachment.filename,
         };
       } catch (err) {

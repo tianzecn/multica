@@ -11,2834 +11,1788 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const addChannelMember = `-- name: AddChannelMember :one
-INSERT INTO channel_member (channel_id, member_type, member_id, role)
-VALUES ($1, $2, $3, $4)
-RETURNING id, channel_id, member_type, member_id, role, created_at
+const acquireChannelWSLease = `-- name: AcquireChannelWSLease :one
+UPDATE channel_installation
+SET ws_lease_token       = $1,
+    ws_lease_expires_at  = $2,
+    updated_at           = now()
+WHERE id = $3
+  AND status = 'active'
+  AND (
+        ws_lease_token IS NULL
+        OR ws_lease_expires_at < now()
+        OR ws_lease_token = $1
+  )
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
 `
 
-type AddChannelMemberParams struct {
-	ChannelID  pgtype.UUID `json:"channel_id"`
-	MemberType string      `json:"member_type"`
-	MemberID   pgtype.UUID `json:"member_id"`
-	Role       string      `json:"role"`
+type AcquireChannelWSLeaseParams struct {
+	NewToken     pgtype.Text        `json:"new_token"`
+	NewExpiresAt pgtype.Timestamptz `json:"new_expires_at"`
+	ID           pgtype.UUID        `json:"id"`
 }
 
-func (q *Queries) AddChannelMember(ctx context.Context, arg AddChannelMemberParams) (ChannelMember, error) {
-	row := q.db.QueryRow(ctx, addChannelMember,
-		arg.ChannelID,
-		arg.MemberType,
-		arg.MemberID,
-		arg.Role,
-	)
-	var i ChannelMember
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.MemberType,
-		&i.MemberID,
-		&i.Role,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const archiveChannel = `-- name: ArchiveChannel :one
-UPDATE channel
-SET archived_at = now(), updated_at = now()
-WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
-`
-
-type ArchiveChannelParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) ArchiveChannel(ctx context.Context, arg ArchiveChannelParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, archiveChannel, arg.ID, arg.WorkspaceID)
-	var i Channel
+// Atomically claims the WebSocket lease. CAS predicate accepts when no
+// holder exists, the holder expired, or the holder is us (renewal).
+func (q *Queries) AcquireChannelWSLease(ctx context.Context, arg AcquireChannelWSLeaseParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, acquireChannelWSLease, arg.NewToken, arg.NewExpiresAt, arg.ID)
+	var i ChannelInstallation
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const archiveChannelSession = `-- name: ArchiveChannelSession :one
-UPDATE channel_session
-SET status = 'archived', archived_at = now(), updated_at = now()
-WHERE id = $1 AND channel_id = $2
-RETURNING id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at
-`
-
-type ArchiveChannelSessionParams struct {
-	ID        pgtype.UUID `json:"id"`
-	ChannelID pgtype.UUID `json:"channel_id"`
-}
-
-func (q *Queries) ArchiveChannelSession(ctx context.Context, arg ArchiveChannelSessionParams) (ChannelSession, error) {
-	row := q.db.QueryRow(ctx, archiveChannelSession, arg.ID, arg.ChannelID)
-	var i ChannelSession
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.Title,
-		&i.Summary,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
 		&i.Status,
-		&i.CreatedByType,
-		&i.CreatedByID,
-		&i.ArchivedAt,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const cancelPendingChannelDispatchSteps = `-- name: CancelPendingChannelDispatchSteps :execrows
-UPDATE channel_dispatch_step
-SET status = 'cancelled',
-    skip_reason = CASE WHEN skip_reason = '' THEN 'Plan cancelled.' ELSE skip_reason END,
-    completed_at = now(),
+const backfillChannelInstallationRegionToFeishuLark = `-- name: BackfillChannelInstallationRegionToFeishuLark :execrows
+UPDATE channel_installation
+SET config     = jsonb_set(config, '{region}', '"lark"'),
     updated_at = now()
-WHERE plan_id = $1
-  AND status = 'pending'
+WHERE channel_type = 'feishu'
+  AND config ->> 'region' = 'feishu'
 `
 
-func (q *Queries) CancelPendingChannelDispatchSteps(ctx context.Context, planID pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, cancelPendingChannelDispatchSteps, planID)
+// Operator repair, feishu-only: flip every feishu installation still
+// carrying region='feishu' to 'lark'. Called only on deployments whose
+// legacy global base-URL override pointed at Lark international. Idempotent.
+func (q *Queries) BackfillChannelInstallationRegionToFeishuLark(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, backfillChannelInstallationRegionToFeishuLark)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const changeChannelDispatchPlanMode = `-- name: ChangeChannelDispatchPlanMode :one
-UPDATE channel_dispatch_plan
-SET mode = $3,
-    updated_at = now()
-WHERE id = $1 AND channel_id = $2
-RETURNING id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at
+const channelMediaObjectIsReferenced = `-- name: ChannelMediaObjectIsReferenced :one
+SELECT EXISTS (
+    SELECT 1 FROM attachment
+    WHERE chat_message_id = $1
+      AND workspace_id = $2
+      AND url = $3
+) AS referenced
 `
 
-type ChangeChannelDispatchPlanModeParams struct {
-	ID        pgtype.UUID `json:"id"`
-	ChannelID pgtype.UUID `json:"channel_id"`
-	Mode      string      `json:"mode"`
+type ChannelMediaObjectIsReferencedParams struct {
+	ChatMessageID pgtype.UUID `json:"chat_message_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	StorageUrl    string      `json:"storage_url"`
 }
 
-func (q *Queries) ChangeChannelDispatchPlanMode(ctx context.Context, arg ChangeChannelDispatchPlanModeParams) (ChannelDispatchPlan, error) {
-	row := q.db.QueryRow(ctx, changeChannelDispatchPlanMode, arg.ID, arg.ChannelID, arg.Mode)
-	var i ChannelDispatchPlan
+// The post-claim reference check: an attachment row carrying this object's
+// URL on the intended message. Only meaningful AFTER the claim flipped the
+// row to 'deleting' — from that point a bind can no longer succeed on the
+// key, so a negative answer is terminal, not a snapshot race. Re-run on every
+// tombstone pass as well: a positive answer there is an invariant violation,
+// and the object is kept and reported rather than deleted.
+func (q *Queries) ChannelMediaObjectIsReferenced(ctx context.Context, arg ChannelMediaObjectIsReferencedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, channelMediaObjectIsReferenced, arg.ChatMessageID, arg.WorkspaceID, arg.StorageUrl)
+	var referenced bool
+	err := row.Scan(&referenced)
+	return referenced, err
+}
+
+const claimChannelInboundDedup = `-- name: ClaimChannelInboundDedup :one
+
+INSERT INTO channel_inbound_message_dedup (installation_id, message_id, claim_token)
+VALUES ($1, $2, gen_random_uuid())
+ON CONFLICT (installation_id, message_id) DO UPDATE
+    SET received_at = now(),
+        claim_token = gen_random_uuid()
+    WHERE channel_inbound_message_dedup.processed_at IS NULL
+      AND channel_inbound_message_dedup.received_at < now() - INTERVAL '60 seconds'
+RETURNING installation_id, message_id, received_at, processed_at, claim_token
+`
+
+type ClaimChannelInboundDedupParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	MessageID      string      `json:"message_id"`
+}
+
+// =====================
+// channel_inbound_message_dedup
+// =====================
+// Two-phase idempotency gate with owner fencing. Returns the row when a
+// claim is acquired (fresh insert, or stale-reclaim of an in-flight claim
+// older than 60s); returns no rows when terminal (processed) or actively
+// in-flight. Every claim mints a fresh claim_token; Mark/Release are
+// fenced on it. See the table comment in migration 124 / the lark
+// predecessor for the full invariant set.
+func (q *Queries) ClaimChannelInboundDedup(ctx context.Context, arg ClaimChannelInboundDedupParams) (ChannelInboundMessageDedup, error) {
+	row := q.db.QueryRow(ctx, claimChannelInboundDedup, arg.InstallationID, arg.MessageID)
+	var i ChannelInboundMessageDedup
 	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.Mode,
-		&i.Status,
-		&i.Confidence,
-		&i.PlannerSource,
-		&i.Reason,
-		&i.ParticipantCount,
-		&i.RunCount,
-		&i.TotalInputTokens,
-		&i.TotalOutputTokens,
-		&i.TotalCacheReadTokens,
-		&i.TotalCacheWriteTokens,
-		&i.ElapsedMs,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.InstallationID,
+		&i.MessageID,
+		&i.ReceivedAt,
+		&i.ProcessedAt,
+		&i.ClaimToken,
 	)
 	return i, err
 }
 
-const channelHasUnreadForUser = `-- name: ChannelHasUnreadForUser :one
-SELECT EXISTS (
-    SELECT 1
-    FROM channel_message cm
-    LEFT JOIN channel_read_state crs
-      ON crs.channel_id = cm.channel_id
-     AND crs.user_id = $1
-    WHERE cm.channel_id = $2
-      AND cm.created_at > COALESCE(crs.last_read_at, '-infinity'::timestamptz)
-      AND NOT (
-        cm.author_type = 'member'
-        AND cm.author_id = $1
+const claimChannelMediaPendingObjectsForBind = `-- name: ClaimChannelMediaPendingObjectsForBind :many
+DELETE FROM channel_media_pending_object
+WHERE storage_key = ANY($1::text[])
+  AND workspace_id = $2
+  AND state = 'pending'
+RETURNING storage_key
+`
+
+type ClaimChannelMediaPendingObjectsForBindParams struct {
+	StorageKeys []string    `json:"storage_keys"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Runs inside the attachment-insert transaction: commit landed ⇔ the intents
+// are gone, atomically, so an ambiguous COMMIT never needs adjudication. Only
+// 'pending' rows can be claimed — a key the reconciler moved to 'deleting'
+// is NOT returned, and the caller must skip attaching that object (the
+// placeholder stays; the reconciler will delete the object).
+func (q *Queries) ClaimChannelMediaPendingObjectsForBind(ctx context.Context, arg ClaimChannelMediaPendingObjectsForBindParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, claimChannelMediaPendingObjectsForBind, arg.StorageKeys, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var storage_key string
+		if err := rows.Scan(&storage_key); err != nil {
+			return nil, err
+		}
+		items = append(items, storage_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimNextChannelMediaPendingObjectForReconcile = `-- name: ClaimNextChannelMediaPendingObjectForReconcile :one
+UPDATE channel_media_pending_object AS obj
+SET state = CASE WHEN obj.state = 'tombstoned' THEN 'tombstoned' ELSE 'deleting' END,
+    lease_token = $1,
+    lease_expires_at = now() + $2::interval,
+    attempt = obj.attempt + 1
+FROM (
+    SELECT cand.storage_key FROM channel_media_pending_object AS cand
+    WHERE cand.next_attempt_at <= now()
+      AND (
+          (cand.state = 'pending' AND cand.created_at <= now() - $3::interval)
+          OR (cand.state = 'deleting' AND (cand.lease_expires_at IS NULL OR cand.lease_expires_at <= now()))
+          OR (cand.state = 'tombstoned' AND (cand.lease_expires_at IS NULL OR cand.lease_expires_at <= now()))
       )
-) AS has_unread
+    ORDER BY cand.next_attempt_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+) AS due
+WHERE obj.storage_key = due.storage_key
+RETURNING obj.storage_key, obj.workspace_id, obj.chat_message_id, obj.storage_url, obj.installation_id, obj.state, obj.lease_token, obj.lease_expires_at, obj.attempt, obj.next_attempt_at, obj.last_error, obj.tombstone_pass, obj.created_at
 `
 
-type ChannelHasUnreadForUserParams struct {
-	UserID    pgtype.UUID `json:"user_id"`
-	ChannelID pgtype.UUID `json:"channel_id"`
+type ClaimNextChannelMediaPendingObjectForReconcileParams struct {
+	LeaseToken  pgtype.UUID     `json:"lease_token"`
+	Lease       pgtype.Interval `json:"lease"`
+	SettleDelay pgtype.Interval `json:"settle_delay"`
 }
 
-func (q *Queries) ChannelHasUnreadForUser(ctx context.Context, arg ChannelHasUnreadForUserParams) (bool, error) {
-	row := q.db.QueryRow(ctx, channelHasUnreadForUser, arg.UserID, arg.ChannelID)
-	var has_unread bool
-	err := row.Scan(&has_unread)
-	return has_unread, err
+// Short-transaction claim of ONE due row, taken immediately before that row is
+// settled. Claiming a whole batch up front made the claim a promise the sweep
+// might not keep: a tail row sat in 'deleting' with attempt already bumped
+// while earlier rows ran, and could expire and be reclaimed before its own
+// DELETE was ever tried, inflating attempt/backoff for work that never
+// happened. One row per claim means attempt counts attempts.
+//
+// Due means (a) 'pending' rows older than the settle delay — an operational
+// buffer only; correctness comes from the state flip, after which a bind can
+// never succeed on the key — or (b) 'deleting' rows whose lease expired (a
+// crashed or failed worker) — or (c) tombstones: the object was deleted, but a
+// PUT the client abandoned may still materialize it afterwards, so each due
+// tombstone gets another idempotent delete before the row is finally dropped.
+// FOR UPDATE SKIP LOCKED keeps replicas off each other's row; the
+// object-storage DELETE happens outside any transaction, gated by the lease
+// token. No row (ErrNoRows) means nothing is due — the sweep is done.
+func (q *Queries) ClaimNextChannelMediaPendingObjectForReconcile(ctx context.Context, arg ClaimNextChannelMediaPendingObjectForReconcileParams) (ChannelMediaPendingObject, error) {
+	row := q.db.QueryRow(ctx, claimNextChannelMediaPendingObjectForReconcile, arg.LeaseToken, arg.Lease, arg.SettleDelay)
+	var i ChannelMediaPendingObject
+	err := row.Scan(
+		&i.StorageKey,
+		&i.WorkspaceID,
+		&i.ChatMessageID,
+		&i.StorageUrl,
+		&i.InstallationID,
+		&i.State,
+		&i.LeaseToken,
+		&i.LeaseExpiresAt,
+		&i.Attempt,
+		&i.NextAttemptAt,
+		&i.LastError,
+		&i.TombstonePass,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
-const completeChannelAgentRun = `-- name: CompleteChannelAgentRun :exec
-UPDATE channel_agent_run
-SET status = 'completed', completed_at = now()
-WHERE id = $1
+const consumeChannelBindingToken = `-- name: ConsumeChannelBindingToken :one
+UPDATE channel_binding_token
+SET consumed_at = now()
+WHERE token_hash = $1
+  AND consumed_at IS NULL
+  AND expires_at > now()
+RETURNING token_hash, workspace_id, installation_id, channel_type, channel_user_id, expires_at, consumed_at, created_at
 `
 
-func (q *Queries) CompleteChannelAgentRun(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, completeChannelAgentRun, id)
+// Atomic redemption: returns the row only if the hash exists, is
+// unconsumed, and unexpired. Two simultaneous redemptions cannot both win.
+func (q *Queries) ConsumeChannelBindingToken(ctx context.Context, tokenHash string) (ChannelBindingToken, error) {
+	row := q.db.QueryRow(ctx, consumeChannelBindingToken, tokenHash)
+	var i ChannelBindingToken
+	err := row.Scan(
+		&i.TokenHash,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelUserID,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const countChannelMediaPendingObjects = `-- name: CountChannelMediaPendingObjects :one
+SELECT
+    count(*) FILTER (WHERE state <> 'tombstoned') AS pending_objects,
+    count(*) FILTER (WHERE state = 'tombstoned') AS tombstoned_objects
+FROM channel_media_pending_object
+`
+
+type CountChannelMediaPendingObjectsRow struct {
+	PendingObjects    int64 `json:"pending_objects"`
+	TombstonedObjects int64 `json:"tombstoned_objects"`
+}
+
+// Ledger backlog gauge for the reconciler's observability. Tombstones are
+// reported separately: they are bounded bookkeeping for already-deleted
+// objects, not a backlog of objects awaiting reclaim.
+func (q *Queries) CountChannelMediaPendingObjects(ctx context.Context) (CountChannelMediaPendingObjectsRow, error) {
+	row := q.db.QueryRow(ctx, countChannelMediaPendingObjects)
+	var i CountChannelMediaPendingObjectsRow
+	err := row.Scan(&i.PendingObjects, &i.TombstonedObjects)
+	return i, err
+}
+
+const createChannelBindingToken = `-- name: CreateChannelBindingToken :one
+
+INSERT INTO channel_binding_token (
+    token_hash, workspace_id, installation_id, channel_type,
+    channel_user_id, expires_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    LEAST($6::timestamptz, now() + INTERVAL '15 minutes')
+)
+RETURNING token_hash, workspace_id, installation_id, channel_type, channel_user_id, expires_at, consumed_at, created_at
+`
+
+type CreateChannelBindingTokenParams struct {
+	TokenHash      string             `json:"token_hash"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	InstallationID pgtype.UUID        `json:"installation_id"`
+	ChannelType    string             `json:"channel_type"`
+	ChannelUserID  string             `json:"channel_user_id"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+}
+
+// =====================
+// channel_binding_token
+// =====================
+// Mints a single-use binding token for an unbound platform user. TTL cap
+// (15 min) enforced by the table CHECK in lockstep with
+// channel.BindingTokenTTL. Clamp against the database clock so small clock
+// skew between an app node and Postgres cannot reject an otherwise valid
+// 15-minute token. The HASH is stored, never the raw token.
+func (q *Queries) CreateChannelBindingToken(ctx context.Context, arg CreateChannelBindingTokenParams) (ChannelBindingToken, error) {
+	row := q.db.QueryRow(ctx, createChannelBindingToken,
+		arg.TokenHash,
+		arg.WorkspaceID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.ChannelUserID,
+		arg.ExpiresAt,
+	)
+	var i ChannelBindingToken
+	err := row.Scan(
+		&i.TokenHash,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelUserID,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createChannelChatSessionBinding = `-- name: CreateChannelChatSessionBinding :one
+
+INSERT INTO channel_chat_session_binding (
+    chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, config
+) VALUES (
+    $1, $2, $3, $4, $5, $6
+)
+RETURNING id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at
+`
+
+type CreateChannelChatSessionBindingParams struct {
+	ChatSessionID  pgtype.UUID `json:"chat_session_id"`
+	InstallationID pgtype.UUID `json:"installation_id"`
+	ChannelType    string      `json:"channel_type"`
+	ChannelChatID  string      `json:"channel_chat_id"`
+	ChatType       string      `json:"chat_type"`
+	Config         []byte      `json:"config"`
+}
+
+// =====================
+// channel_chat_session_binding
+// =====================
+// channel_chat_id is the session-isolation key (one chat_session per
+// (installation_id, channel_chat_id)): Feishu passes the chat id; Slack passes
+// a stable key that, for channels, includes the thread root so each @bot thread
+// is its own session. config carries any platform-specific outbound routing the
+// key alone does not (e.g. Slack's real channel_id when the key is composite);
+// it is opaque to the shared session service.
+func (q *Queries) CreateChannelChatSessionBinding(ctx context.Context, arg CreateChannelChatSessionBindingParams) (ChannelChatSessionBinding, error) {
+	row := q.db.QueryRow(ctx, createChannelChatSessionBinding,
+		arg.ChatSessionID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.ChannelChatID,
+		arg.ChatType,
+		arg.Config,
+	)
+	var i ChannelChatSessionBinding
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.ChatType,
+		&i.LastMessageID,
+		&i.LastThreadID,
+		&i.Config,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createChannelOutboundCardMessage = `-- name: CreateChannelOutboundCardMessage :one
+
+INSERT INTO channel_outbound_card_message (
+    chat_session_id, task_id, channel_type, channel_chat_id,
+    channel_card_message_id, status
+) VALUES (
+    $1, $6, $2, $3, $4, $5
+)
+RETURNING id, chat_session_id, task_id, channel_type, channel_chat_id, channel_card_message_id, status, last_patched_at, created_at
+`
+
+type CreateChannelOutboundCardMessageParams struct {
+	ChatSessionID        pgtype.UUID `json:"chat_session_id"`
+	ChannelType          string      `json:"channel_type"`
+	ChannelChatID        string      `json:"channel_chat_id"`
+	ChannelCardMessageID string      `json:"channel_card_message_id"`
+	Status               string      `json:"status"`
+	TaskID               pgtype.UUID `json:"task_id"`
+}
+
+// =====================
+// channel_outbound_card_message
+// =====================
+func (q *Queries) CreateChannelOutboundCardMessage(ctx context.Context, arg CreateChannelOutboundCardMessageParams) (ChannelOutboundCardMessage, error) {
+	row := q.db.QueryRow(ctx, createChannelOutboundCardMessage,
+		arg.ChatSessionID,
+		arg.ChannelType,
+		arg.ChannelChatID,
+		arg.ChannelCardMessageID,
+		arg.Status,
+		arg.TaskID,
+	)
+	var i ChannelOutboundCardMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.TaskID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.ChannelCardMessageID,
+		&i.Status,
+		&i.LastPatchedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createChannelUserBinding = `-- name: CreateChannelUserBinding :one
+
+INSERT INTO channel_user_binding (
+    workspace_id, multica_user_id, installation_id,
+    channel_type, channel_user_id, config
+) VALUES (
+    $1, $2, $3, $4, $5, $6
+)
+ON CONFLICT (installation_id, channel_user_id) DO UPDATE SET
+    -- jsonb_strip_nulls(EXCLUDED.config) preserves the old lark semantics
+    -- ` + "`" + `union_id = COALESCE(EXCLUDED.union_id, lark_user_binding.union_id)` + "`" + `:
+    -- a re-bind that carries ` + "`" + `{"union_id": null}` + "`" + ` (or omits the key) must NOT
+    -- erase a union_id we already captured. Only non-null incoming keys win.
+    config   = channel_user_binding.config || jsonb_strip_nulls(EXCLUDED.config),
+    bound_at = now()
+WHERE channel_user_binding.multica_user_id = EXCLUDED.multica_user_id
+RETURNING id, workspace_id, multica_user_id, installation_id, channel_type, channel_user_id, config, bound_at
+`
+
+type CreateChannelUserBindingParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	MulticaUserID  pgtype.UUID `json:"multica_user_id"`
+	InstallationID pgtype.UUID `json:"installation_id"`
+	ChannelType    string      `json:"channel_type"`
+	ChannelUserID  string      `json:"channel_user_id"`
+	Config         []byte      `json:"config"`
+}
+
+// =====================
+// channel_user_binding
+// =====================
+// Records that a platform user id (per-installation; Feishu open_id) maps
+// to a Multica user. The old composite member-FK is gone, so this no
+// longer fails when the redeemer is not a workspace member — the caller
+// (BindingTokenService.RedeemAndBind) validates membership explicitly
+// before calling. ON CONFLICT DO UPDATE is still gated on multica_user_id
+// matching, so a second redeemer cannot steal an already-bound user id;
+// a cross-user conflict updates zero rows and the caller maps that to
+// ErrBindingAlreadyAssigned. config carries secondary identity (union_id).
+func (q *Queries) CreateChannelUserBinding(ctx context.Context, arg CreateChannelUserBindingParams) (ChannelUserBinding, error) {
+	row := q.db.QueryRow(ctx, createChannelUserBinding,
+		arg.WorkspaceID,
+		arg.MulticaUserID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.ChannelUserID,
+		arg.Config,
+	)
+	var i ChannelUserBinding
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.MulticaUserID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelUserID,
+		&i.Config,
+		&i.BoundAt,
+	)
+	return i, err
+}
+
+const deleteChannelBindingTokensByInstallation = `-- name: DeleteChannelBindingTokensByInstallation :exec
+DELETE FROM channel_binding_token
+WHERE installation_id = $1
+`
+
+// Application-layer integrity (schema has no FK/cascade, MUL-3515 §4): drop
+// every pending binding token for an installation that is being hard-deleted.
+// A token stays redeemable for up to 15 min; without this a user who clicks a
+// still-unexpired bind link right after the bot was rebound to another agent
+// would consume the token and get a "bound" result written against a deleted
+// installation — a link that never actually reaches the live bot.
+func (q *Queries) DeleteChannelBindingTokensByInstallation(ctx context.Context, installationID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChannelBindingTokensByInstallation, installationID)
 	return err
 }
 
-const createApprovalRequest = `-- name: CreateApprovalRequest :one
-INSERT INTO approval_request (
-    workspace_id, channel_id, session_id, issue_id, requested_by_type,
-    requested_by_id, action_type, action_payload
-) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8
+const deleteChannelChatSessionBindingBySession = `-- name: DeleteChannelChatSessionBindingBySession :exec
+DELETE FROM channel_chat_session_binding
+WHERE chat_session_id = $1
+`
+
+// Application-layer integrity (replaces the old chat_session-FK ON DELETE
+// CASCADE): drop the binding when its chat_session is deleted.
+func (q *Queries) DeleteChannelChatSessionBindingBySession(ctx context.Context, chatSessionID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChannelChatSessionBindingBySession, chatSessionID)
+	return err
+}
+
+const deleteChannelChatSessionBindingsByInstallation = `-- name: DeleteChannelChatSessionBindingsByInstallation :exec
+DELETE FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_type = $2
+`
+
+type DeleteChannelChatSessionBindingsByInstallationParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	ChannelType    string      `json:"channel_type"`
+}
+
+// Retire every chat-session binding for an installation. Used when an
+// installation is re-pointed to a different agent (Slack re-connect): each
+// existing chat_session is permanently tied to the agent it was created under,
+// so reusing it would keep routing the conversation to the OLD agent. Dropping
+// the bindings forces the next inbound message to create a fresh session under
+// the new agent. The chat_session rows are preserved for history; only the
+// channel binding is removed.
+func (q *Queries) DeleteChannelChatSessionBindingsByInstallation(ctx context.Context, arg DeleteChannelChatSessionBindingsByInstallationParams) error {
+	_, err := q.db.Exec(ctx, deleteChannelChatSessionBindingsByInstallation, arg.InstallationID, arg.ChannelType)
+	return err
+}
+
+const deleteChannelInstallationsBySystemRuntimeAgents = `-- name: DeleteChannelInstallationsBySystemRuntimeAgents :exec
+WITH doomed AS (
+    SELECT id FROM channel_installation
+    WHERE agent_id IN (
+        SELECT id FROM agent WHERE runtime_id = $1 AND kind = 'system'
+    )
+),
+cleared_chat_sessions AS (
+    DELETE FROM channel_chat_session_binding WHERE installation_id IN (SELECT id FROM doomed)
+    RETURNING chat_session_id
+),
+cleared_outbound_cards AS (
+    -- Reach channel_outbound_card_message (keyed by chat_session_id, no FK)
+    -- through the just-removed chat-session bindings, same as the reclaim path.
+    DELETE FROM channel_outbound_card_message
+    WHERE chat_session_id IN (SELECT chat_session_id FROM cleared_chat_sessions)
+),
+cleared_binding_tokens AS (
+    DELETE FROM channel_binding_token WHERE installation_id IN (SELECT id FROM doomed)
+),
+cleared_user_bindings AS (
+    DELETE FROM channel_user_binding WHERE installation_id IN (SELECT id FROM doomed)
+),
+cleared_inbound_dedup AS (
+    DELETE FROM channel_inbound_message_dedup WHERE installation_id IN (SELECT id FROM doomed)
+),
+cleared_audit AS (
+    -- Hard delete: purge audit rows rather than detaching them into permanently
+    -- unattributable NULL rows (channel_inbound_audit has no workspace_id / reaper).
+    DELETE FROM channel_inbound_audit WHERE installation_id IN (SELECT id FROM doomed)
 )
-RETURNING id, workspace_id, channel_id, session_id, issue_id, requested_by_type, requested_by_id, action_type, action_payload, status, resolution_note, resolved_by, resolved_at, created_at, updated_at
+DELETE FROM channel_installation WHERE id IN (SELECT id FROM doomed)
 `
 
-type CreateApprovalRequestParams struct {
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	ChannelID       pgtype.UUID `json:"channel_id"`
-	SessionID       pgtype.UUID `json:"session_id"`
-	IssueID         pgtype.UUID `json:"issue_id"`
-	RequestedByType string      `json:"requested_by_type"`
-	RequestedByID   pgtype.UUID `json:"requested_by_id"`
-	ActionType      string      `json:"action_type"`
-	ActionPayload   []byte      `json:"action_payload"`
+// Application-layer replacement for the (deliberately absent, MUL-3515 §4)
+// workspace/agent ON DELETE CASCADE: on runtime teardown, before the system
+// agents are hard-deleted, remove every channel installation they own — plus all
+// of each installation's dependent rows — so no orphaned installation keeps
+// occupying its bot's (channel_type, app_id) routing slot after its agent is gone
+// (#4810). MUST run in the same tx as, and BEFORE, DeleteSystemAgentsByRuntime.
+// Mirrors the agent hard-delete predicate (runtime_id, kind = 'system') exactly.
+//
+// Scoped to kind = 'system' since MUL-5559: a user agent now survives its
+// runtime's deletion as an unbound agent, so tearing down its installations
+// here would take a working bot away from an agent that is still there.
+func (q *Queries) DeleteChannelInstallationsBySystemRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChannelInstallationsBySystemRuntimeAgents, runtimeID)
+	return err
 }
 
-func (q *Queries) CreateApprovalRequest(ctx context.Context, arg CreateApprovalRequestParams) (ApprovalRequest, error) {
-	row := q.db.QueryRow(ctx, createApprovalRequest,
-		arg.WorkspaceID,
-		arg.ChannelID,
-		arg.SessionID,
-		arg.IssueID,
-		arg.RequestedByType,
-		arg.RequestedByID,
-		arg.ActionType,
-		arg.ActionPayload,
-	)
-	var i ApprovalRequest
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.ChannelID,
-		&i.SessionID,
-		&i.IssueID,
-		&i.RequestedByType,
-		&i.RequestedByID,
-		&i.ActionType,
-		&i.ActionPayload,
-		&i.Status,
-		&i.ResolutionNote,
-		&i.ResolvedBy,
-		&i.ResolvedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const createChannel = `-- name: CreateChannel :one
-INSERT INTO channel (
-    workspace_id, group_id, slug, name, description, visibility,
-    proactivity, instructions, summary, project_id, default_project_id, default_assignee_type,
-    default_assignee_id, position, created_by, mention_issue_search_enabled
-) VALUES (
-    $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $10, $11,
-    $12, $13, $14, $15
-)
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
+const deleteChannelMediaPendingObject = `-- name: DeleteChannelMediaPendingObject :execrows
+DELETE FROM channel_media_pending_object
+WHERE storage_key = $1
+  AND workspace_id = $2
+  AND lease_token = $3
 `
 
-type CreateChannelParams struct {
-	WorkspaceID               pgtype.UUID `json:"workspace_id"`
-	GroupID                   pgtype.UUID `json:"group_id"`
-	Slug                      string      `json:"slug"`
-	Name                      string      `json:"name"`
-	Description               string      `json:"description"`
-	Visibility                string      `json:"visibility"`
-	Proactivity               string      `json:"proactivity"`
-	Instructions              string      `json:"instructions"`
-	Summary                   string      `json:"summary"`
-	ProjectID                 pgtype.UUID `json:"project_id"`
-	DefaultAssigneeType       pgtype.Text `json:"default_assignee_type"`
-	DefaultAssigneeID         pgtype.UUID `json:"default_assignee_id"`
-	Position                  float64     `json:"position"`
-	CreatedBy                 pgtype.UUID `json:"created_by"`
-	MentionIssueSearchEnabled bool        `json:"mention_issue_search_enabled"`
-}
-
-func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, createChannel,
-		arg.WorkspaceID,
-		arg.GroupID,
-		arg.Slug,
-		arg.Name,
-		arg.Description,
-		arg.Visibility,
-		arg.Proactivity,
-		arg.Instructions,
-		arg.Summary,
-		arg.ProjectID,
-		arg.DefaultAssigneeType,
-		arg.DefaultAssigneeID,
-		arg.Position,
-		arg.CreatedBy,
-		arg.MentionIssueSearchEnabled,
-	)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const createChannelAgentRun = `-- name: CreateChannelAgentRun :one
-INSERT INTO channel_agent_run (
-    channel_id, channel_session_id, user_message_id, agent_id,
-    chat_session_id, chat_user_message_id, task_id, dispatch_step_id
-) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8
-)
-RETURNING id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id
-`
-
-type CreateChannelAgentRunParams struct {
-	ChannelID         pgtype.UUID `json:"channel_id"`
-	ChannelSessionID  pgtype.UUID `json:"channel_session_id"`
-	UserMessageID     pgtype.UUID `json:"user_message_id"`
-	AgentID           pgtype.UUID `json:"agent_id"`
-	ChatSessionID     pgtype.UUID `json:"chat_session_id"`
-	ChatUserMessageID pgtype.UUID `json:"chat_user_message_id"`
-	TaskID            pgtype.UUID `json:"task_id"`
-	DispatchStepID    pgtype.UUID `json:"dispatch_step_id"`
-}
-
-func (q *Queries) CreateChannelAgentRun(ctx context.Context, arg CreateChannelAgentRunParams) (ChannelAgentRun, error) {
-	row := q.db.QueryRow(ctx, createChannelAgentRun,
-		arg.ChannelID,
-		arg.ChannelSessionID,
-		arg.UserMessageID,
-		arg.AgentID,
-		arg.ChatSessionID,
-		arg.ChatUserMessageID,
-		arg.TaskID,
-		arg.DispatchStepID,
-	)
-	var i ChannelAgentRun
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.UserMessageID,
-		&i.AgentID,
-		&i.ChatSessionID,
-		&i.ChatUserMessageID,
-		&i.TaskID,
-		&i.Status,
-		&i.CreatedAt,
-		&i.CompletedAt,
-		&i.DispatchStepID,
-	)
-	return i, err
-}
-
-const createChannelAgentThread = `-- name: CreateChannelAgentThread :one
-INSERT INTO channel_agent_thread (channel_id, channel_session_id, agent_id, chat_session_id)
-VALUES ($1, $2, $3, $4)
-RETURNING id, channel_id, channel_session_id, agent_id, chat_session_id, created_at, updated_at
-`
-
-type CreateChannelAgentThreadParams struct {
-	ChannelID        pgtype.UUID `json:"channel_id"`
-	ChannelSessionID pgtype.UUID `json:"channel_session_id"`
-	AgentID          pgtype.UUID `json:"agent_id"`
-	ChatSessionID    pgtype.UUID `json:"chat_session_id"`
-}
-
-func (q *Queries) CreateChannelAgentThread(ctx context.Context, arg CreateChannelAgentThreadParams) (ChannelAgentThread, error) {
-	row := q.db.QueryRow(ctx, createChannelAgentThread,
-		arg.ChannelID,
-		arg.ChannelSessionID,
-		arg.AgentID,
-		arg.ChatSessionID,
-	)
-	var i ChannelAgentThread
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.AgentID,
-		&i.ChatSessionID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const createChannelDispatchFeedback = `-- name: CreateChannelDispatchFeedback :one
-INSERT INTO channel_dispatch_feedback (
-    plan_id, step_id, actor_type, actor_id, action, before_mode, after_mode, payload
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
-)
-RETURNING id, plan_id, step_id, actor_type, actor_id, action, before_mode, after_mode, payload, created_at
-`
-
-type CreateChannelDispatchFeedbackParams struct {
-	PlanID     pgtype.UUID `json:"plan_id"`
-	StepID     pgtype.UUID `json:"step_id"`
-	ActorType  string      `json:"actor_type"`
-	ActorID    pgtype.UUID `json:"actor_id"`
-	Action     string      `json:"action"`
-	BeforeMode pgtype.Text `json:"before_mode"`
-	AfterMode  pgtype.Text `json:"after_mode"`
-	Payload    []byte      `json:"payload"`
-}
-
-func (q *Queries) CreateChannelDispatchFeedback(ctx context.Context, arg CreateChannelDispatchFeedbackParams) (ChannelDispatchFeedback, error) {
-	row := q.db.QueryRow(ctx, createChannelDispatchFeedback,
-		arg.PlanID,
-		arg.StepID,
-		arg.ActorType,
-		arg.ActorID,
-		arg.Action,
-		arg.BeforeMode,
-		arg.AfterMode,
-		arg.Payload,
-	)
-	var i ChannelDispatchFeedback
-	err := row.Scan(
-		&i.ID,
-		&i.PlanID,
-		&i.StepID,
-		&i.ActorType,
-		&i.ActorID,
-		&i.Action,
-		&i.BeforeMode,
-		&i.AfterMode,
-		&i.Payload,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const createChannelDispatchPlan = `-- name: CreateChannelDispatchPlan :one
-INSERT INTO channel_dispatch_plan (
-    channel_id, channel_session_id, trigger_message_id, mode, status,
-    confidence, planner_source, reason, participant_count
-) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9
-)
-RETURNING id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at
-`
-
-type CreateChannelDispatchPlanParams struct {
-	ChannelID        pgtype.UUID `json:"channel_id"`
-	ChannelSessionID pgtype.UUID `json:"channel_session_id"`
-	TriggerMessageID pgtype.UUID `json:"trigger_message_id"`
-	Mode             string      `json:"mode"`
-	Status           string      `json:"status"`
-	Confidence       float64     `json:"confidence"`
-	PlannerSource    string      `json:"planner_source"`
-	Reason           string      `json:"reason"`
-	ParticipantCount int32       `json:"participant_count"`
-}
-
-func (q *Queries) CreateChannelDispatchPlan(ctx context.Context, arg CreateChannelDispatchPlanParams) (ChannelDispatchPlan, error) {
-	row := q.db.QueryRow(ctx, createChannelDispatchPlan,
-		arg.ChannelID,
-		arg.ChannelSessionID,
-		arg.TriggerMessageID,
-		arg.Mode,
-		arg.Status,
-		arg.Confidence,
-		arg.PlannerSource,
-		arg.Reason,
-		arg.ParticipantCount,
-	)
-	var i ChannelDispatchPlan
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.Mode,
-		&i.Status,
-		&i.Confidence,
-		&i.PlannerSource,
-		&i.Reason,
-		&i.ParticipantCount,
-		&i.RunCount,
-		&i.TotalInputTokens,
-		&i.TotalOutputTokens,
-		&i.TotalCacheReadTokens,
-		&i.TotalCacheWriteTokens,
-		&i.ElapsedMs,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const createChannelDispatchStep = `-- name: CreateChannelDispatchStep :one
-INSERT INTO channel_dispatch_step (
-    plan_id, channel_id, channel_session_id, trigger_message_id,
-    agent_id, position, role, status, instruction, depends_on_step_ids,
-    skip_reason
-) VALUES (
-    $1, $2, $3, $4,
-    $5, $6, $7, $8, $9, $10,
-    $11
-)
-RETURNING id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at
-`
-
-type CreateChannelDispatchStepParams struct {
-	PlanID           pgtype.UUID   `json:"plan_id"`
-	ChannelID        pgtype.UUID   `json:"channel_id"`
-	ChannelSessionID pgtype.UUID   `json:"channel_session_id"`
-	TriggerMessageID pgtype.UUID   `json:"trigger_message_id"`
-	AgentID          pgtype.UUID   `json:"agent_id"`
-	Position         int32         `json:"position"`
-	Role             string        `json:"role"`
-	Status           string        `json:"status"`
-	Instruction      string        `json:"instruction"`
-	DependsOnStepIds []pgtype.UUID `json:"depends_on_step_ids"`
-	SkipReason       string        `json:"skip_reason"`
-}
-
-func (q *Queries) CreateChannelDispatchStep(ctx context.Context, arg CreateChannelDispatchStepParams) (ChannelDispatchStep, error) {
-	row := q.db.QueryRow(ctx, createChannelDispatchStep,
-		arg.PlanID,
-		arg.ChannelID,
-		arg.ChannelSessionID,
-		arg.TriggerMessageID,
-		arg.AgentID,
-		arg.Position,
-		arg.Role,
-		arg.Status,
-		arg.Instruction,
-		arg.DependsOnStepIds,
-		arg.SkipReason,
-	)
-	var i ChannelDispatchStep
-	err := row.Scan(
-		&i.ID,
-		&i.PlanID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.AgentID,
-		&i.Position,
-		&i.Role,
-		&i.Status,
-		&i.Instruction,
-		&i.DependsOnStepIds,
-		&i.SkipReason,
-		&i.Error,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const createChannelGroup = `-- name: CreateChannelGroup :one
-INSERT INTO channel_group (workspace_id, name, position, created_by)
-VALUES ($1, $2, $3, $4)
-RETURNING id, workspace_id, name, position, created_by, archived_at, created_at, updated_at
-`
-
-type CreateChannelGroupParams struct {
+type DeleteChannelMediaPendingObjectParams struct {
+	StorageKey  string      `json:"storage_key"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Name        string      `json:"name"`
-	Position    float64     `json:"position"`
-	CreatedBy   pgtype.UUID `json:"created_by"`
+	LeaseToken  pgtype.UUID `json:"lease_token"`
 }
 
-func (q *Queries) CreateChannelGroup(ctx context.Context, arg CreateChannelGroupParams) (ChannelGroup, error) {
-	row := q.db.QueryRow(ctx, createChannelGroup,
+// Drops a claimed row for good: a durable attachment reference was found, or
+// the tombstone's re-delete schedule is exhausted. Lease-token guarded so an
+// expired-lease reclaim by another
+// replica cannot be clobbered; workspace_id explicit per the tenancy rule.
+func (q *Queries) DeleteChannelMediaPendingObject(ctx context.Context, arg DeleteChannelMediaPendingObjectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteChannelMediaPendingObject, arg.StorageKey, arg.WorkspaceID, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteChannelOutboundCardMessagesBySession = `-- name: DeleteChannelOutboundCardMessagesBySession :exec
+DELETE FROM channel_outbound_card_message
+WHERE chat_session_id = $1
+`
+
+// Application-layer integrity (channel_* has no FK/cascade, MUL-3515 §4): drop the
+// outbound card-message rows for a chat_session being deleted. They are keyed by
+// chat_session_id with no FK and no reaper, so the standalone chat-session delete
+// path must prune them here alongside DeleteChannelChatSessionBindingBySession —
+// otherwise deleting a chat session leaves them as permanent orphans (Elon's
+// follow-up on #4810; the workspace/agent/reclaim sweeps already cover their
+// paths). A card that survived its session could only mis-route a later patch.
+func (q *Queries) DeleteChannelOutboundCardMessagesBySession(ctx context.Context, chatSessionID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChannelOutboundCardMessagesBySession, chatSessionID)
+	return err
+}
+
+const deleteChannelUserBindingsByInstallation = `-- name: DeleteChannelUserBindingsByInstallation :exec
+DELETE FROM channel_user_binding
+WHERE installation_id = $1
+`
+
+// Application-layer integrity (schema has no FK/cascade, MUL-3515 §4): drop
+// every member account link for an installation that is being hard-deleted.
+// Rebinding a Feishu bot to a DIFFERENT agent starts a fresh installation, so
+// old links do not follow — a different agent is a distinct connection and
+// members re-establish their link on first contact. The rows could never be
+// reused anyway (every Feishu identity lookup is installation_id-scoped, and
+// FindReusableChannelUserBinding is Slack-only), so removing them just keeps
+// dead rows from accumulating.
+func (q *Queries) DeleteChannelUserBindingsByInstallation(ctx context.Context, installationID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChannelUserBindingsByInstallation, installationID)
+	return err
+}
+
+const deleteChannelUserBindingsByWorkspaceMember = `-- name: DeleteChannelUserBindingsByWorkspaceMember :exec
+DELETE FROM channel_user_binding
+WHERE workspace_id = $1 AND multica_user_id = $2
+`
+
+type DeleteChannelUserBindingsByWorkspaceMemberParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	MulticaUserID pgtype.UUID `json:"multica_user_id"`
+}
+
+// Application-layer integrity (replaces the old member-FK ON DELETE
+// CASCADE): prune every binding for a user who has been removed from a
+// workspace, across all installations in that workspace.
+func (q *Queries) DeleteChannelUserBindingsByWorkspaceMember(ctx context.Context, arg DeleteChannelUserBindingsByWorkspaceMemberParams) error {
+	_, err := q.db.Exec(ctx, deleteChannelUserBindingsByWorkspaceMember, arg.WorkspaceID, arg.MulticaUserID)
+	return err
+}
+
+const findReusableChannelUserBinding = `-- name: FindReusableChannelUserBinding :one
+SELECT b.id, b.workspace_id, b.multica_user_id, b.installation_id, b.channel_type, b.channel_user_id, b.config, b.bound_at FROM channel_user_binding b
+JOIN channel_installation ci ON ci.id = b.installation_id
+WHERE b.workspace_id = $1
+  AND b.channel_type = $2
+  AND b.channel_user_id = $3
+  AND ci.config ->> 'team_id' = $4::text
+ORDER BY b.bound_at DESC
+LIMIT 1
+`
+
+type FindReusableChannelUserBindingParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	ChannelType   string      `json:"channel_type"`
+	ChannelUserID string      `json:"channel_user_id"`
+	TeamID        string      `json:"team_id"`
+}
+
+// Cross-installation account-link reuse (MUL-3911). When a platform user
+// messages an installation they have NOT linked, but the SAME user id is already
+// bound to ANOTHER installation in the SAME Multica workspace + SAME Slack team,
+// the inbound identity step reuses that link instead of re-prompting. Slack user
+// ids are stable within a team, so an identical channel_user_id denotes the same
+// human across that team's apps. The match is fenced to one workspace AND one
+// team (installation config->>'team_id'): a Slack team can be connected to two
+// different Multica workspaces, and a user may hold different Multica accounts in
+// each, so reuse must cross neither boundary. Most-recently-bound wins. The
+// caller re-checks membership and materializes a fresh per-installation binding.
+//
+// team_id is pinned ::text so sqlc types the arg as a string instead of
+// attributing the bare param to the JSONB config column (mirrors
+// GetChannelInstallationByAppID's app_id cast).
+func (q *Queries) FindReusableChannelUserBinding(ctx context.Context, arg FindReusableChannelUserBindingParams) (ChannelUserBinding, error) {
+	row := q.db.QueryRow(ctx, findReusableChannelUserBinding,
 		arg.WorkspaceID,
-		arg.Name,
-		arg.Position,
-		arg.CreatedBy,
+		arg.ChannelType,
+		arg.ChannelUserID,
+		arg.TeamID,
 	)
-	var i ChannelGroup
+	var i ChannelUserBinding
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
-		&i.Name,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.MulticaUserID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelUserID,
+		&i.Config,
+		&i.BoundAt,
 	)
 	return i, err
 }
 
-const createChannelMessage = `-- name: CreateChannelMessage :one
-INSERT INTO channel_message (
-    channel_id, session_id, author_type, author_id, content, type, parent_id, issue_id
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
-)
-RETURNING id, channel_id, session_id, author_type, author_id, content, type, parent_id, issue_id, created_at, updated_at
+const getChannelChatSessionBinding = `-- name: GetChannelChatSessionBinding :one
+SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_chat_id = $2
 `
 
-type CreateChannelMessageParams struct {
-	ChannelID  pgtype.UUID `json:"channel_id"`
-	SessionID  pgtype.UUID `json:"session_id"`
-	AuthorType string      `json:"author_type"`
-	AuthorID   pgtype.UUID `json:"author_id"`
-	Content    string      `json:"content"`
-	Type       string      `json:"type"`
-	ParentID   pgtype.UUID `json:"parent_id"`
-	IssueID    pgtype.UUID `json:"issue_id"`
+type GetChannelChatSessionBindingParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	ChannelChatID  string      `json:"channel_chat_id"`
 }
 
-func (q *Queries) CreateChannelMessage(ctx context.Context, arg CreateChannelMessageParams) (ChannelMessage, error) {
-	row := q.db.QueryRow(ctx, createChannelMessage,
-		arg.ChannelID,
-		arg.SessionID,
-		arg.AuthorType,
-		arg.AuthorID,
-		arg.Content,
-		arg.Type,
-		arg.ParentID,
-		arg.IssueID,
-	)
-	var i ChannelMessage
+// Lookup-by-channel-chat: the inbound dispatcher finds the existing
+// chat_session before deciding whether to create one.
+func (q *Queries) GetChannelChatSessionBinding(ctx context.Context, arg GetChannelChatSessionBindingParams) (ChannelChatSessionBinding, error) {
+	row := q.db.QueryRow(ctx, getChannelChatSessionBinding, arg.InstallationID, arg.ChannelChatID)
+	var i ChannelChatSessionBinding
 	err := row.Scan(
 		&i.ID,
-		&i.ChannelID,
-		&i.SessionID,
-		&i.AuthorType,
-		&i.AuthorID,
-		&i.Content,
-		&i.Type,
-		&i.ParentID,
-		&i.IssueID,
+		&i.ChatSessionID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.ChatType,
+		&i.LastMessageID,
+		&i.LastThreadID,
+		&i.Config,
 		&i.CreatedAt,
-		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const createChannelSession = `-- name: CreateChannelSession :one
-INSERT INTO channel_session (channel_id, title, summary, status, created_by_type, created_by_id)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at
+const getChannelChatSessionBindingBySession = `-- name: GetChannelChatSessionBindingBySession :one
+SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, last_message_id, last_thread_id, config, created_at FROM channel_chat_session_binding
+WHERE chat_session_id = $1
+  AND channel_type = $2
 `
 
-type CreateChannelSessionParams struct {
-	ChannelID     pgtype.UUID `json:"channel_id"`
-	Title         string      `json:"title"`
-	Summary       string      `json:"summary"`
-	Status        string      `json:"status"`
-	CreatedByType string      `json:"created_by_type"`
-	CreatedByID   pgtype.UUID `json:"created_by_id"`
+type GetChannelChatSessionBindingBySessionParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	ChannelType   string      `json:"channel_type"`
 }
 
-func (q *Queries) CreateChannelSession(ctx context.Context, arg CreateChannelSessionParams) (ChannelSession, error) {
-	row := q.db.QueryRow(ctx, createChannelSession,
-		arg.ChannelID,
-		arg.Title,
-		arg.Summary,
-		arg.Status,
-		arg.CreatedByType,
-		arg.CreatedByID,
-	)
-	var i ChannelSession
+// Reverse lookup for the outbound patcher: given a chat_session_id, find
+// its channel binding to know which (installation, chat_id) to send to.
+// Scoped by channel_type so a future non-Feishu binding on the same
+// chat_session is never treated as a Feishu reply target.
+func (q *Queries) GetChannelChatSessionBindingBySession(ctx context.Context, arg GetChannelChatSessionBindingBySessionParams) (ChannelChatSessionBinding, error) {
+	row := q.db.QueryRow(ctx, getChannelChatSessionBindingBySession, arg.ChatSessionID, arg.ChannelType)
+	var i ChannelChatSessionBinding
 	err := row.Scan(
 		&i.ID,
-		&i.ChannelID,
-		&i.Title,
-		&i.Summary,
+		&i.ChatSessionID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.ChatType,
+		&i.LastMessageID,
+		&i.LastThreadID,
+		&i.Config,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getChannelInstallation = `-- name: GetChannelInstallation :one
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+WHERE id = $1 AND channel_type = $2
+`
+
+type GetChannelInstallationParams struct {
+	ID          pgtype.UUID `json:"id"`
+	ChannelType string      `json:"channel_type"`
+}
+
+// Scoped by channel_type: a per-channel caller (e.g. the Feishu store)
+// must never resolve another channel's installation by guessing its UUID.
+func (q *Queries) GetChannelInstallation(ctx context.Context, arg GetChannelInstallationParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, getChannelInstallation, arg.ID, arg.ChannelType)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
 		&i.Status,
-		&i.CreatedByType,
-		&i.CreatedByID,
-		&i.ArchivedAt,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const deleteArchivedChannel = `-- name: DeleteArchivedChannel :execrows
-DELETE FROM channel
+const getChannelInstallationByAppID = `-- name: GetChannelInstallationByAppID :one
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+WHERE channel_type = $1
+  AND config ->> 'app_id' = $2::text
+`
+
+type GetChannelInstallationByAppIDParams struct {
+	ChannelType string `json:"channel_type"`
+	AppID       string `json:"app_id"`
+}
+
+// Inbound routing. The platform event carries only the channel's app
+// identifier (Feishu app_id); the dispatcher's installation resolver routes
+// on (channel_type, config->>'app_id'). Backed by the functional unique
+// index idx_channel_installation_type_appid.
+//
+// Both params are named + explicitly typed: `config ->> 'app_id'` makes sqlc
+// attribute a bare `$2` to the JSONB `config` column (it would emit
+// `Config []byte`), so we pin the app_id arg to ::text to get AppID string.
+func (q *Queries) GetChannelInstallationByAppID(ctx context.Context, arg GetChannelInstallationByAppIDParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, getChannelInstallationByAppID, arg.ChannelType, arg.AppID)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelInstallationInWorkspace = `-- name: GetChannelInstallationInWorkspace :one
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
 WHERE id = $1
   AND workspace_id = $2
-  AND archived_at IS NOT NULL
+  AND channel_type = $3
 `
 
-type DeleteArchivedChannelParams struct {
+type GetChannelInstallationInWorkspaceParams struct {
 	ID          pgtype.UUID `json:"id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ChannelType string      `json:"channel_type"`
 }
 
-func (q *Queries) DeleteArchivedChannel(ctx context.Context, arg DeleteArchivedChannelParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteArchivedChannel, arg.ID, arg.WorkspaceID)
+func (q *Queries) GetChannelInstallationInWorkspace(ctx context.Context, arg GetChannelInstallationInWorkspaceParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, getChannelInstallationInWorkspace, arg.ID, arg.WorkspaceID, arg.ChannelType)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChannelInstallationOwnerByAppID = `-- name: GetChannelInstallationOwnerByAppID :one
+SELECT ci.workspace_id, ci.agent_id, a.archived_at AS agent_archived_at
+FROM channel_installation ci
+JOIN agent a ON a.id = ci.agent_id
+WHERE ci.channel_type = $1
+  AND ci.config ->> 'app_id' = $2::text
+`
+
+type GetChannelInstallationOwnerByAppIDParams struct {
+	ChannelType string `json:"channel_type"`
+	AppID       string `json:"app_id"`
+}
+
+type GetChannelInstallationOwnerByAppIDRow struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	AgentID         pgtype.UUID        `json:"agent_id"`
+	AgentArchivedAt pgtype.Timestamptz `json:"agent_archived_at"`
+}
+
+// Identifies the LIVE owner of a (channel_type, config->>'app_id') routing slot
+// so the install path can refuse a rebind with an ACCURATE message instead of the
+// old catch-all "connected to a different Multica workspace". Meant to be read
+// only after ReclaimDeadChannelInstallationByAppID has removed every DEAD owner,
+// so a returned row is a live active owner. `agent_archived` distinguishes an
+// archived (reversible) owner — its bot stays owned, recovered by unarchiving the
+// agent or disconnecting the bot — from a plain active one. The JOIN drops a row
+// whose agent no longer exists (an orphan the reclaim gate should already have
+// cleared), so a missing row (pgx.ErrNoRows) means "no live owner". The caller
+// reads agent_archived_at.Valid to tell an archived (reversible) owner apart.
+func (q *Queries) GetChannelInstallationOwnerByAppID(ctx context.Context, arg GetChannelInstallationOwnerByAppIDParams) (GetChannelInstallationOwnerByAppIDRow, error) {
+	row := q.db.QueryRow(ctx, getChannelInstallationOwnerByAppID, arg.ChannelType, arg.AppID)
+	var i GetChannelInstallationOwnerByAppIDRow
+	err := row.Scan(&i.WorkspaceID, &i.AgentID, &i.AgentArchivedAt)
+	return i, err
+}
+
+const getChannelOutboundCardByTask = `-- name: GetChannelOutboundCardByTask :one
+SELECT id, chat_session_id, task_id, channel_type, channel_chat_id, channel_card_message_id, status, last_patched_at, created_at FROM channel_outbound_card_message
+WHERE task_id = $1
+  AND channel_type = $2
+`
+
+type GetChannelOutboundCardByTaskParams struct {
+	TaskID      pgtype.UUID `json:"task_id"`
+	ChannelType string      `json:"channel_type"`
+}
+
+// The partial unique index on (task_id) WHERE task_id IS NOT NULL
+// guarantees at most one row. Scoped by channel_type so a future non-Feishu
+// card for the same task is not patched as a Feishu card.
+func (q *Queries) GetChannelOutboundCardByTask(ctx context.Context, arg GetChannelOutboundCardByTaskParams) (ChannelOutboundCardMessage, error) {
+	row := q.db.QueryRow(ctx, getChannelOutboundCardByTask, arg.TaskID, arg.ChannelType)
+	var i ChannelOutboundCardMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.TaskID,
+		&i.ChannelType,
+		&i.ChannelChatID,
+		&i.ChannelCardMessageID,
+		&i.Status,
+		&i.LastPatchedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getChannelUserBindingByUserID = `-- name: GetChannelUserBindingByUserID :one
+SELECT id, workspace_id, multica_user_id, installation_id, channel_type, channel_user_id, config, bound_at FROM channel_user_binding
+WHERE installation_id = $1 AND channel_user_id = $2
+`
+
+type GetChannelUserBindingByUserIDParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	ChannelUserID  string      `json:"channel_user_id"`
+}
+
+// The inbound identity lookup: does this platform user id map to a Multica
+// user for this installation? With the member-FK removed, a row's
+// existence no longer proves current workspace membership — the dispatcher
+// re-checks membership after this lookup.
+func (q *Queries) GetChannelUserBindingByUserID(ctx context.Context, arg GetChannelUserBindingByUserIDParams) (ChannelUserBinding, error) {
+	row := q.db.QueryRow(ctx, getChannelUserBindingByUserID, arg.InstallationID, arg.ChannelUserID)
+	var i ChannelUserBinding
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.MulticaUserID,
+		&i.InstallationID,
+		&i.ChannelType,
+		&i.ChannelUserID,
+		&i.Config,
+		&i.BoundAt,
+	)
+	return i, err
+}
+
+const listActiveChannelInstallations = `-- name: ListActiveChannelInstallations :many
+SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at FROM channel_installation ci
+JOIN workspace w ON w.id = ci.workspace_id
+JOIN agent a ON a.id = ci.agent_id
+WHERE ci.status = 'active'
+  AND ci.channel_type = $1
+ORDER BY ci.created_at ASC
+`
+
+// Boot path for a per-channel-type inbound hub: every active installation of
+// the given channel_type, so a hub claims leases and opens connections only
+// for its own platform and never supervises another channel's installation.
+//
+// The JOINs require the owning workspace and agent rows to still exist.
+// channel_installation has no FK (MUL-3515 §4), so unlike the old
+// lark_installation (which cascaded away on workspace/agent deletion) an
+// installation can be orphaned when its workspace is deleted or its agent is
+// hard-deleted (e.g. runtime teardown). Without this guard the hub would keep
+// opening a WebSocket for a bot whose workspace/agent is gone. The JOIN matches
+// the old ON DELETE CASCADE semantics: it filters on row existence, not agent
+// archival, so an archived-but-present agent's installation is still listed.
+func (q *Queries) ListActiveChannelInstallations(ctx context.Context, channelType string) ([]ChannelInstallation, error) {
+	rows, err := q.db.Query(ctx, listActiveChannelInstallations, channelType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelInstallation{}
+	for rows.Next() {
+		var i ChannelInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.ChannelType,
+			&i.Config,
+			&i.Status,
+			&i.WsLeaseToken,
+			&i.WsLeaseExpiresAt,
+			&i.InstallerUserID,
+			&i.InstalledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllActiveChannelInstallations = `-- name: ListAllActiveChannelInstallations :many
+SELECT ci.id, ci.workspace_id, ci.agent_id, ci.channel_type, ci.config, ci.status, ci.ws_lease_token, ci.ws_lease_expires_at, ci.installer_user_id, ci.installed_at, ci.created_at, ci.updated_at FROM channel_installation ci
+JOIN workspace w ON w.id = ci.workspace_id
+JOIN agent a ON a.id = ci.agent_id
+WHERE ci.status = 'active'
+ORDER BY ci.created_at ASC
+`
+
+// Boot path for the channel-agnostic engine Supervisor (MUL-3620): every
+// active installation across ALL channel types, so one Supervisor drives every
+// platform's connections rather than a per-platform hub. This is the de-
+// hardcoded counterpart of ListActiveChannelInstallations — the Supervisor
+// routes each row to its registered channel.Factory by channel_type, so it
+// never needs to know which platforms exist. Same orphan guard as the per-type
+// query: the workspace + agent JOINs drop installations whose owning rows are
+// gone (channel_installation has no FK, MUL-3515 §4), matching the old ON
+// DELETE CASCADE semantics (row existence, not agent archival).
+func (q *Queries) ListAllActiveChannelInstallations(ctx context.Context) ([]ChannelInstallation, error) {
+	rows, err := q.db.Query(ctx, listAllActiveChannelInstallations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelInstallation{}
+	for rows.Next() {
+		var i ChannelInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.ChannelType,
+			&i.Config,
+			&i.Status,
+			&i.WsLeaseToken,
+			&i.WsLeaseExpiresAt,
+			&i.InstallerUserID,
+			&i.InstalledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelInboundAuditByInstallation = `-- name: ListChannelInboundAuditByInstallation :many
+SELECT id, installation_id, channel_type, channel_chat_id, event_type, channel_event_id, channel_message_id, drop_reason, received_at FROM channel_inbound_audit
+WHERE installation_id = $1
+ORDER BY received_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListChannelInboundAuditByInstallationParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	Limit          int32       `json:"limit"`
+	Offset         int32       `json:"offset"`
+}
+
+func (q *Queries) ListChannelInboundAuditByInstallation(ctx context.Context, arg ListChannelInboundAuditByInstallationParams) ([]ChannelInboundAudit, error) {
+	rows, err := q.db.Query(ctx, listChannelInboundAuditByInstallation, arg.InstallationID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelInboundAudit{}
+	for rows.Next() {
+		var i ChannelInboundAudit
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstallationID,
+			&i.ChannelType,
+			&i.ChannelChatID,
+			&i.EventType,
+			&i.ChannelEventID,
+			&i.ChannelMessageID,
+			&i.DropReason,
+			&i.ReceivedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelInstallationsByWorkspace = `-- name: ListChannelInstallationsByWorkspace :many
+SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
+WHERE workspace_id = $1
+  AND channel_type = $2
+ORDER BY created_at ASC
+`
+
+type ListChannelInstallationsByWorkspaceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ChannelType string      `json:"channel_type"`
+}
+
+// Scoped by channel_type so a per-channel management surface (e.g. the Lark
+// installation list) only ever sees its own platform's installations.
+func (q *Queries) ListChannelInstallationsByWorkspace(ctx context.Context, arg ListChannelInstallationsByWorkspaceParams) ([]ChannelInstallation, error) {
+	rows, err := q.db.Query(ctx, listChannelInstallationsByWorkspace, arg.WorkspaceID, arg.ChannelType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelInstallation{}
+	for rows.Next() {
+		var i ChannelInstallation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.ChannelType,
+			&i.Config,
+			&i.Status,
+			&i.WsLeaseToken,
+			&i.WsLeaseExpiresAt,
+			&i.InstallerUserID,
+			&i.InstalledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markChannelInboundDedupProcessed = `-- name: MarkChannelInboundDedupProcessed :execrows
+UPDATE channel_inbound_message_dedup
+SET processed_at = now()
+WHERE installation_id = $1
+  AND message_id = $2
+  AND claim_token = $3
+  AND processed_at IS NULL
+`
+
+type MarkChannelInboundDedupProcessedParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	MessageID      string      `json:"message_id"`
+	ClaimToken     pgtype.UUID `json:"claim_token"`
+}
+
+// Locks a claim in as permanently processed after a durable outcome.
+// Invoked inside the chat_message tx (via qtx) on the ingest path so the
+// durable write and the Mark commit atomically. Token mismatch returns
+// zero rows (a reclaim happened); the caller rolls back its in-tx write.
+func (q *Queries) MarkChannelInboundDedupProcessed(ctx context.Context, arg MarkChannelInboundDedupProcessedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markChannelInboundDedupProcessed, arg.InstallationID, arg.MessageID, arg.ClaimToken)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const dispatchQueuedChannelAgentRun = `-- name: DispatchQueuedChannelAgentRun :one
-UPDATE channel_agent_run
-SET chat_session_id = $2,
-    chat_user_message_id = $3,
-    task_id = $4
-WHERE id = $1
-  AND status = 'queued'
-  AND task_id IS NULL
-RETURNING id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id
+const nullChannelInboundAuditInstallationID = `-- name: NullChannelInboundAuditInstallationID :exec
+UPDATE channel_inbound_audit
+SET installation_id = NULL
+WHERE installation_id = $1
 `
 
-type DispatchQueuedChannelAgentRunParams struct {
-	ID                pgtype.UUID `json:"id"`
-	ChatSessionID     pgtype.UUID `json:"chat_session_id"`
-	ChatUserMessageID pgtype.UUID `json:"chat_user_message_id"`
-	TaskID            pgtype.UUID `json:"task_id"`
-}
-
-func (q *Queries) DispatchQueuedChannelAgentRun(ctx context.Context, arg DispatchQueuedChannelAgentRunParams) (ChannelAgentRun, error) {
-	row := q.db.QueryRow(ctx, dispatchQueuedChannelAgentRun,
-		arg.ID,
-		arg.ChatSessionID,
-		arg.ChatUserMessageID,
-		arg.TaskID,
-	)
-	var i ChannelAgentRun
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.UserMessageID,
-		&i.AgentID,
-		&i.ChatSessionID,
-		&i.ChatUserMessageID,
-		&i.TaskID,
-		&i.Status,
-		&i.CreatedAt,
-		&i.CompletedAt,
-		&i.DispatchStepID,
-	)
-	return i, err
-}
-
-const failChannelAgentRun = `-- name: FailChannelAgentRun :exec
-UPDATE channel_agent_run
-SET status = 'failed', completed_at = now()
-WHERE id = $1
-`
-
-func (q *Queries) FailChannelAgentRun(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, failChannelAgentRun, id)
+// Application-layer stand-in for the old ON DELETE SET NULL (MUL-3515 §4,
+// migration 124 keeps installation_id nullable for exactly this): before an
+// installation row is hard-deleted, detach its inbound-audit rows by NULLing
+// installation_id. The drop-audit history is preserved (channel_type,
+// chat/message ids, drop_reason stay) without a dangling reference to a
+// removed installation.
+func (q *Queries) NullChannelInboundAuditInstallationID(ctx context.Context, installationID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, nullChannelInboundAuditInstallationID, installationID)
 	return err
 }
 
-const getApprovalRequestInChannel = `-- name: GetApprovalRequestInChannel :one
-SELECT id, workspace_id, channel_id, session_id, issue_id, requested_by_type, requested_by_id, action_type, action_payload, status, resolution_note, resolved_by, resolved_at, created_at, updated_at FROM approval_request
-WHERE id = $1 AND workspace_id = $2 AND channel_id = $3
+const purgeChannelInboundDedup = `-- name: PurgeChannelInboundDedup :exec
+DELETE FROM channel_inbound_message_dedup
+WHERE received_at < $1
 `
 
-type GetApprovalRequestInChannelParams struct {
-	ID          pgtype.UUID `json:"id"`
+// Vacuum job: remove dedup rows older than the supplied cutoff (e.g. 24h).
+func (q *Queries) PurgeChannelInboundDedup(ctx context.Context, receivedAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, purgeChannelInboundDedup, receivedAt)
+	return err
+}
+
+const purgeExpiredChannelBindingTokens = `-- name: PurgeExpiredChannelBindingTokens :exec
+DELETE FROM channel_binding_token
+WHERE expires_at < $1
+`
+
+func (q *Queries) PurgeExpiredChannelBindingTokens(ctx context.Context, expiresAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, purgeExpiredChannelBindingTokens, expiresAt)
+	return err
+}
+
+const reclaimDeadChannelInstallationByAppID = `-- name: ReclaimDeadChannelInstallationByAppID :one
+WITH dead AS (
+    DELETE FROM channel_installation ci
+    WHERE ci.channel_type = $1
+      AND ci.config ->> 'app_id' = $2::text
+      AND (
+            (ci.status = 'revoked'
+                AND NOT (ci.workspace_id = $3
+                         AND ci.agent_id = $4))
+         OR NOT EXISTS (SELECT 1 FROM workspace w WHERE w.id = ci.workspace_id)
+         OR NOT EXISTS (SELECT 1 FROM agent a WHERE a.id = ci.agent_id)
+      )
+    RETURNING ci.id
+),
+cleared_chat_sessions AS (
+    DELETE FROM channel_chat_session_binding
+    WHERE installation_id IN (SELECT id FROM dead)
+    RETURNING chat_session_id
+),
+cleared_outbound_cards AS (
+    -- channel_outbound_card_message is keyed by chat_session_id (no installation_id,
+    -- no FK), so it is reached through the just-removed chat-session bindings. On an
+    -- orphan reclaim the chat_session row itself is already cascade-gone, but its
+    -- binding survived and still carries the id — the only reliable link back.
+    DELETE FROM channel_outbound_card_message
+    WHERE chat_session_id IN (SELECT chat_session_id FROM cleared_chat_sessions)
+),
+cleared_binding_tokens AS (
+    DELETE FROM channel_binding_token
+    WHERE installation_id IN (SELECT id FROM dead)
+),
+cleared_user_bindings AS (
+    DELETE FROM channel_user_binding
+    WHERE installation_id IN (SELECT id FROM dead)
+),
+cleared_inbound_dedup AS (
+    DELETE FROM channel_inbound_message_dedup
+    WHERE installation_id IN (SELECT id FROM dead)
+),
+detached_audit AS (
+    -- Reclaim keeps the DETACH semantics: the workspace still exists, so a
+    -- NULL-installation audit row stays meaningful for operator triage. The hard-
+    -- delete paths (DeleteWorkspace / runtime teardown) purge audit outright.
+    UPDATE channel_inbound_audit SET installation_id = NULL
+    WHERE installation_id IN (SELECT id FROM dead)
+)
+SELECT id FROM dead
+`
+
+type ReclaimDeadChannelInstallationByAppIDParams struct {
+	ChannelType string      `json:"channel_type"`
+	AppID       string      `json:"app_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	ChannelID   pgtype.UUID `json:"channel_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
 }
 
-func (q *Queries) GetApprovalRequestInChannel(ctx context.Context, arg GetApprovalRequestInChannelParams) (ApprovalRequest, error) {
-	row := q.db.QueryRow(ctx, getApprovalRequestInChannel, arg.ID, arg.WorkspaceID, arg.ChannelID)
-	var i ApprovalRequest
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.ChannelID,
-		&i.SessionID,
-		&i.IssueID,
-		&i.RequestedByType,
-		&i.RequestedByID,
-		&i.ActionType,
-		&i.ActionPayload,
-		&i.Status,
-		&i.ResolutionNote,
-		&i.ResolvedBy,
-		&i.ResolvedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+// Rebind cleanup gate. Frees the (channel_type, config->>'app_id') routing slot
+// so a valid new agent can (re)bind a bot whose previous owner is DEAD, and, in
+// the same statement, clears every application-owned dependent row of the removed
+// installation (channel_* has no FK/cascade, MUL-3515 §4). Returns the removed id
+// (pgx.ErrNoRows when nothing was dead — a no-op the caller treats as success).
+//
+// "Dead" is exactly one of:
+//  1. a REVOKED placeholder held by ANY agent OTHER than the caller's own
+//     (workspace, agent) pair. Disconnect only flips status to 'revoked' — no
+//     product path ever hard-deletes the row — so a revoked row would otherwise
+//     pin the bot's app_id slot forever with no self-serve recovery, even across
+//     workspaces (workspace A disconnects; workspace B, which proves control by
+//     holding the same app credentials, rebinds). Revoke is the owner's explicit
+//     "I'm done with this bot", so any revoked row is reclaimable — only the
+//     caller's OWN revoked row is spared (reactivated in place; see below).
+//  2. an ORPHAN whose owning workspace OR agent row no longer exists — the
+//     workspace was deleted, or the agent was hard-deleted on runtime teardown.
+//     With no FK the installation outlives its owner and keeps occupying the
+//     app_id slot: the "ghost binding" that made a bot un-rebindable (#4810).
+//
+// Deliberately NOT dead (the caller refuses these with an accurate conflict):
+//   - the SAME agent's own revoked row (agent_id = @agent_id): the upsert
+//     reactivates it in place, preserving its installation_id and every binding;
+//   - a live ACTIVE owner whose agent still exists — INCLUDING an ARCHIVED agent:
+//     archive is reversible, so its bot stays owned rather than being silently
+//     stolen. Only a hard delete frees the slot.
+//
+// The guard lives in the DELETE predicate (not a prior SELECT) so under READ
+// COMMITTED the row is re-checked at execution (EvalPlanQual): a concurrent
+// same-agent reconnect that flips the revoked row back to 'active' first makes
+// the predicate re-check fail, this deletes nothing, and no dependents are
+// touched — closing the read-then-delete TOCTOU. Dependent cleanup keys off the
+// actually-deleted id (the `dead` CTE), so it runs ONLY for a row this statement
+// removed. The (channel_type, app_id) unique index guarantees at most one match.
+func (q *Queries) ReclaimDeadChannelInstallationByAppID(ctx context.Context, arg ReclaimDeadChannelInstallationByAppIDParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, reclaimDeadChannelInstallationByAppID,
+		arg.ChannelType,
+		arg.AppID,
+		arg.WorkspaceID,
+		arg.AgentID,
 	)
-	return i, err
-}
-
-const getChannelAgentRunByDispatchStep = `-- name: GetChannelAgentRunByDispatchStep :one
-SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
-WHERE dispatch_step_id = $1
-ORDER BY created_at DESC
-LIMIT 1
-`
-
-func (q *Queries) GetChannelAgentRunByDispatchStep(ctx context.Context, dispatchStepID pgtype.UUID) (ChannelAgentRun, error) {
-	row := q.db.QueryRow(ctx, getChannelAgentRunByDispatchStep, dispatchStepID)
-	var i ChannelAgentRun
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.UserMessageID,
-		&i.AgentID,
-		&i.ChatSessionID,
-		&i.ChatUserMessageID,
-		&i.TaskID,
-		&i.Status,
-		&i.CreatedAt,
-		&i.CompletedAt,
-		&i.DispatchStepID,
-	)
-	return i, err
-}
-
-const getChannelAgentRunByTask = `-- name: GetChannelAgentRunByTask :one
-SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
-WHERE task_id = $1
-`
-
-func (q *Queries) GetChannelAgentRunByTask(ctx context.Context, taskID pgtype.UUID) (ChannelAgentRun, error) {
-	row := q.db.QueryRow(ctx, getChannelAgentRunByTask, taskID)
-	var i ChannelAgentRun
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.UserMessageID,
-		&i.AgentID,
-		&i.ChatSessionID,
-		&i.ChatUserMessageID,
-		&i.TaskID,
-		&i.Status,
-		&i.CreatedAt,
-		&i.CompletedAt,
-		&i.DispatchStepID,
-	)
-	return i, err
-}
-
-const getChannelAgentThread = `-- name: GetChannelAgentThread :one
-SELECT id, channel_id, channel_session_id, agent_id, chat_session_id, created_at, updated_at FROM channel_agent_thread
-WHERE channel_session_id = $1 AND agent_id = $2
-`
-
-type GetChannelAgentThreadParams struct {
-	ChannelSessionID pgtype.UUID `json:"channel_session_id"`
-	AgentID          pgtype.UUID `json:"agent_id"`
-}
-
-func (q *Queries) GetChannelAgentThread(ctx context.Context, arg GetChannelAgentThreadParams) (ChannelAgentThread, error) {
-	row := q.db.QueryRow(ctx, getChannelAgentThread, arg.ChannelSessionID, arg.AgentID)
-	var i ChannelAgentThread
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.AgentID,
-		&i.ChatSessionID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelByID = `-- name: GetChannelByID :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
-WHERE id = $1 AND archived_at IS NULL
-`
-
-func (q *Queries) GetChannelByID(ctx context.Context, id pgtype.UUID) (Channel, error) {
-	row := q.db.QueryRow(ctx, getChannelByID, id)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const getChannelBySlugInWorkspace = `-- name: GetChannelBySlugInWorkspace :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
-WHERE slug = $1 AND workspace_id = $2 AND archived_at IS NULL
-`
-
-type GetChannelBySlugInWorkspaceParams struct {
-	Slug        string      `json:"slug"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetChannelBySlugInWorkspace(ctx context.Context, arg GetChannelBySlugInWorkspaceParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, getChannelBySlugInWorkspace, arg.Slug, arg.WorkspaceID)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const getChannelBySlugInWorkspaceAnyStatus = `-- name: GetChannelBySlugInWorkspaceAnyStatus :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
-WHERE slug = $1 AND workspace_id = $2
-`
-
-type GetChannelBySlugInWorkspaceAnyStatusParams struct {
-	Slug        string      `json:"slug"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetChannelBySlugInWorkspaceAnyStatus(ctx context.Context, arg GetChannelBySlugInWorkspaceAnyStatusParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, getChannelBySlugInWorkspaceAnyStatus, arg.Slug, arg.WorkspaceID)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const getChannelDispatchPlanByID = `-- name: GetChannelDispatchPlanByID :one
-SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
-WHERE id = $1
-`
-
-func (q *Queries) GetChannelDispatchPlanByID(ctx context.Context, id pgtype.UUID) (ChannelDispatchPlan, error) {
-	row := q.db.QueryRow(ctx, getChannelDispatchPlanByID, id)
-	var i ChannelDispatchPlan
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.Mode,
-		&i.Status,
-		&i.Confidence,
-		&i.PlannerSource,
-		&i.Reason,
-		&i.ParticipantCount,
-		&i.RunCount,
-		&i.TotalInputTokens,
-		&i.TotalOutputTokens,
-		&i.TotalCacheReadTokens,
-		&i.TotalCacheWriteTokens,
-		&i.ElapsedMs,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelDispatchPlanInChannel = `-- name: GetChannelDispatchPlanInChannel :one
-SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
-WHERE id = $1 AND channel_id = $2
-`
-
-type GetChannelDispatchPlanInChannelParams struct {
-	ID        pgtype.UUID `json:"id"`
-	ChannelID pgtype.UUID `json:"channel_id"`
-}
-
-func (q *Queries) GetChannelDispatchPlanInChannel(ctx context.Context, arg GetChannelDispatchPlanInChannelParams) (ChannelDispatchPlan, error) {
-	row := q.db.QueryRow(ctx, getChannelDispatchPlanInChannel, arg.ID, arg.ChannelID)
-	var i ChannelDispatchPlan
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.Mode,
-		&i.Status,
-		&i.Confidence,
-		&i.PlannerSource,
-		&i.Reason,
-		&i.ParticipantCount,
-		&i.RunCount,
-		&i.TotalInputTokens,
-		&i.TotalOutputTokens,
-		&i.TotalCacheReadTokens,
-		&i.TotalCacheWriteTokens,
-		&i.ElapsedMs,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelDispatchStepByTask = `-- name: GetChannelDispatchStepByTask :one
-SELECT cds.id, cds.plan_id, cds.channel_id, cds.channel_session_id, cds.trigger_message_id, cds.agent_id, cds.position, cds.role, cds.status, cds.instruction, cds.depends_on_step_ids, cds.skip_reason, cds.error, cds.started_at, cds.completed_at, cds.created_at, cds.updated_at FROM channel_dispatch_step cds
-JOIN channel_agent_run car ON car.dispatch_step_id = cds.id
-WHERE car.task_id = $1
-ORDER BY car.created_at DESC
-LIMIT 1
-`
-
-func (q *Queries) GetChannelDispatchStepByTask(ctx context.Context, taskID pgtype.UUID) (ChannelDispatchStep, error) {
-	row := q.db.QueryRow(ctx, getChannelDispatchStepByTask, taskID)
-	var i ChannelDispatchStep
-	err := row.Scan(
-		&i.ID,
-		&i.PlanID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.AgentID,
-		&i.Position,
-		&i.Role,
-		&i.Status,
-		&i.Instruction,
-		&i.DependsOnStepIds,
-		&i.SkipReason,
-		&i.Error,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelDispatchStepInChannel = `-- name: GetChannelDispatchStepInChannel :one
-SELECT id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at FROM channel_dispatch_step
-WHERE id = $1 AND channel_id = $2
-`
-
-type GetChannelDispatchStepInChannelParams struct {
-	ID        pgtype.UUID `json:"id"`
-	ChannelID pgtype.UUID `json:"channel_id"`
-}
-
-func (q *Queries) GetChannelDispatchStepInChannel(ctx context.Context, arg GetChannelDispatchStepInChannelParams) (ChannelDispatchStep, error) {
-	row := q.db.QueryRow(ctx, getChannelDispatchStepInChannel, arg.ID, arg.ChannelID)
-	var i ChannelDispatchStep
-	err := row.Scan(
-		&i.ID,
-		&i.PlanID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.AgentID,
-		&i.Position,
-		&i.Role,
-		&i.Status,
-		&i.Instruction,
-		&i.DependsOnStepIds,
-		&i.SkipReason,
-		&i.Error,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelGroupInWorkspace = `-- name: GetChannelGroupInWorkspace :one
-SELECT id, workspace_id, name, position, created_by, archived_at, created_at, updated_at FROM channel_group
-WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
-`
-
-type GetChannelGroupInWorkspaceParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetChannelGroupInWorkspace(ctx context.Context, arg GetChannelGroupInWorkspaceParams) (ChannelGroup, error) {
-	row := q.db.QueryRow(ctx, getChannelGroupInWorkspace, arg.ID, arg.WorkspaceID)
-	var i ChannelGroup
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Name,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelInWorkspace = `-- name: GetChannelInWorkspace :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
-WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
-`
-
-type GetChannelInWorkspaceParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetChannelInWorkspace(ctx context.Context, arg GetChannelInWorkspaceParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, getChannelInWorkspace, arg.ID, arg.WorkspaceID)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const getChannelInWorkspaceAnyStatus = `-- name: GetChannelInWorkspaceAnyStatus :one
-SELECT id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id FROM channel
-WHERE id = $1 AND workspace_id = $2
-`
-
-type GetChannelInWorkspaceAnyStatusParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetChannelInWorkspaceAnyStatus(ctx context.Context, arg GetChannelInWorkspaceAnyStatusParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, getChannelInWorkspaceAnyStatus, arg.ID, arg.WorkspaceID)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const getChannelMember = `-- name: GetChannelMember :one
-SELECT id, channel_id, member_type, member_id, role, created_at FROM channel_member
-WHERE channel_id = $1 AND member_type = $2 AND member_id = $3
-`
-
-type GetChannelMemberParams struct {
-	ChannelID  pgtype.UUID `json:"channel_id"`
-	MemberType string      `json:"member_type"`
-	MemberID   pgtype.UUID `json:"member_id"`
-}
-
-func (q *Queries) GetChannelMember(ctx context.Context, arg GetChannelMemberParams) (ChannelMember, error) {
-	row := q.db.QueryRow(ctx, getChannelMember, arg.ChannelID, arg.MemberType, arg.MemberID)
-	var i ChannelMember
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.MemberType,
-		&i.MemberID,
-		&i.Role,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const getChannelMessage = `-- name: GetChannelMessage :one
-SELECT id, channel_id, session_id, author_type, author_id, content, type, parent_id, issue_id, created_at, updated_at FROM channel_message
-WHERE id = $1
-`
-
-func (q *Queries) GetChannelMessage(ctx context.Context, id pgtype.UUID) (ChannelMessage, error) {
-	row := q.db.QueryRow(ctx, getChannelMessage, id)
-	var i ChannelMessage
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.SessionID,
-		&i.AuthorType,
-		&i.AuthorID,
-		&i.Content,
-		&i.Type,
-		&i.ParentID,
-		&i.IssueID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelSession = `-- name: GetChannelSession :one
-SELECT cs.id, cs.channel_id, cs.title, cs.summary, cs.status, cs.created_by_type, cs.created_by_id, cs.archived_at, cs.created_at, cs.updated_at FROM channel_session cs
-JOIN channel c ON c.id = cs.channel_id
-WHERE cs.id = $1 AND cs.channel_id = $2 AND c.workspace_id = $3 AND cs.archived_at IS NULL
-`
-
-type GetChannelSessionParams struct {
-	ID          pgtype.UUID `json:"id"`
-	ChannelID   pgtype.UUID `json:"channel_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) GetChannelSession(ctx context.Context, arg GetChannelSessionParams) (ChannelSession, error) {
-	row := q.db.QueryRow(ctx, getChannelSession, arg.ID, arg.ChannelID, arg.WorkspaceID)
-	var i ChannelSession
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.Title,
-		&i.Summary,
-		&i.Status,
-		&i.CreatedByType,
-		&i.CreatedByID,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getChannelSessionByID = `-- name: GetChannelSessionByID :one
-SELECT id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at FROM channel_session
-WHERE id = $1 AND archived_at IS NULL
-`
-
-func (q *Queries) GetChannelSessionByID(ctx context.Context, id pgtype.UUID) (ChannelSession, error) {
-	row := q.db.QueryRow(ctx, getChannelSessionByID, id)
-	var i ChannelSession
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.Title,
-		&i.Summary,
-		&i.Status,
-		&i.CreatedByType,
-		&i.CreatedByID,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const isChannelMember = `-- name: IsChannelMember :one
-SELECT EXISTS(
-    SELECT 1 FROM channel_member
-    WHERE channel_id = $1 AND member_type = $2 AND member_id = $3
-) AS is_member
-`
-
-type IsChannelMemberParams struct {
-	ChannelID  pgtype.UUID `json:"channel_id"`
-	MemberType string      `json:"member_type"`
-	MemberID   pgtype.UUID `json:"member_id"`
-}
-
-func (q *Queries) IsChannelMember(ctx context.Context, arg IsChannelMemberParams) (bool, error) {
-	row := q.db.QueryRow(ctx, isChannelMember, arg.ChannelID, arg.MemberType, arg.MemberID)
-	var is_member bool
-	err := row.Scan(&is_member)
-	return is_member, err
-}
-
-const latestChannelMessageID = `-- name: LatestChannelMessageID :one
-SELECT id FROM channel_message
-WHERE channel_id = $1
-ORDER BY created_at DESC
-LIMIT 1
-`
-
-func (q *Queries) LatestChannelMessageID(ctx context.Context, channelID pgtype.UUID) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, latestChannelMessageID, channelID)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
 }
 
-const linkIssueToChannel = `-- name: LinkIssueToChannel :one
-INSERT INTO issue_channel (issue_id, channel_id, session_id, linked_by_type, linked_by_id)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (issue_id, channel_id)
-DO UPDATE SET session_id = COALESCE(EXCLUDED.session_id, issue_channel.session_id)
-RETURNING issue_id, channel_id, session_id, linked_by_type, linked_by_id, created_at
+const recordChannelInboundDrop = `-- name: RecordChannelInboundDrop :exec
+
+INSERT INTO channel_inbound_audit (
+    installation_id, channel_type, channel_chat_id, event_type,
+    channel_event_id, channel_message_id, drop_reason
+) VALUES (
+    $4,
+    $1,
+    $5,
+    $2,
+    $6,
+    $7,
+    $3
+)
 `
 
-type LinkIssueToChannelParams struct {
-	IssueID      pgtype.UUID `json:"issue_id"`
-	ChannelID    pgtype.UUID `json:"channel_id"`
-	SessionID    pgtype.UUID `json:"session_id"`
-	LinkedByType string      `json:"linked_by_type"`
-	LinkedByID   pgtype.UUID `json:"linked_by_id"`
+type RecordChannelInboundDropParams struct {
+	ChannelType      string      `json:"channel_type"`
+	EventType        string      `json:"event_type"`
+	DropReason       string      `json:"drop_reason"`
+	InstallationID   pgtype.UUID `json:"installation_id"`
+	ChannelChatID    pgtype.Text `json:"channel_chat_id"`
+	ChannelEventID   pgtype.Text `json:"channel_event_id"`
+	ChannelMessageID pgtype.Text `json:"channel_message_id"`
 }
 
-func (q *Queries) LinkIssueToChannel(ctx context.Context, arg LinkIssueToChannelParams) (IssueChannel, error) {
-	row := q.db.QueryRow(ctx, linkIssueToChannel,
-		arg.IssueID,
-		arg.ChannelID,
-		arg.SessionID,
-		arg.LinkedByType,
-		arg.LinkedByID,
+// =====================
+// channel_inbound_audit
+// =====================
+// The only write path for dropped events. Deliberately carries no body
+// column — only routing / identity / drop_reason / timestamp.
+func (q *Queries) RecordChannelInboundDrop(ctx context.Context, arg RecordChannelInboundDropParams) error {
+	_, err := q.db.Exec(ctx, recordChannelInboundDrop,
+		arg.ChannelType,
+		arg.EventType,
+		arg.DropReason,
+		arg.InstallationID,
+		arg.ChannelChatID,
+		arg.ChannelEventID,
+		arg.ChannelMessageID,
 	)
-	var i IssueChannel
-	err := row.Scan(
-		&i.IssueID,
-		&i.ChannelID,
-		&i.SessionID,
-		&i.LinkedByType,
-		&i.LinkedByID,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const listApprovalRequestsForChannel = `-- name: ListApprovalRequestsForChannel :many
-SELECT id, workspace_id, channel_id, session_id, issue_id, requested_by_type, requested_by_id, action_type, action_payload, status, resolution_note, resolved_by, resolved_at, created_at, updated_at FROM approval_request
-WHERE channel_id = $1
-ORDER BY created_at DESC
-`
-
-func (q *Queries) ListApprovalRequestsForChannel(ctx context.Context, channelID pgtype.UUID) ([]ApprovalRequest, error) {
-	rows, err := q.db.Query(ctx, listApprovalRequestsForChannel, channelID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ApprovalRequest{}
-	for rows.Next() {
-		var i ApprovalRequest
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.ChannelID,
-			&i.SessionID,
-			&i.IssueID,
-			&i.RequestedByType,
-			&i.RequestedByID,
-			&i.ActionType,
-			&i.ActionPayload,
-			&i.Status,
-			&i.ResolutionNote,
-			&i.ResolvedBy,
-			&i.ResolvedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelAgentRunsBySession = `-- name: ListChannelAgentRunsBySession :many
-SELECT
-    car.id, car.channel_id, car.channel_session_id, car.user_message_id, car.agent_id, car.chat_session_id, car.chat_user_message_id, car.task_id, car.status, car.created_at, car.completed_at, car.dispatch_step_id,
-    COALESCE(atq.status, car.status)::text AS task_status,
-    atq.created_at AS task_created_at,
-    atq.started_at AS task_started_at,
-    atq.completed_at AS task_completed_at
-FROM channel_agent_run car
-LEFT JOIN agent_task_queue atq ON atq.id = car.task_id
-WHERE car.channel_id = $1 AND car.channel_session_id = $2
-ORDER BY car.created_at DESC
-`
-
-type ListChannelAgentRunsBySessionParams struct {
-	ChannelID        pgtype.UUID `json:"channel_id"`
-	ChannelSessionID pgtype.UUID `json:"channel_session_id"`
-}
-
-type ListChannelAgentRunsBySessionRow struct {
-	ID                pgtype.UUID        `json:"id"`
-	ChannelID         pgtype.UUID        `json:"channel_id"`
-	ChannelSessionID  pgtype.UUID        `json:"channel_session_id"`
-	UserMessageID     pgtype.UUID        `json:"user_message_id"`
-	AgentID           pgtype.UUID        `json:"agent_id"`
-	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
-	ChatUserMessageID pgtype.UUID        `json:"chat_user_message_id"`
-	TaskID            pgtype.UUID        `json:"task_id"`
-	Status            string             `json:"status"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
-	DispatchStepID    pgtype.UUID        `json:"dispatch_step_id"`
-	TaskStatus        string             `json:"task_status"`
-	TaskCreatedAt     pgtype.Timestamptz `json:"task_created_at"`
-	TaskStartedAt     pgtype.Timestamptz `json:"task_started_at"`
-	TaskCompletedAt   pgtype.Timestamptz `json:"task_completed_at"`
-}
-
-func (q *Queries) ListChannelAgentRunsBySession(ctx context.Context, arg ListChannelAgentRunsBySessionParams) ([]ListChannelAgentRunsBySessionRow, error) {
-	rows, err := q.db.Query(ctx, listChannelAgentRunsBySession, arg.ChannelID, arg.ChannelSessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListChannelAgentRunsBySessionRow{}
-	for rows.Next() {
-		var i ListChannelAgentRunsBySessionRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChannelID,
-			&i.ChannelSessionID,
-			&i.UserMessageID,
-			&i.AgentID,
-			&i.ChatSessionID,
-			&i.ChatUserMessageID,
-			&i.TaskID,
-			&i.Status,
-			&i.CreatedAt,
-			&i.CompletedAt,
-			&i.DispatchStepID,
-			&i.TaskStatus,
-			&i.TaskCreatedAt,
-			&i.TaskStartedAt,
-			&i.TaskCompletedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelDispatchPlansBySession = `-- name: ListChannelDispatchPlansBySession :many
-SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
-WHERE channel_id = $1 AND channel_session_id = $2
-ORDER BY created_at DESC
-`
-
-type ListChannelDispatchPlansBySessionParams struct {
-	ChannelID        pgtype.UUID `json:"channel_id"`
-	ChannelSessionID pgtype.UUID `json:"channel_session_id"`
-}
-
-func (q *Queries) ListChannelDispatchPlansBySession(ctx context.Context, arg ListChannelDispatchPlansBySessionParams) ([]ChannelDispatchPlan, error) {
-	rows, err := q.db.Query(ctx, listChannelDispatchPlansBySession, arg.ChannelID, arg.ChannelSessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelDispatchPlan{}
-	for rows.Next() {
-		var i ChannelDispatchPlan
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChannelID,
-			&i.ChannelSessionID,
-			&i.TriggerMessageID,
-			&i.Mode,
-			&i.Status,
-			&i.Confidence,
-			&i.PlannerSource,
-			&i.Reason,
-			&i.ParticipantCount,
-			&i.RunCount,
-			&i.TotalInputTokens,
-			&i.TotalOutputTokens,
-			&i.TotalCacheReadTokens,
-			&i.TotalCacheWriteTokens,
-			&i.ElapsedMs,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelDispatchPlansByTriggerMessage = `-- name: ListChannelDispatchPlansByTriggerMessage :many
-SELECT id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at FROM channel_dispatch_plan
-WHERE trigger_message_id = $1
-ORDER BY created_at ASC
-`
-
-func (q *Queries) ListChannelDispatchPlansByTriggerMessage(ctx context.Context, triggerMessageID pgtype.UUID) ([]ChannelDispatchPlan, error) {
-	rows, err := q.db.Query(ctx, listChannelDispatchPlansByTriggerMessage, triggerMessageID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelDispatchPlan{}
-	for rows.Next() {
-		var i ChannelDispatchPlan
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChannelID,
-			&i.ChannelSessionID,
-			&i.TriggerMessageID,
-			&i.Mode,
-			&i.Status,
-			&i.Confidence,
-			&i.PlannerSource,
-			&i.Reason,
-			&i.ParticipantCount,
-			&i.RunCount,
-			&i.TotalInputTokens,
-			&i.TotalOutputTokens,
-			&i.TotalCacheReadTokens,
-			&i.TotalCacheWriteTokens,
-			&i.ElapsedMs,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelDispatchStepsByPlan = `-- name: ListChannelDispatchStepsByPlan :many
-SELECT
-    cds.id, cds.plan_id, cds.channel_id, cds.channel_session_id, cds.trigger_message_id, cds.agent_id, cds.position, cds.role, cds.status, cds.instruction, cds.depends_on_step_ids, cds.skip_reason, cds.error, cds.started_at, cds.completed_at, cds.created_at, cds.updated_at,
-    car.id AS channel_agent_run_id,
-    car.chat_session_id,
-    car.chat_user_message_id,
-    car.task_id,
-    COALESCE(atq.status, car.status, cds.status)::text AS task_status,
-    atq.created_at AS task_created_at,
-    atq.started_at AS task_started_at,
-    atq.completed_at AS task_completed_at
-FROM channel_dispatch_step cds
-LEFT JOIN LATERAL (
-    SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
-    WHERE dispatch_step_id = cds.id
-    ORDER BY created_at DESC
-    LIMIT 1
-) car ON true
-LEFT JOIN agent_task_queue atq ON atq.id = car.task_id
-WHERE cds.plan_id = $1
-ORDER BY cds.position ASC, cds.created_at ASC
-`
-
-type ListChannelDispatchStepsByPlanRow struct {
-	ID                pgtype.UUID        `json:"id"`
-	PlanID            pgtype.UUID        `json:"plan_id"`
-	ChannelID         pgtype.UUID        `json:"channel_id"`
-	ChannelSessionID  pgtype.UUID        `json:"channel_session_id"`
-	TriggerMessageID  pgtype.UUID        `json:"trigger_message_id"`
-	AgentID           pgtype.UUID        `json:"agent_id"`
-	Position          int32              `json:"position"`
-	Role              string             `json:"role"`
-	Status            string             `json:"status"`
-	Instruction       string             `json:"instruction"`
-	DependsOnStepIds  []pgtype.UUID      `json:"depends_on_step_ids"`
-	SkipReason        string             `json:"skip_reason"`
-	Error             string             `json:"error"`
-	StartedAt         pgtype.Timestamptz `json:"started_at"`
-	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-	ChannelAgentRunID pgtype.UUID        `json:"channel_agent_run_id"`
-	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
-	ChatUserMessageID pgtype.UUID        `json:"chat_user_message_id"`
-	TaskID            pgtype.UUID        `json:"task_id"`
-	TaskStatus        string             `json:"task_status"`
-	TaskCreatedAt     pgtype.Timestamptz `json:"task_created_at"`
-	TaskStartedAt     pgtype.Timestamptz `json:"task_started_at"`
-	TaskCompletedAt   pgtype.Timestamptz `json:"task_completed_at"`
-}
-
-func (q *Queries) ListChannelDispatchStepsByPlan(ctx context.Context, planID pgtype.UUID) ([]ListChannelDispatchStepsByPlanRow, error) {
-	rows, err := q.db.Query(ctx, listChannelDispatchStepsByPlan, planID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListChannelDispatchStepsByPlanRow{}
-	for rows.Next() {
-		var i ListChannelDispatchStepsByPlanRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.PlanID,
-			&i.ChannelID,
-			&i.ChannelSessionID,
-			&i.TriggerMessageID,
-			&i.AgentID,
-			&i.Position,
-			&i.Role,
-			&i.Status,
-			&i.Instruction,
-			&i.DependsOnStepIds,
-			&i.SkipReason,
-			&i.Error,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ChannelAgentRunID,
-			&i.ChatSessionID,
-			&i.ChatUserMessageID,
-			&i.TaskID,
-			&i.TaskStatus,
-			&i.TaskCreatedAt,
-			&i.TaskStartedAt,
-			&i.TaskCompletedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelGroups = `-- name: ListChannelGroups :many
-SELECT id, workspace_id, name, position, created_by, archived_at, created_at, updated_at FROM channel_group
-WHERE workspace_id = $1 AND archived_at IS NULL
-ORDER BY position ASC, created_at ASC
-`
-
-func (q *Queries) ListChannelGroups(ctx context.Context, workspaceID pgtype.UUID) ([]ChannelGroup, error) {
-	rows, err := q.db.Query(ctx, listChannelGroups, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelGroup{}
-	for rows.Next() {
-		var i ChannelGroup
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.Name,
-			&i.Position,
-			&i.CreatedBy,
-			&i.ArchivedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelIssues = `-- name: ListChannelIssues :many
-SELECT ic.issue_id, ic.channel_id, ic.session_id, ic.linked_by_type, ic.linked_by_id, ic.created_at,
-       i.number, i.title, i.status, i.priority
-FROM issue_channel ic
-JOIN issue i ON i.id = ic.issue_id
-WHERE ic.channel_id = $1
-ORDER BY ic.created_at DESC
-`
-
-type ListChannelIssuesRow struct {
-	IssueID      pgtype.UUID        `json:"issue_id"`
-	ChannelID    pgtype.UUID        `json:"channel_id"`
-	SessionID    pgtype.UUID        `json:"session_id"`
-	LinkedByType string             `json:"linked_by_type"`
-	LinkedByID   pgtype.UUID        `json:"linked_by_id"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	Number       int32              `json:"number"`
-	Title        string             `json:"title"`
-	Status       string             `json:"status"`
-	Priority     string             `json:"priority"`
-}
-
-func (q *Queries) ListChannelIssues(ctx context.Context, channelID pgtype.UUID) ([]ListChannelIssuesRow, error) {
-	rows, err := q.db.Query(ctx, listChannelIssues, channelID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListChannelIssuesRow{}
-	for rows.Next() {
-		var i ListChannelIssuesRow
-		if err := rows.Scan(
-			&i.IssueID,
-			&i.ChannelID,
-			&i.SessionID,
-			&i.LinkedByType,
-			&i.LinkedByID,
-			&i.CreatedAt,
-			&i.Number,
-			&i.Title,
-			&i.Status,
-			&i.Priority,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelMembers = `-- name: ListChannelMembers :many
-SELECT id, channel_id, member_type, member_id, role, created_at FROM channel_member
-WHERE channel_id = $1
-ORDER BY created_at ASC
-`
-
-func (q *Queries) ListChannelMembers(ctx context.Context, channelID pgtype.UUID) ([]ChannelMember, error) {
-	rows, err := q.db.Query(ctx, listChannelMembers, channelID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelMember{}
-	for rows.Next() {
-		var i ChannelMember
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChannelID,
-			&i.MemberType,
-			&i.MemberID,
-			&i.Role,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelMessagesBySession = `-- name: ListChannelMessagesBySession :many
-SELECT id, channel_id, session_id, author_type, author_id, content, type, parent_id, issue_id, created_at, updated_at FROM channel_message
-WHERE channel_id = $1 AND session_id = $2
-  AND ($4::timestamptz IS NULL OR created_at < $4)
-ORDER BY created_at DESC
-LIMIT $3
-`
-
-type ListChannelMessagesBySessionParams struct {
-	ChannelID pgtype.UUID        `json:"channel_id"`
-	SessionID pgtype.UUID        `json:"session_id"`
-	Limit     int32              `json:"limit"`
-	Before    pgtype.Timestamptz `json:"before"`
-}
-
-func (q *Queries) ListChannelMessagesBySession(ctx context.Context, arg ListChannelMessagesBySessionParams) ([]ChannelMessage, error) {
-	rows, err := q.db.Query(ctx, listChannelMessagesBySession,
-		arg.ChannelID,
-		arg.SessionID,
-		arg.Limit,
-		arg.Before,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelMessage{}
-	for rows.Next() {
-		var i ChannelMessage
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChannelID,
-			&i.SessionID,
-			&i.AuthorType,
-			&i.AuthorID,
-			&i.Content,
-			&i.Type,
-			&i.ParentID,
-			&i.IssueID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listChannelSessions = `-- name: ListChannelSessions :many
-SELECT id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at FROM channel_session
-WHERE channel_id = $1
-  AND ($2::boolean OR archived_at IS NULL)
-ORDER BY updated_at DESC, created_at DESC
-`
-
-type ListChannelSessionsParams struct {
-	ChannelID       pgtype.UUID `json:"channel_id"`
-	IncludeArchived bool        `json:"include_archived"`
-}
-
-func (q *Queries) ListChannelSessions(ctx context.Context, arg ListChannelSessionsParams) ([]ChannelSession, error) {
-	rows, err := q.db.Query(ctx, listChannelSessions, arg.ChannelID, arg.IncludeArchived)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelSession{}
-	for rows.Next() {
-		var i ChannelSession
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChannelID,
-			&i.Title,
-			&i.Summary,
-			&i.Status,
-			&i.CreatedByType,
-			&i.CreatedByID,
-			&i.ArchivedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listIncompleteChannelDispatchSteps = `-- name: ListIncompleteChannelDispatchSteps :many
-SELECT id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at FROM channel_dispatch_step
-WHERE plan_id = $1
-  AND status IN ('pending', 'queued', 'running')
-ORDER BY position ASC, created_at ASC
-`
-
-func (q *Queries) ListIncompleteChannelDispatchSteps(ctx context.Context, planID pgtype.UUID) ([]ChannelDispatchStep, error) {
-	rows, err := q.db.Query(ctx, listIncompleteChannelDispatchSteps, planID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelDispatchStep{}
-	for rows.Next() {
-		var i ChannelDispatchStep
-		if err := rows.Scan(
-			&i.ID,
-			&i.PlanID,
-			&i.ChannelID,
-			&i.ChannelSessionID,
-			&i.TriggerMessageID,
-			&i.AgentID,
-			&i.Position,
-			&i.Role,
-			&i.Status,
-			&i.Instruction,
-			&i.DependsOnStepIds,
-			&i.SkipReason,
-			&i.Error,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listIssueChannels = `-- name: ListIssueChannels :many
-SELECT ic.issue_id, ic.channel_id, ic.session_id, ic.linked_by_type, ic.linked_by_id, ic.created_at,
-       c.slug, c.name, c.visibility
-FROM issue_channel ic
-JOIN channel c ON c.id = ic.channel_id
-WHERE ic.issue_id = $1
-ORDER BY ic.created_at DESC
-`
-
-type ListIssueChannelsRow struct {
-	IssueID      pgtype.UUID        `json:"issue_id"`
-	ChannelID    pgtype.UUID        `json:"channel_id"`
-	SessionID    pgtype.UUID        `json:"session_id"`
-	LinkedByType string             `json:"linked_by_type"`
-	LinkedByID   pgtype.UUID        `json:"linked_by_id"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	Slug         string             `json:"slug"`
-	Name         string             `json:"name"`
-	Visibility   string             `json:"visibility"`
-}
-
-func (q *Queries) ListIssueChannels(ctx context.Context, issueID pgtype.UUID) ([]ListIssueChannelsRow, error) {
-	rows, err := q.db.Query(ctx, listIssueChannels, issueID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListIssueChannelsRow{}
-	for rows.Next() {
-		var i ListIssueChannelsRow
-		if err := rows.Scan(
-			&i.IssueID,
-			&i.ChannelID,
-			&i.SessionID,
-			&i.LinkedByType,
-			&i.LinkedByID,
-			&i.CreatedAt,
-			&i.Slug,
-			&i.Name,
-			&i.Visibility,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listQueuedChannelAgentRunsForMessage = `-- name: ListQueuedChannelAgentRunsForMessage :many
-SELECT id, channel_id, channel_session_id, user_message_id, agent_id, chat_session_id, chat_user_message_id, task_id, status, created_at, completed_at, dispatch_step_id FROM channel_agent_run
-WHERE user_message_id = $1
-  AND status = 'queued'
-  AND task_id IS NULL
-ORDER BY created_at ASC
-`
-
-func (q *Queries) ListQueuedChannelAgentRunsForMessage(ctx context.Context, userMessageID pgtype.UUID) ([]ChannelAgentRun, error) {
-	rows, err := q.db.Query(ctx, listQueuedChannelAgentRunsForMessage, userMessageID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelAgentRun{}
-	for rows.Next() {
-		var i ChannelAgentRun
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChannelID,
-			&i.ChannelSessionID,
-			&i.UserMessageID,
-			&i.AgentID,
-			&i.ChatSessionID,
-			&i.ChatUserMessageID,
-			&i.TaskID,
-			&i.Status,
-			&i.CreatedAt,
-			&i.CompletedAt,
-			&i.DispatchStepID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listReadyChannelDispatchSteps = `-- name: ListReadyChannelDispatchSteps :many
-SELECT cds.id, cds.plan_id, cds.channel_id, cds.channel_session_id, cds.trigger_message_id, cds.agent_id, cds.position, cds.role, cds.status, cds.instruction, cds.depends_on_step_ids, cds.skip_reason, cds.error, cds.started_at, cds.completed_at, cds.created_at, cds.updated_at FROM channel_dispatch_step cds
-WHERE cds.plan_id = $1
-  AND cds.status = 'pending'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM unnest(cds.depends_on_step_ids) dep(step_id)
-      JOIN channel_dispatch_step dependency ON dependency.id = dep.step_id
-      WHERE dependency.status NOT IN ('completed', 'skipped')
-  )
-ORDER BY cds.position ASC, cds.created_at ASC
-`
-
-func (q *Queries) ListReadyChannelDispatchSteps(ctx context.Context, planID pgtype.UUID) ([]ChannelDispatchStep, error) {
-	rows, err := q.db.Query(ctx, listReadyChannelDispatchSteps, planID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChannelDispatchStep{}
-	for rows.Next() {
-		var i ChannelDispatchStep
-		if err := rows.Scan(
-			&i.ID,
-			&i.PlanID,
-			&i.ChannelID,
-			&i.ChannelSessionID,
-			&i.TriggerMessageID,
-			&i.AgentID,
-			&i.Position,
-			&i.Role,
-			&i.Status,
-			&i.Instruction,
-			&i.DependsOnStepIds,
-			&i.SkipReason,
-			&i.Error,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listUnreadChannelIDsForUser = `-- name: ListUnreadChannelIDsForUser :many
-SELECT DISTINCT cm.channel_id
-FROM channel_message cm
-LEFT JOIN channel_read_state crs
-  ON crs.channel_id = cm.channel_id
- AND crs.user_id = $1
-WHERE cm.channel_id = ANY($2::uuid[])
-  AND cm.created_at > COALESCE(crs.last_read_at, '-infinity'::timestamptz)
-  AND NOT (
-    cm.author_type = 'member'
-    AND cm.author_id = $1
-  )
-`
-
-type ListUnreadChannelIDsForUserParams struct {
-	UserID     pgtype.UUID   `json:"user_id"`
-	ChannelIds []pgtype.UUID `json:"channel_ids"`
-}
-
-func (q *Queries) ListUnreadChannelIDsForUser(ctx context.Context, arg ListUnreadChannelIDsForUserParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listUnreadChannelIDsForUser, arg.UserID, arg.ChannelIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var channel_id pgtype.UUID
-		if err := rows.Scan(&channel_id); err != nil {
-			return nil, err
-		}
-		items = append(items, channel_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listVisibleChannels = `-- name: ListVisibleChannels :many
-SELECT DISTINCT c.id, c.workspace_id, c.group_id, c.slug, c.name, c.description, c.visibility, c.instructions, c.summary, c.default_project_id, c.default_assignee_type, c.default_assignee_id, c.position, c.created_by, c.archived_at, c.created_at, c.updated_at, c.proactivity, c.mention_issue_search_enabled, c.project_id FROM channel c
-LEFT JOIN channel_member cm
-       ON cm.channel_id = c.id
-      AND cm.member_type = 'member'
-      AND cm.member_id = $2
-WHERE c.workspace_id = $1
-  AND ($3::boolean OR c.archived_at IS NULL)
-  AND (c.visibility = 'public' OR cm.id IS NOT NULL OR $4::boolean)
-ORDER BY c.position ASC, c.created_at ASC
-`
-
-type ListVisibleChannelsParams struct {
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	MemberID        pgtype.UUID `json:"member_id"`
-	IncludeArchived bool        `json:"include_archived"`
-	IncludePrivate  bool        `json:"include_private"`
-}
-
-func (q *Queries) ListVisibleChannels(ctx context.Context, arg ListVisibleChannelsParams) ([]Channel, error) {
-	rows, err := q.db.Query(ctx, listVisibleChannels,
-		arg.WorkspaceID,
-		arg.MemberID,
-		arg.IncludeArchived,
-		arg.IncludePrivate,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Channel{}
-	for rows.Next() {
-		var i Channel
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.GroupID,
-			&i.Slug,
-			&i.Name,
-			&i.Description,
-			&i.Visibility,
-			&i.Instructions,
-			&i.Summary,
-			&i.DefaultProjectID,
-			&i.DefaultAssigneeType,
-			&i.DefaultAssigneeID,
-			&i.Position,
-			&i.CreatedBy,
-			&i.ArchivedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Proactivity,
-			&i.MentionIssueSearchEnabled,
-			&i.ProjectID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const refreshChannelDispatchPlanStats = `-- name: RefreshChannelDispatchPlanStats :one
-UPDATE channel_dispatch_plan p
-SET run_count = stats.run_count,
-    total_input_tokens = stats.input_tokens,
-    total_output_tokens = stats.output_tokens,
-    total_cache_read_tokens = stats.cache_read_tokens,
-    total_cache_write_tokens = stats.cache_write_tokens,
-    elapsed_ms = CASE
-        WHEN p.started_at IS NULL THEN p.elapsed_ms
-        WHEN p.completed_at IS NOT NULL THEN GREATEST(0, (EXTRACT(EPOCH FROM (p.completed_at - p.started_at)) * 1000)::bigint)
-        ELSE GREATEST(0, (EXTRACT(EPOCH FROM (now() - p.started_at)) * 1000)::bigint)
-    END,
-    updated_at = now()
-FROM (
-    SELECT
-        COUNT(car.id)::integer AS run_count,
-        COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
-        COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
-        COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
-        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens
-    FROM channel_dispatch_step cds
-    LEFT JOIN channel_agent_run car ON car.dispatch_step_id = cds.id
-    LEFT JOIN task_usage tu ON tu.task_id = car.task_id
-    WHERE cds.plan_id = $1
-) stats
-WHERE p.id = $1
-RETURNING p.id, p.channel_id, p.channel_session_id, p.trigger_message_id, p.mode, p.status, p.confidence, p.planner_source, p.reason, p.participant_count, p.run_count, p.total_input_tokens, p.total_output_tokens, p.total_cache_read_tokens, p.total_cache_write_tokens, p.elapsed_ms, p.started_at, p.completed_at, p.created_at, p.updated_at
-`
-
-func (q *Queries) RefreshChannelDispatchPlanStats(ctx context.Context, id pgtype.UUID) (ChannelDispatchPlan, error) {
-	row := q.db.QueryRow(ctx, refreshChannelDispatchPlanStats, id)
-	var i ChannelDispatchPlan
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.Mode,
-		&i.Status,
-		&i.Confidence,
-		&i.PlannerSource,
-		&i.Reason,
-		&i.ParticipantCount,
-		&i.RunCount,
-		&i.TotalInputTokens,
-		&i.TotalOutputTokens,
-		&i.TotalCacheReadTokens,
-		&i.TotalCacheWriteTokens,
-		&i.ElapsedMs,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const removeChannelMember = `-- name: RemoveChannelMember :execrows
-DELETE FROM channel_member
-WHERE channel_id = $1 AND member_type = $2 AND member_id = $3
-`
-
-type RemoveChannelMemberParams struct {
-	ChannelID  pgtype.UUID `json:"channel_id"`
-	MemberType string      `json:"member_type"`
-	MemberID   pgtype.UUID `json:"member_id"`
-}
-
-func (q *Queries) RemoveChannelMember(ctx context.Context, arg RemoveChannelMemberParams) (int64, error) {
-	result, err := q.db.Exec(ctx, removeChannelMember, arg.ChannelID, arg.MemberType, arg.MemberID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const resetChannelDispatchStepForRetry = `-- name: ResetChannelDispatchStepForRetry :one
-UPDATE channel_dispatch_step
-SET status = 'pending',
-    error = '',
-    skip_reason = '',
-    started_at = NULL,
-    completed_at = NULL,
-    updated_at = now()
-WHERE id = $1
-RETURNING id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at
-`
-
-func (q *Queries) ResetChannelDispatchStepForRetry(ctx context.Context, id pgtype.UUID) (ChannelDispatchStep, error) {
-	row := q.db.QueryRow(ctx, resetChannelDispatchStepForRetry, id)
-	var i ChannelDispatchStep
-	err := row.Scan(
-		&i.ID,
-		&i.PlanID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.AgentID,
-		&i.Position,
-		&i.Role,
-		&i.Status,
-		&i.Instruction,
-		&i.DependsOnStepIds,
-		&i.SkipReason,
-		&i.Error,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const resolveApprovalRequest = `-- name: ResolveApprovalRequest :one
-UPDATE approval_request SET
-    status = $3,
-    resolution_note = $4,
-    resolved_by = $5,
-    resolved_at = now(),
-    updated_at = now()
-WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, channel_id, session_id, issue_id, requested_by_type, requested_by_id, action_type, action_payload, status, resolution_note, resolved_by, resolved_at, created_at, updated_at
-`
-
-type ResolveApprovalRequestParams struct {
-	ID             pgtype.UUID `json:"id"`
-	WorkspaceID    pgtype.UUID `json:"workspace_id"`
-	Status         string      `json:"status"`
-	ResolutionNote pgtype.Text `json:"resolution_note"`
-	ResolvedBy     pgtype.UUID `json:"resolved_by"`
-}
-
-func (q *Queries) ResolveApprovalRequest(ctx context.Context, arg ResolveApprovalRequestParams) (ApprovalRequest, error) {
-	row := q.db.QueryRow(ctx, resolveApprovalRequest,
-		arg.ID,
-		arg.WorkspaceID,
-		arg.Status,
-		arg.ResolutionNote,
-		arg.ResolvedBy,
-	)
-	var i ApprovalRequest
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.ChannelID,
-		&i.SessionID,
-		&i.IssueID,
-		&i.RequestedByType,
-		&i.RequestedByID,
-		&i.ActionType,
-		&i.ActionPayload,
-		&i.Status,
-		&i.ResolutionNote,
-		&i.ResolvedBy,
-		&i.ResolvedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const restoreChannel = `-- name: RestoreChannel :one
-UPDATE channel
-SET archived_at = NULL, updated_at = now()
-WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
-`
-
-type RestoreChannelParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) RestoreChannel(ctx context.Context, arg RestoreChannelParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, restoreChannel, arg.ID, arg.WorkspaceID)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
-}
-
-const restoreChannelSession = `-- name: RestoreChannelSession :one
-UPDATE channel_session
-SET status = 'active', archived_at = NULL, updated_at = now()
-WHERE id = $1 AND channel_id = $2
-RETURNING id, channel_id, title, summary, status, created_by_type, created_by_id, archived_at, created_at, updated_at
-`
-
-type RestoreChannelSessionParams struct {
-	ID        pgtype.UUID `json:"id"`
-	ChannelID pgtype.UUID `json:"channel_id"`
-}
-
-func (q *Queries) RestoreChannelSession(ctx context.Context, arg RestoreChannelSessionParams) (ChannelSession, error) {
-	row := q.db.QueryRow(ctx, restoreChannelSession, arg.ID, arg.ChannelID)
-	var i ChannelSession
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.Title,
-		&i.Summary,
-		&i.Status,
-		&i.CreatedByType,
-		&i.CreatedByID,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const searchVisibleChannels = `-- name: SearchVisibleChannels :many
-SELECT c.id, c.workspace_id, c.group_id, c.slug, c.name, c.description, c.visibility, c.instructions, c.summary, c.default_project_id, c.default_assignee_type, c.default_assignee_id, c.position, c.created_by, c.archived_at, c.created_at, c.updated_at, c.proactivity, c.mention_issue_search_enabled, c.project_id FROM channel c
-WHERE c.workspace_id = $1
-  AND c.archived_at IS NULL
-  AND (
-    c.visibility = 'public'
-    OR $2::boolean
-    OR EXISTS (
-      SELECT 1
-      FROM channel_member cm
-      WHERE cm.channel_id = c.id
-        AND cm.member_type = 'member'
-        AND cm.member_id = $3
-    )
-  )
-  AND (
-    LOWER(c.name) LIKE $4
-    OR LOWER(c.slug) LIKE $4
-    OR LOWER(c.description) LIKE $4
-  )
-ORDER BY
-  CASE
-    WHEN LOWER(c.slug) = $5 THEN 0
-    WHEN LOWER(c.name) = $5 THEN 1
-    WHEN LOWER(c.slug) LIKE $6 THEN 2
-    WHEN LOWER(c.name) LIKE $6 THEN 3
-    ELSE 4
-  END,
-  c.position ASC,
-  c.created_at ASC
-LIMIT $7::int
-`
-
-type SearchVisibleChannelsParams struct {
-	WorkspaceID    pgtype.UUID `json:"workspace_id"`
-	IncludePrivate bool        `json:"include_private"`
-	MemberID       pgtype.UUID `json:"member_id"`
-	Pattern        string      `json:"pattern"`
-	Exact          string      `json:"exact"`
-	StartsWith     string      `json:"starts_with"`
-	LimitCount     int32       `json:"limit_count"`
-}
-
-func (q *Queries) SearchVisibleChannels(ctx context.Context, arg SearchVisibleChannelsParams) ([]Channel, error) {
-	rows, err := q.db.Query(ctx, searchVisibleChannels,
-		arg.WorkspaceID,
-		arg.IncludePrivate,
-		arg.MemberID,
-		arg.Pattern,
-		arg.Exact,
-		arg.StartsWith,
-		arg.LimitCount,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Channel{}
-	for rows.Next() {
-		var i Channel
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.GroupID,
-			&i.Slug,
-			&i.Name,
-			&i.Description,
-			&i.Visibility,
-			&i.Instructions,
-			&i.Summary,
-			&i.DefaultProjectID,
-			&i.DefaultAssigneeType,
-			&i.DefaultAssigneeID,
-			&i.Position,
-			&i.CreatedBy,
-			&i.ArchivedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Proactivity,
-			&i.MentionIssueSearchEnabled,
-			&i.ProjectID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const touchChannelSession = `-- name: TouchChannelSession :exec
-UPDATE channel_session
-SET updated_at = now()
-WHERE id = $1
-`
-
-func (q *Queries) TouchChannelSession(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, touchChannelSession, id)
 	return err
 }
 
-const unlinkIssueFromChannel = `-- name: UnlinkIssueFromChannel :execrows
-DELETE FROM issue_channel
-WHERE issue_id = $1 AND channel_id = $2
+const recordChannelMediaPendingObject = `-- name: RecordChannelMediaPendingObject :one
+
+INSERT INTO channel_media_pending_object (
+    storage_key, workspace_id, chat_message_id, storage_url, installation_id
+)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (storage_key) DO UPDATE
+SET created_at = now(), next_attempt_at = now(),
+    chat_message_id = EXCLUDED.chat_message_id,
+    storage_url = EXCLUDED.storage_url
+WHERE channel_media_pending_object.state = 'pending'
+  AND channel_media_pending_object.workspace_id = EXCLUDED.workspace_id
+RETURNING storage_key
 `
 
-type UnlinkIssueFromChannelParams struct {
-	IssueID   pgtype.UUID `json:"issue_id"`
-	ChannelID pgtype.UUID `json:"channel_id"`
+type RecordChannelMediaPendingObjectParams struct {
+	StorageKey     string      `json:"storage_key"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ChatMessageID  pgtype.UUID `json:"chat_message_id"`
+	StorageUrl     string      `json:"storage_url"`
+	InstallationID pgtype.UUID `json:"installation_id"`
 }
 
-func (q *Queries) UnlinkIssueFromChannel(ctx context.Context, arg UnlinkIssueFromChannelParams) (int64, error) {
-	result, err := q.db.Exec(ctx, unlinkIssueFromChannel, arg.IssueID, arg.ChannelID)
+// =====================
+// channel_media_pending_object (media intent ledger)
+// =====================
+// Records upload intent BEFORE the PUT. A redelivered attempt refreshes the
+// settle window, but only while the row is still 'pending' — a key the
+// reconciler owns ('deleting') must never be resurrected — and only within
+// the SAME workspace: a cross-workspace key collision (impossible via the
+// derived key, but tenancy must never trust the key string) updates nothing
+// and returns no row, so the caller skips the upload entirely.
+func (q *Queries) RecordChannelMediaPendingObject(ctx context.Context, arg RecordChannelMediaPendingObjectParams) (string, error) {
+	row := q.db.QueryRow(ctx, recordChannelMediaPendingObject,
+		arg.StorageKey,
+		arg.WorkspaceID,
+		arg.ChatMessageID,
+		arg.StorageUrl,
+		arg.InstallationID,
+	)
+	var storage_key string
+	err := row.Scan(&storage_key)
+	return storage_key, err
+}
+
+const releaseChannelInboundDedup = `-- name: ReleaseChannelInboundDedup :execrows
+DELETE FROM channel_inbound_message_dedup
+WHERE installation_id = $1
+  AND message_id = $2
+  AND claim_token = $3
+  AND processed_at IS NULL
+`
+
+type ReleaseChannelInboundDedupParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	MessageID      string      `json:"message_id"`
+	ClaimToken     pgtype.UUID `json:"claim_token"`
+}
+
+// Releases an in-flight claim when an infra error occurred before any
+// durable side effect, so a retry can re-acquire immediately. Fenced on
+// processed_at IS NULL and claim_token.
+func (q *Queries) ReleaseChannelInboundDedup(ctx context.Context, arg ReleaseChannelInboundDedupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseChannelInboundDedup, arg.InstallationID, arg.MessageID, arg.ClaimToken)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const updateChannel = `-- name: UpdateChannel :one
-UPDATE channel SET
-    group_id = COALESCE($3, group_id),
-    name = COALESCE($4, name),
-    description = COALESCE($5, description),
-    visibility = COALESCE($6, visibility),
-    proactivity = COALESCE($7, proactivity),
-    instructions = COALESCE($8, instructions),
-    summary = COALESCE($9, summary),
-    project_id = CASE
-        WHEN $10::boolean THEN $11
-        ELSE project_id
-    END,
-    default_project_id = CASE
-        WHEN $10::boolean THEN $11
-        ELSE default_project_id
-    END,
-    default_assignee_type = COALESCE($12, default_assignee_type),
-    default_assignee_id = COALESCE($13, default_assignee_id),
-    position = COALESCE($14, position),
-    mention_issue_search_enabled = COALESCE($15, mention_issue_search_enabled),
-    updated_at = now()
-WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, group_id, slug, name, description, visibility, instructions, summary, default_project_id, default_assignee_type, default_assignee_id, position, created_by, archived_at, created_at, updated_at, proactivity, mention_issue_search_enabled, project_id
+const releaseChannelMediaPendingObject = `-- name: ReleaseChannelMediaPendingObject :exec
+UPDATE channel_media_pending_object
+SET lease_token = NULL,
+    lease_expires_at = NULL,
+    next_attempt_at = now() + $1::interval,
+    last_error = $2
+WHERE storage_key = $3
+  AND workspace_id = $4
+  AND lease_token = $5
 `
 
-type UpdateChannelParams struct {
-	ID                        pgtype.UUID   `json:"id"`
-	WorkspaceID               pgtype.UUID   `json:"workspace_id"`
-	GroupID                   pgtype.UUID   `json:"group_id"`
-	Name                      pgtype.Text   `json:"name"`
-	Description               pgtype.Text   `json:"description"`
-	Visibility                pgtype.Text   `json:"visibility"`
-	Proactivity               pgtype.Text   `json:"proactivity"`
-	Instructions              pgtype.Text   `json:"instructions"`
-	Summary                   pgtype.Text   `json:"summary"`
-	ProjectIDSet              bool          `json:"project_id_set"`
-	ProjectID                 pgtype.UUID   `json:"project_id"`
-	DefaultAssigneeType       pgtype.Text   `json:"default_assignee_type"`
-	DefaultAssigneeID         pgtype.UUID   `json:"default_assignee_id"`
-	Position                  pgtype.Float8 `json:"position"`
-	MentionIssueSearchEnabled pgtype.Bool   `json:"mention_issue_search_enabled"`
+type ReleaseChannelMediaPendingObjectParams struct {
+	Backoff     pgtype.Interval `json:"backoff"`
+	LastError   pgtype.Text     `json:"last_error"`
+	StorageKey  string          `json:"storage_key"`
+	WorkspaceID pgtype.UUID     `json:"workspace_id"`
+	LeaseToken  pgtype.UUID     `json:"lease_token"`
 }
 
-func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error) {
-	row := q.db.QueryRow(ctx, updateChannel,
-		arg.ID,
+// Object-storage DELETE failed: keep the row in 'deleting' (bind must still
+// never attach it), release the lease, and back off the next attempt.
+// workspace_id is redundant with the storage_key PK but explicit per the
+// tenancy rule: every query constrains the workspace column, never trusting
+// the key string.
+func (q *Queries) ReleaseChannelMediaPendingObject(ctx context.Context, arg ReleaseChannelMediaPendingObjectParams) error {
+	_, err := q.db.Exec(ctx, releaseChannelMediaPendingObject,
+		arg.Backoff,
+		arg.LastError,
+		arg.StorageKey,
 		arg.WorkspaceID,
-		arg.GroupID,
-		arg.Name,
-		arg.Description,
-		arg.Visibility,
-		arg.Proactivity,
-		arg.Instructions,
-		arg.Summary,
-		arg.ProjectIDSet,
-		arg.ProjectID,
-		arg.DefaultAssigneeType,
-		arg.DefaultAssigneeID,
-		arg.Position,
-		arg.MentionIssueSearchEnabled,
+		arg.LeaseToken,
 	)
-	var i Channel
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.GroupID,
-		&i.Slug,
-		&i.Name,
-		&i.Description,
-		&i.Visibility,
-		&i.Instructions,
-		&i.Summary,
-		&i.DefaultProjectID,
-		&i.DefaultAssigneeType,
-		&i.DefaultAssigneeID,
-		&i.Position,
-		&i.CreatedBy,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Proactivity,
-		&i.MentionIssueSearchEnabled,
-		&i.ProjectID,
-	)
-	return i, err
+	return err
 }
 
-const updateChannelDispatchPlanStatus = `-- name: UpdateChannelDispatchPlanStatus :one
-UPDATE channel_dispatch_plan
-SET status = $2,
-    started_at = CASE WHEN $2 = 'running' AND started_at IS NULL THEN now() ELSE started_at END,
-    completed_at = CASE WHEN $2 IN ('completed', 'failed', 'cancelled') THEN now() ELSE completed_at END,
-    elapsed_ms = CASE
-        WHEN $2 IN ('completed', 'failed', 'cancelled') AND started_at IS NOT NULL
-        THEN GREATEST(0, (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint)
-        ELSE elapsed_ms
-    END,
-    updated_at = now()
+const releaseChannelWSLease = `-- name: ReleaseChannelWSLease :exec
+UPDATE channel_installation
+SET ws_lease_token      = NULL,
+    ws_lease_expires_at = NULL,
+    updated_at          = now()
 WHERE id = $1
-RETURNING id, channel_id, channel_session_id, trigger_message_id, mode, status, confidence, planner_source, reason, participant_count, run_count, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens, elapsed_ms, started_at, completed_at, created_at, updated_at
+  AND ws_lease_token = $2
 `
 
-type UpdateChannelDispatchPlanStatusParams struct {
+type ReleaseChannelWSLeaseParams struct {
+	ID           pgtype.UUID `json:"id"`
+	CurrentToken pgtype.Text `json:"current_token"`
+}
+
+// Drops the lease iff we are still the holder.
+func (q *Queries) ReleaseChannelWSLease(ctx context.Context, arg ReleaseChannelWSLeaseParams) error {
+	_, err := q.db.Exec(ctx, releaseChannelWSLease, arg.ID, arg.CurrentToken)
+	return err
+}
+
+const setChannelInstallationConfig = `-- name: SetChannelInstallationConfig :exec
+UPDATE channel_installation
+SET config = $2, updated_at = now()
+WHERE id = $1
+`
+
+type SetChannelInstallationConfigParams struct {
+	ID     pgtype.UUID `json:"id"`
+	Config []byte      `json:"config"`
+}
+
+// Replaces the whole config blob for one installation. Used by the
+// operator backfills (e.g. setting a freshly-fetched bot_union_id) that
+// read-modify-write the JSON in Go and persist it back atomically by id.
+func (q *Queries) SetChannelInstallationConfig(ctx context.Context, arg SetChannelInstallationConfigParams) error {
+	_, err := q.db.Exec(ctx, setChannelInstallationConfig, arg.ID, arg.Config)
+	return err
+}
+
+const setChannelInstallationStatus = `-- name: SetChannelInstallationStatus :exec
+UPDATE channel_installation
+SET status = $2, updated_at = now()
+WHERE id = $1
+`
+
+type SetChannelInstallationStatusParams struct {
 	ID     pgtype.UUID `json:"id"`
 	Status string      `json:"status"`
 }
 
-func (q *Queries) UpdateChannelDispatchPlanStatus(ctx context.Context, arg UpdateChannelDispatchPlanStatusParams) (ChannelDispatchPlan, error) {
-	row := q.db.QueryRow(ctx, updateChannelDispatchPlanStatus, arg.ID, arg.Status)
-	var i ChannelDispatchPlan
-	err := row.Scan(
-		&i.ID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
-		&i.Mode,
-		&i.Status,
-		&i.Confidence,
-		&i.PlannerSource,
-		&i.Reason,
-		&i.ParticipantCount,
-		&i.RunCount,
-		&i.TotalInputTokens,
-		&i.TotalOutputTokens,
-		&i.TotalCacheReadTokens,
-		&i.TotalCacheWriteTokens,
-		&i.ElapsedMs,
-		&i.StartedAt,
-		&i.CompletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
+func (q *Queries) SetChannelInstallationStatus(ctx context.Context, arg SetChannelInstallationStatusParams) error {
+	_, err := q.db.Exec(ctx, setChannelInstallationStatus, arg.ID, arg.Status)
+	return err
 }
 
-const updateChannelDispatchStepStatus = `-- name: UpdateChannelDispatchStepStatus :one
-UPDATE channel_dispatch_step
+const tombstoneChannelMediaPendingObject = `-- name: TombstoneChannelMediaPendingObject :execrows
+UPDATE channel_media_pending_object
+SET state = 'tombstoned',
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    next_attempt_at = now() + $1::interval,
+    -- The pass index lives in its own column: a failed re-delete writes
+    -- last_error, so carrying the schedule position there would reset the
+    -- walk on every failure and a flaky store could keep the row alive
+    -- indefinitely. The delete that got here succeeded, so any previous
+    -- failure text is stale.
+    tombstone_pass = $2,
+    last_error = NULL
+WHERE storage_key = $3
+  AND workspace_id = $4
+  AND lease_token = $5
+`
+
+type TombstoneChannelMediaPendingObjectParams struct {
+	RedeleteDelay pgtype.Interval `json:"redelete_delay"`
+	TombstonePass int32           `json:"tombstone_pass"`
+	StorageKey    string          `json:"storage_key"`
+	WorkspaceID   pgtype.UUID     `json:"workspace_id"`
+	LeaseToken    pgtype.UUID     `json:"lease_token"`
+}
+
+// The object was deleted, but the row is KEPT as a tombstone: a PUT the client
+// abandoned before the delete may still materialize the object afterwards, and
+// no DELETE can be ordered against it. Each due tombstone re-runs the
+// reference check and, only if still unreferenced, triggers another idempotent
+// delete, so a late materialization is reclaimed by a later pass while an
+// object something durably reads is never removed;
+// only after the re-delete schedule is exhausted is the row dropped
+// (DeleteChannelMediaPendingObject). Lease-token guarded like every other
+// settle write; workspace_id explicit per the tenancy rule.
+func (q *Queries) TombstoneChannelMediaPendingObject(ctx context.Context, arg TombstoneChannelMediaPendingObjectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, tombstoneChannelMediaPendingObject,
+		arg.RedeleteDelay,
+		arg.TombstonePass,
+		arg.StorageKey,
+		arg.WorkspaceID,
+		arg.LeaseToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateChannelChatSessionBindingReplyTarget = `-- name: UpdateChannelChatSessionBindingReplyTarget :exec
+UPDATE channel_chat_session_binding
+SET last_message_id = $2,
+    last_thread_id  = $3
+WHERE chat_session_id = $1
+`
+
+type UpdateChannelChatSessionBindingReplyTargetParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	LastMessageID pgtype.Text `json:"last_message_id"`
+	LastThreadID  pgtype.Text `json:"last_thread_id"`
+}
+
+// Records the most recent inbound trigger message + thread so the decoupled
+// outbound patcher can thread its reply back into the originating topic.
+func (q *Queries) UpdateChannelChatSessionBindingReplyTarget(ctx context.Context, arg UpdateChannelChatSessionBindingReplyTargetParams) error {
+	_, err := q.db.Exec(ctx, updateChannelChatSessionBindingReplyTarget, arg.ChatSessionID, arg.LastMessageID, arg.LastThreadID)
+	return err
+}
+
+const updateChannelOutboundCardStatus = `-- name: UpdateChannelOutboundCardStatus :exec
+UPDATE channel_outbound_card_message
 SET status = $2,
-    error = COALESCE($3, error),
-    skip_reason = COALESCE($4, skip_reason),
-    started_at = CASE WHEN $2 IN ('queued', 'running') AND started_at IS NULL THEN now() ELSE started_at END,
-    completed_at = CASE WHEN $2 IN ('completed', 'failed', 'skipped', 'cancelled') THEN now() ELSE completed_at END,
-    updated_at = now()
+    last_patched_at = now()
 WHERE id = $1
-RETURNING id, plan_id, channel_id, channel_session_id, trigger_message_id, agent_id, position, role, status, instruction, depends_on_step_ids, skip_reason, error, started_at, completed_at, created_at, updated_at
 `
 
-type UpdateChannelDispatchStepStatusParams struct {
-	ID         pgtype.UUID `json:"id"`
-	Status     string      `json:"status"`
-	Error      pgtype.Text `json:"error"`
-	SkipReason pgtype.Text `json:"skip_reason"`
+type UpdateChannelOutboundCardStatusParams struct {
+	ID     pgtype.UUID `json:"id"`
+	Status string      `json:"status"`
 }
 
-func (q *Queries) UpdateChannelDispatchStepStatus(ctx context.Context, arg UpdateChannelDispatchStepStatusParams) (ChannelDispatchStep, error) {
-	row := q.db.QueryRow(ctx, updateChannelDispatchStepStatus,
-		arg.ID,
-		arg.Status,
-		arg.Error,
-		arg.SkipReason,
+func (q *Queries) UpdateChannelOutboundCardStatus(ctx context.Context, arg UpdateChannelOutboundCardStatusParams) error {
+	_, err := q.db.Exec(ctx, updateChannelOutboundCardStatus, arg.ID, arg.Status)
+	return err
+}
+
+const upsertChannelInstallation = `-- name: UpsertChannelInstallation :one
+
+
+INSERT INTO channel_installation (
+    workspace_id, agent_id, channel_type, config, installer_user_id
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+ON CONFLICT (workspace_id, agent_id, channel_type) DO UPDATE SET
+    channel_type      = EXCLUDED.channel_type,
+    config            = EXCLUDED.config,
+    installer_user_id = EXCLUDED.installer_user_id,
+    status            = 'active',
+    installed_at      = now(),
+    updated_at        = now()
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
+`
+
+type UpsertChannelInstallationParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	ChannelType     string      `json:"channel_type"`
+	Config          []byte      `json:"config"`
+	InstallerUserID pgtype.UUID `json:"installer_user_id"`
+}
+
+// Platform-agnostic inbound channel queries (MUL-3515). These operate on
+// the channel_* tables created in migration 124. Each installation carries
+// a `channel_type` discriminator and a JSONB `config` blob for
+// platform-specific identifiers/credentials; the cross-platform columns
+// stay flat. The Go layer owns building/parsing config — these queries
+// treat it as opaque JSON except for the routing index on config->>'app_id'.
+//
+// No foreign keys exist on these tables (MUL-3515 §4): the integrity the
+// old composite FKs enforced (binding workspace matches installation;
+// binding dies with membership / chat_session) is maintained in the
+// application layer via the membership check in the inbound identity step
+// and the *DeleteChannel*BindingsBy* cleanup queries below.
+// =====================
+// channel_installation
+// =====================
+// Install / re-install path. `config` is the opaque per-channel JSONB the
+// Go layer assembles (for feishu: app_id, app_secret_encrypted, tenant_key,
+// bot_open_id, bot_union_id, region). Re-installing the same agent on the
+// same channel_type replaces the whole config and forces status back to
+// 'active'. The conflict key is (workspace_id, agent_id, channel_type) so an
+// agent may hold one installation per channel_type (feishu + slack + ...)
+// without one install clobbering another. The WS lease is intentionally NOT
+// reset here — the inbound hub owns lease lifecycle.
+func (q *Queries) UpsertChannelInstallation(ctx context.Context, arg UpsertChannelInstallationParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, upsertChannelInstallation,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.ChannelType,
+		arg.Config,
+		arg.InstallerUserID,
 	)
-	var i ChannelDispatchStep
+	var i ChannelInstallation
 	err := row.Scan(
 		&i.ID,
-		&i.PlanID,
-		&i.ChannelID,
-		&i.ChannelSessionID,
-		&i.TriggerMessageID,
+		&i.WorkspaceID,
 		&i.AgentID,
-		&i.Position,
-		&i.Role,
+		&i.ChannelType,
+		&i.Config,
 		&i.Status,
-		&i.Instruction,
-		&i.DependsOnStepIds,
-		&i.SkipReason,
-		&i.Error,
-		&i.StartedAt,
-		&i.CompletedAt,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const upsertChannelMember = `-- name: UpsertChannelMember :one
-INSERT INTO channel_member (channel_id, member_type, member_id, role)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (channel_id, member_type, member_id)
-DO UPDATE SET role = EXCLUDED.role
-RETURNING id, channel_id, member_type, member_id, role, created_at
+const upsertChannelInstallationByAppID = `-- name: UpsertChannelInstallationByAppID :one
+INSERT INTO channel_installation (
+    workspace_id, agent_id, channel_type, config, installer_user_id
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+ON CONFLICT (channel_type, (config ->> 'app_id')) DO UPDATE SET
+    agent_id          = EXCLUDED.agent_id,
+    config            = EXCLUDED.config,
+    installer_user_id = EXCLUDED.installer_user_id,
+    status            = 'active',
+    installed_at      = now(),
+    updated_at        = now()
+WHERE channel_installation.workspace_id = EXCLUDED.workspace_id
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
 `
 
-type UpsertChannelMemberParams struct {
-	ChannelID  pgtype.UUID `json:"channel_id"`
-	MemberType string      `json:"member_type"`
-	MemberID   pgtype.UUID `json:"member_id"`
-	Role       string      `json:"role"`
+type UpsertChannelInstallationByAppIDParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	ChannelType     string      `json:"channel_type"`
+	Config          []byte      `json:"config"`
+	InstallerUserID pgtype.UUID `json:"installer_user_id"`
 }
 
-func (q *Queries) UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) (ChannelMember, error) {
-	row := q.db.QueryRow(ctx, upsertChannelMember,
-		arg.ChannelID,
-		arg.MemberType,
-		arg.MemberID,
-		arg.Role,
+// Team-keyed install / re-install for channels whose natural identity is the
+// platform workspace, not the (agent) pairing. Slack: one Slack workspace
+// (team_id, stored as config->>'app_id') maps to exactly one installation, so
+// re-connecting it — even to represent a DIFFERENT agent in the SAME Multica
+// workspace — UPDATES the existing row (moving agent_id) instead of colliding
+// with the (channel_type, app_id) unique index. Contrast UpsertChannelInstallation,
+// whose conflict key is (workspace_id, agent_id, channel_type): right for Feishu
+// (one app per agent), wrong for Slack.
+//
+// The `WHERE channel_installation.workspace_id = EXCLUDED.workspace_id` fences
+// the conflict update to the SAME Multica workspace: a team already owned by a
+// DIFFERENT workspace updates no row and RETURNING is empty (pgx.ErrNoRows),
+// which the caller maps to ErrTeamOwnedByAnotherWorkspace. This is the ATOMIC
+// cross-workspace guard — a plain SELECT before the upsert cannot stop two
+// workspaces racing to OAuth the same team (both read no rows, then one inserts
+// and the other's conflict-update would silently steal it). A re-connect that
+// would move the team to an agent already holding a different Slack install in
+// the same workspace still trips the (workspace_id, agent_id, channel_type)
+// unique constraint — a genuine conflict the OAuth callback turns into a redirect.
+func (q *Queries) UpsertChannelInstallationByAppID(ctx context.Context, arg UpsertChannelInstallationByAppIDParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, upsertChannelInstallationByAppID,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.ChannelType,
+		arg.Config,
+		arg.InstallerUserID,
 	)
-	var i ChannelMember
+	var i ChannelInstallation
 	err := row.Scan(
 		&i.ID,
-		&i.ChannelID,
-		&i.MemberType,
-		&i.MemberID,
-		&i.Role,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
 		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const upsertChannelReadState = `-- name: UpsertChannelReadState :one
-INSERT INTO channel_read_state (channel_id, user_id, last_read_at, last_read_message_id)
-VALUES ($1, $2, now(), $3)
-ON CONFLICT (channel_id, user_id)
-DO UPDATE SET last_read_at = now(), last_read_message_id = EXCLUDED.last_read_message_id
-RETURNING channel_id, user_id, last_read_at, last_read_message_id
-`
-
-type UpsertChannelReadStateParams struct {
-	ChannelID         pgtype.UUID `json:"channel_id"`
-	UserID            pgtype.UUID `json:"user_id"`
-	LastReadMessageID pgtype.UUID `json:"last_read_message_id"`
-}
-
-func (q *Queries) UpsertChannelReadState(ctx context.Context, arg UpsertChannelReadStateParams) (ChannelReadState, error) {
-	row := q.db.QueryRow(ctx, upsertChannelReadState, arg.ChannelID, arg.UserID, arg.LastReadMessageID)
-	var i ChannelReadState
-	err := row.Scan(
-		&i.ChannelID,
-		&i.UserID,
-		&i.LastReadAt,
-		&i.LastReadMessageID,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

@@ -189,7 +189,7 @@ export function ArchivedConversationsTab() {
       <section className="space-y-4">
         <div className="flex items-center gap-2">
           <Archive className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">
+          <h2 className="text-body font-semibold">
             {resolveArchivedConversationText(
               t(($) => $.archived_conversations.title),
               "archived_conversations.title",
@@ -197,7 +197,7 @@ export function ArchivedConversationsTab() {
             )}
           </h2>
         </div>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-caption text-muted-foreground">
           {resolveArchivedConversationText(
             t(($) => $.archived_conversations.description),
             "archived_conversations.description",
@@ -224,14 +224,14 @@ export function ArchivedConversationsTab() {
           <Card>
             <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
               <MessageSquare className="size-8 text-muted-foreground" />
-              <div className="text-sm font-medium">
+              <div className="text-body font-medium">
                 {resolveArchivedConversationText(
                   t(($) => $.archived_conversations.empty_title),
                   "archived_conversations.empty_title",
                   fallback.emptyTitle,
                 )}
               </div>
-              <p className="max-w-sm text-xs text-muted-foreground">
+              <p className="max-w-sm text-caption text-muted-foreground">
                 {resolveArchivedConversationText(
                   t(($) => $.archived_conversations.empty_body),
                   "archived_conversations.empty_body",
@@ -252,7 +252,17 @@ export function ArchivedConversationsTab() {
                   className="pl-8"
                 />
               </div>
-              <Select value={projectFilter} onValueChange={(value) => setProjectFilter(value || ALL_PROJECTS_VALUE)}>
+              <Select
+                value={projectFilter}
+                onValueChange={(value) => setProjectFilter(value || ALL_PROJECTS_VALUE)}
+                items={[
+                  { value: ALL_PROJECTS_VALUE, label: fallback.allProjects },
+                  { value: UNASSIGNED_PROJECT_VALUE, label: fallback.unassignedProject },
+                  ...projects
+                    .filter((project) => archivedProjectIds.has(project.id))
+                    .map((project) => ({ value: project.id, label: project.title })),
+                ]}
+              >
                 <SelectTrigger size="sm">
                   <SelectValue>{projectFilterLabel}</SelectValue>
                 </SelectTrigger>
@@ -264,7 +274,16 @@ export function ArchivedConversationsTab() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={agentFilter} onValueChange={(value) => setAgentFilter(value || ALL_AGENTS_VALUE)}>
+              <Select
+                value={agentFilter}
+                onValueChange={(value) => setAgentFilter(value || ALL_AGENTS_VALUE)}
+                items={[
+                  { value: ALL_AGENTS_VALUE, label: fallback.allAgents },
+                  ...agents
+                    .filter((agent) => archivedAgentIds.has(agent.id))
+                    .map((agent) => ({ value: agent.id, label: agent.name })),
+                ]}
+              >
                 <SelectTrigger size="sm">
                   <SelectValue>{agentFilterLabel}</SelectValue>
                 </SelectTrigger>
@@ -277,12 +296,12 @@ export function ArchivedConversationsTab() {
               </Select>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <div className="text-xs text-muted-foreground">{countLabel}</div>
+              <div className="text-caption text-muted-foreground">{countLabel}</div>
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                className="h-7 px-2 text-caption text-muted-foreground hover:text-destructive"
                 disabled={bulkDeleteCount === 0 || deleteSession.isPending || restoreSession.isPending}
                 onClick={() => setDeleteBulkOpen(true)}
               >
@@ -294,8 +313,8 @@ export function ArchivedConversationsTab() {
               <Card>
                 <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
                   <Search className="size-8 text-muted-foreground" />
-                  <div className="text-sm font-medium">{fallback.noResultsTitle}</div>
-                  <p className="max-w-sm text-xs text-muted-foreground">
+                  <div className="text-body font-medium">{fallback.noResultsTitle}</div>
+                  <p className="max-w-sm text-caption text-muted-foreground">
                     {hasFilters ? fallback.noResultsBody : fallback.emptyBody}
                   </p>
                 </CardContent>
@@ -311,10 +330,10 @@ export function ArchivedConversationsTab() {
               return (
                 <Card key={session.id}>
                   <CardContent className="flex items-center gap-3">
-                    <ActorAvatar actorType="agent" actorId={session.agent_id} size={32} enableHoverCard showStatusDot profileLink={false} />
+                    <ActorAvatar actorType="agent" actorId={session.agent_id} size="lg" enableHoverCard showStatusDot profileLink={false} />
                     <AppLink href={p.conversationDetail(session.id)} className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium">{title}</div>
-                      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                      <div className="truncate text-body font-medium">{title}</div>
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
                         <span className="truncate">
                           {agent?.name ?? resolveArchivedConversationText(
                             t(($) => $.archived_conversations.agent_unknown),

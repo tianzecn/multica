@@ -5,6 +5,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { AppLink, useNavigation } from "../navigation";
 import { HelpLauncher } from "./help-launcher";
+import { JoinDiscordCard } from "./join-discord-card";
 import {
   DndContext,
   PointerSensor,
@@ -16,32 +17,27 @@ import {
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  Inbox,
-  ListTodo,
-  Bot,
   ChevronDown,
   ChevronRight,
-  Settings,
   LogOut,
   Plus,
   Check,
-  BookOpenText,
   SquarePen,
-  CircleUser,
   X,
-  Zap,
-  Users,
-  Hash,
-  Lock,
   Archive,
+  Hash,
+  ListTodo,
+  Lock,
   Mail,
-  Pencil,
   MessageSquare,
+  Pencil,
+  Settings,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@multica/ui/components/ui/collapsible";
+import { CappedNumberFlow } from "@multica/ui/components/ui/number-flow";
 import { StatusIcon } from "../issues/components/status-icon";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import { openCreateIssueWithPreference } from "@multica/core/issues/stores/create-mode-store";
@@ -87,10 +83,14 @@ import { Input } from "@multica/ui/components/ui/input";
 import { useAuthStore } from "@multica/core/auth";
 import { useCurrentWorkspace, useWorkspacePaths, paths } from "@multica/core/paths";
 import { workspaceListOptions, myInvitationListOptions, workspaceKeys } from "@multica/core/workspace/queries";
+import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { inboxKeys, deduplicateInboxItems } from "@multica/core/inbox/queries";
+import { inboxKeys, deduplicateInboxItems, inboxUnreadSummaryOptions, hasOtherWorkspaceUnread, unreadWorkspaceIds } from "@multica/core/inbox/queries";
+import { countUnreadChatMessages } from "@multica/core/chat/unread";
+import { useChatStore } from "@multica/core/chat";
 import { api, ApiError } from "@multica/core/api";
 import { useModalStore } from "@multica/core/modals";
+import { useConfigStore } from "@multica/core/config";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import { issueDetailOptions } from "@multica/core/issues/queries";
@@ -102,8 +102,14 @@ import type { Channel, ChannelGroup, ChatSession, PinnedItem, Project } from "@m
 import { useLogout } from "../auth";
 import { ProjectIcon } from "../projects/components/project-icon";
 import { CreateChannelDialog } from "../channels";
+import { routeIconForPath } from "./route-icon-components";
 import { useT } from "../i18n";
 import { useTimeAgo } from "../i18n/use-time-ago";
+import {
+  useShortcut,
+} from "@multica/core/shortcuts";
+import { ShortcutKeycaps } from "../common/shortcut-keycaps";
+import { useAppForeground } from "../common/use-app-foreground";
 
 // Top-level nav items stay active when the user is on a child route
 // (e.g. "Projects" stays lit on /:slug/projects/:id). Pinned items keep
@@ -126,6 +132,7 @@ const EMPTY_PROJECTS: Project[] = [];
 const EMPTY_WORKSPACES: Awaited<ReturnType<typeof api.listWorkspaces>> = [];
 const EMPTY_INVITATIONS: Awaited<ReturnType<typeof api.listMyInvitations>> = [];
 const EMPTY_INBOX: Awaited<ReturnType<typeof api.listInbox>> = [];
+const EMPTY_INBOX_SUMMARY: Awaited<ReturnType<typeof api.getInboxUnreadSummary>> = [];
 const CONVERSATION_LIST_PREVIEW_LIMIT = 5;
 
 const SIDEBAR_LABEL_FALLBACKS = {
@@ -194,7 +201,9 @@ function resolveSidebarLabel(value: string, key: string, fallback: string) {
 }
 
 function getSidebarLabelFallbacks(language?: string) {
-  return language?.startsWith("zh") ? SIDEBAR_LABEL_FALLBACKS.zh : SIDEBAR_LABEL_FALLBACKS.en;
+  return language?.startsWith("zh")
+    ? SIDEBAR_LABEL_FALLBACKS.zh
+    : SIDEBAR_LABEL_FALLBACKS.en;
 }
 
 // Nav items reference WorkspacePaths method names so they can be resolved
@@ -202,6 +211,7 @@ function getSidebarLabelFallbacks(language?: string) {
 // Only parameterless paths are valid nav destinations.
 type NavKey =
   | "inbox"
+  | "chat"
   | "myIssues"
   | "conversations"
   | "issues"
@@ -209,12 +219,16 @@ type NavKey =
   | "autopilots"
   | "agents"
   | "squads"
+  | "usage"
+  | "runtimes"
   | "skills"
   | "settings";
 
-// Static schema (key + icon) — labels resolved at render via useT("layout").
+// Static schema (key only) — labels resolved at render via useT("layout"),
+// icons derived from the destination path via routeIconForPath.
 type NavLabelKey =
   | "inbox"
+  | "chat"
   | "my_issues"
   | "conversations"
   | "issues"
@@ -222,24 +236,30 @@ type NavLabelKey =
   | "autopilots"
   | "agents"
   | "squads"
+  | "usage"
+  | "runtimes"
   | "skills"
   | "settings";
 
-const headerNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "inbox", labelKey: "inbox", icon: Inbox },
-  { key: "myIssues", labelKey: "my_issues", icon: CircleUser },
-  { key: "agents", labelKey: "agents", icon: Bot },
-  { key: "skills", labelKey: "skills", icon: BookOpenText },
-  { key: "autopilots", labelKey: "autopilots", icon: Zap },
-  { key: "squads", labelKey: "squads", icon: Users },
+// Nav icons are NOT declared here: they are derived from each item's
+// destination path at render time, so the sidebar and the desktop tab bar
+// always agree. See route-icon-components.tsx.
+const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "inbox", labelKey: "inbox" },
+  { key: "chat", labelKey: "chat" },
+  { key: "myIssues", labelKey: "my_issues" },
+  { key: "agents", labelKey: "agents" },
+  { key: "skills", labelKey: "skills" },
+  { key: "autopilots", labelKey: "autopilots" },
+  { key: "squads", labelKey: "squads" },
 ];
 
-const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "issues", labelKey: "issues", icon: ListTodo },
+const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "issues", labelKey: "issues" },
 ];
 
 function DraftDot() {
-  const hasDraft = useIssueDraftStore((s) => !!(s.draft.title || s.draft.description));
+  const hasDraft = useIssueDraftStore((s) => s.hasDraft());
   if (!hasDraft) return null;
   return <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />;
 }
@@ -394,12 +414,12 @@ function ChannelSidebarRow({
           </Tooltip>
         </ContextMenuTrigger>
         <ContextMenuContent className="w-36 p-1">
-          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" onClick={() => setRenameOpen(true)}>
+          <ContextMenuItem className="h-7 gap-2 px-2 text-caption" onClick={() => setRenameOpen(true)}>
             <Pencil className="size-3.5" />
             <span>{renameLabel}</span>
           </ContextMenuItem>
           <ContextMenuItem
-            className="h-7 gap-2 px-2 text-xs"
+            className="h-7 gap-2 px-2 text-caption"
             onClick={() =>
               archiveChannel.mutate(undefined, {
                 onSuccess: () => {
@@ -475,7 +495,7 @@ function ConversationSidebarRow({
               {session.has_unread && (
                 <span className="size-1.5 rounded-full bg-brand" aria-label={unreadLabel} />
               )}
-              <span className="text-[11px] text-muted-foreground/80 transition-opacity group-hover/conversation:opacity-0 group-focus-within/conversation:opacity-0">
+              <span className="text-micro text-muted-foreground transition-opacity group-hover/conversation:opacity-0 group-focus-within/conversation:opacity-0">
                 {timeLabel}
               </span>
             </span>
@@ -497,16 +517,16 @@ function ConversationSidebarRow({
           </Tooltip>
         </ContextMenuTrigger>
         <ContextMenuContent className="w-36 p-1">
-          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" onClick={onRename}>
+          <ContextMenuItem className="h-7 gap-2 px-2 text-caption" onClick={onRename}>
             <Pencil className="size-3.5" />
             <span>{renameLabel}</span>
           </ContextMenuItem>
-          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" onClick={onArchive}>
+          <ContextMenuItem className="h-7 gap-2 px-2 text-caption" onClick={onArchive}>
             <Archive className="size-3.5" />
             <span>{archiveLabel}</span>
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem className="h-7 gap-2 px-2 text-xs" disabled={markUnreadDisabled} onClick={onMarkUnread}>
+          <ContextMenuItem className="h-7 gap-2 px-2 text-caption" disabled={markUnreadDisabled} onClick={onMarkUnread}>
             <Mail className="size-3.5" />
             <span>{markUnreadLabel}</span>
           </ContextMenuItem>
@@ -531,7 +551,7 @@ function ConversationListToggle({
       <SidebarMenuButton
         size="sm"
         onClick={onToggle}
-        className="h-7 pl-8 pr-2 text-xs text-muted-foreground hover:not-data-active:bg-sidebar-accent/70"
+        className="h-7 pl-8 pr-2 text-caption text-muted-foreground hover:not-data-active:bg-sidebar-accent/70"
       >
         <span>{label}</span>
       </SidebarMenuButton>
@@ -668,7 +688,7 @@ function PinRow({
     if (issueQuery.isPending) return <PinSkeleton />;
     if (issueQuery.isError || !issueQuery.data) return null;
     const issue = issueQuery.data;
-    const label = issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title;
+    const label = issue.title;
     const iconNode = (
       /* Override parent [&_svg]:size-4 — pinned items need smaller icons to match sm size */
       <StatusIcon status={issue.status} className="!size-3.5 shrink-0" />
@@ -840,9 +860,10 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const workspace = useCurrentWorkspace();
   const { channelsEnabled } = deriveChannelsSettings(workspace);
   const p = useWorkspacePaths();
+  const queryClient = useQueryClient();
   const { data: workspaces = EMPTY_WORKSPACES } = useQuery(workspaceListOptions());
   const { data: myInvitations = EMPTY_INVITATIONS } = useQuery(myInvitationListOptions());
-  const queryClient = useQueryClient();
+  const workspaceCreationDisabled = useConfigStore((s) => s.workspaceCreationDisabled);
 
   const wsId = workspace?.id;
   const { data: inboxItems = EMPTY_INBOX } = useQuery({
@@ -854,6 +875,49 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     () => deduplicateInboxItems(inboxItems).filter((i) => !i.read).length,
     [inboxItems],
   );
+  // Chat tab unread badge: IM-style total of unread *messages* across chat
+  // threads (countUnreadChatMessages is the shared definition — mobile's tab
+  // badge derives from the same function, keeping the platforms in agreement).
+  const { data: chatSessions = EMPTY_CHAT_SESSIONS } = useQuery({
+    ...chatSessionsOptions(wsId ?? ""),
+    enabled: !!wsId,
+  });
+  // The session the user is reading right now must not count: the thread list
+  // renders its row badge as 0 (auto mark-read is about to clear it), and a
+  // reply landing in the open conversation would otherwise flash a sidebar
+  // count with no matching row. "Reading right now" = a session is active, a
+  // chat surface is actually showing it (chat page route or the floating
+  // window), AND the app is in the foreground. When the app is backgrounded,
+  // auto mark-read is suppressed (MUL-4485) so the reply stays unread — the
+  // badge must count it, or the notification is silently eaten while the user
+  // is away. A remembered selection while both surfaces are closed also still
+  // counts, for the same reason.
+  const activeChatSessionId = useChatStore((s) => s.activeSessionId);
+  const floatingChatOpen = useChatStore((s) => s.isOpen);
+  const appForeground = useAppForeground();
+  const chatHref = p.chat();
+  const viewedChatSessionId =
+    appForeground && (floatingChatOpen || isNavActive(pathname, chatHref))
+      ? activeChatSessionId
+      : null;
+  const chatUnreadCount = React.useMemo(
+    () => countUnreadChatMessages(chatSessions, viewedChatSessionId),
+    [chatSessions, viewedChatSessionId],
+  );
+  // Cross-workspace unread summary backs the workspace-switcher dot. One
+  // shared cache entry across workspaces; gated on an active workspace since
+  // the endpoint resolves through the workspace-member middleware.
+  const { data: unreadSummary = EMPTY_INBOX_SUMMARY } = useQuery({
+    ...inboxUnreadSummaryOptions(),
+    enabled: !!wsId,
+  });
+  const otherWorkspaceUnread = React.useMemo(
+    () => hasOtherWorkspaceUnread(unreadSummary, wsId),
+    [unreadSummary, wsId],
+  );
+  // Which workspaces have unread, so the switcher dropdown can point at the
+  // specific one(s) rather than just the aggregate avatar dot.
+  const unreadWsIds = React.useMemo(() => unreadWorkspaceIds(unreadSummary), [unreadSummary]);
   const { data: pinnedItems = EMPTY_PINS } = useQuery({
     ...pinListOptions(wsId ?? "", userId ?? ""),
     enabled: !!wsId && !!userId,
@@ -868,10 +932,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   });
   const { data: projects = EMPTY_PROJECTS } = useQuery({
     ...projectListOptions(wsId ?? ""),
-    enabled: !!wsId,
-  });
-  const { data: chatSessions = EMPTY_CHAT_SESSIONS } = useQuery({
-    ...chatSessionsOptions(wsId ?? ""),
     enabled: !!wsId,
   });
   const expandedProjectIds = useProjectSidebarTreeStore((s) => s.expandedProjectIds);
@@ -1028,18 +1088,28 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
   const sidebarFadeStyle = useScrollFade(sidebarScrollRef, 24);
+  const getPinHref = useCallback(
+    (pin: PinnedItem) => (pin.item_type === "issue" ? p.issueDetail(pin.item_id) : p.projectDetail(pin.item_id)),
+    [p],
+  );
 
   // Local presentational copy of pinnedItems for drop-animation stability.
   // Follows TQ at rest; frozen during a drag gesture so a mid-drag cache
   // write (our own optimistic update, or a WS refetch) cannot reorder the
   // DOM under dnd-kit while its drop animation is still interpolating.
   const [localPinned, setLocalPinned] = useState<PinnedItem[]>(pinnedItems);
+  const [localPinnedWsId, setLocalPinnedWsId] = useState<string | null>(wsId ?? null);
   const isDraggingRef = useRef(false);
   useEffect(() => {
     if (!isDraggingRef.current) {
       setLocalPinned(pinnedItems);
     }
   }, [pinnedItems]);
+  useEffect(() => {
+    setLocalPinnedWsId(wsId ?? null);
+  }, [wsId]);
+  const visiblePinned = localPinnedWsId === (wsId ?? null) ? localPinned : EMPTY_PINS;
+  const isActivePinnedRoute = visiblePinned.some((pin) => pathname === getPinHref(pin));
 
   const handleDragStart = useCallback(() => {
     isDraggingRef.current = true;
@@ -1088,33 +1158,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     },
   });
 
-  // Global "C" shortcut: opens whichever create mode the user landed on last
-  // (agent vs manual), persisted in useCreateModeStore. The mode switch lives
-  // inside both modal footers so users can flip without remembering which
-  // shortcut goes where — `c` always means "open the create flow I prefer".
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "c" && e.key !== "C") return;
-      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-      const tag = (e.target as HTMLElement)?.tagName;
-      const isEditable =
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        tag === "SELECT" ||
-        (e.target as HTMLElement)?.isContentEditable;
-      if (isEditable) return;
-      if (useModalStore.getState().modal) return;
-      e.preventDefault();
-      // Auto-fill project when on a project detail page. The manual form
-      // consumes `project_id`; quick-create also honours it as a seed for
-      // its project picker, so passing it through is safe for both modes.
-      const projectMatch = pathname.match(/^\/[^/]+\/projects\/([^/]+)$/);
-      const data = projectMatch ? { project_id: projectMatch[1] } : undefined;
-      openCreateIssueWithPreference(data);
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [pathname]);
+  const createIssueShortcut = useShortcut("createIssue");
 
   return (
       <Sidebar variant="inset">
@@ -1128,8 +1172,12 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                   render={
                     <SidebarMenuButton>
                       <span className="relative">
-                        <WorkspaceAvatar name={workspace?.name ?? "M"} size="sm" />
-                        {myInvitations.length > 0 && (
+                        <WorkspaceAvatar name={workspace?.name ?? "M"} avatarUrl={workspace?.avatar_url} size="sm" />
+                        {/* Shared brand dot: a pending invitation OR another
+                            workspace with unread inbox items. The active
+                            workspace's own unread stays on the Inbox nav count
+                            (below), so it is deliberately excluded here. */}
+                        {(myInvitations.length > 0 || otherWorkspaceUnread) && (
                           <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-brand ring-1 ring-sidebar" />
                         )}
                       </span>
@@ -1150,21 +1198,21 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                     <ActorAvatar
                       name={user?.name ?? ""}
                       initials={(user?.name ?? "U").charAt(0).toUpperCase()}
-                      avatarUrl={user?.avatar_url}
-                      size={32}
+                      avatarUrl={resolvePublicFileUrl(user?.avatar_url)}
+                      size="lg"
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium leading-tight">
+                      <p className="truncate text-body font-medium leading-tight">
                         {user?.name}
                       </p>
-                      <p className="truncate text-xs text-muted-foreground leading-tight">
+                      <p className="truncate text-caption text-muted-foreground leading-tight">
                         {user?.email}
                       </p>
                     </div>
                   </div>
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="text-xs text-muted-foreground">
+                    <DropdownMenuLabel className="text-caption text-muted-foreground">
                       {t(($) => $.sidebar.workspaces_label)}
                     </DropdownMenuLabel>
                     {workspaces.map((ws) => (
@@ -1174,36 +1222,46 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                           <AppLink href={paths.workspace(ws.slug).issues()} />
                         }
                       >
-                        <WorkspaceAvatar name={ws.name} size="sm" />
+                        <WorkspaceAvatar name={ws.name} avatarUrl={ws.avatar_url} size="sm" />
                         <span className="flex-1 truncate">{ws.name}</span>
+                        {/* Points at the specific workspace holding unread
+                            inbox items. Sits in the same right-edge slot as the
+                            active-workspace check; the active workspace is
+                            excluded (its unread is the Inbox nav count), so dot
+                            and check never collide on one row. */}
+                        {ws.id !== workspace?.id && unreadWsIds.has(ws.id) && (
+                          <span className="size-2 rounded-full bg-brand" />
+                        )}
                         {ws.id === workspace?.id && (
                           <Check className="h-3.5 w-3.5 text-primary" />
                         )}
                       </DropdownMenuItem>
                     ))}
-                    <DropdownMenuItem
-                      onClick={() =>
-                        useModalStore.getState().open("create-workspace")
-                      }
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      {t(($) => $.sidebar.create_workspace)}
-                    </DropdownMenuItem>
+                    {!workspaceCreationDisabled && (
+                      <DropdownMenuItem
+                        onClick={() =>
+                          useModalStore.getState().open("create-workspace")
+                        }
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        {t(($) => $.sidebar.create_workspace)}
+                      </DropdownMenuItem>
+                    )}
                   </DropdownMenuGroup>
                   {myInvitations.length > 0 && (
                     <>
                       <DropdownMenuSeparator />
                       <DropdownMenuGroup>
-                        <DropdownMenuLabel className="text-xs text-muted-foreground">
+                        <DropdownMenuLabel className="text-caption text-muted-foreground">
                           {t(($) => $.sidebar.pending_invitations_label)}
                         </DropdownMenuLabel>
                         {myInvitations.map((inv) => (
                           <div key={inv.id} className="flex items-center gap-2 px-2 py-1.5">
                             <WorkspaceAvatar name={inv.workspace_name ?? "W"} size="sm" />
-                            <span className="flex-1 truncate text-sm">{inv.workspace_name ?? t(($) => $.sidebar.invitation_workspace_fallback)}</span>
+                            <span className="flex-1 truncate text-body">{inv.workspace_name ?? t(($) => $.sidebar.invitation_workspace_fallback)}</span>
                             <button
                               type="button"
-                              className="text-xs px-2 py-0.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                              className="text-caption px-2 py-0.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                               disabled={acceptInvitationMut.isPending}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1214,7 +1272,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                             </button>
                             <button
                               type="button"
-                              className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground hover:bg-muted/80 disabled:opacity-50"
+                              className="text-caption px-2 py-0.5 rounded bg-muted text-muted-foreground hover:bg-muted/80 disabled:opacity-50"
                               disabled={declineInvitationMut.isPending}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1259,7 +1317,9 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                   <DraftDot />
                 </span>
                 <span>{t(($) => $.sidebar.new_issue)}</span>
-                <kbd className="pointer-events-none ml-auto inline-flex h-5 select-none items-center gap-0.5 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">{t(($) => $.sidebar.new_issue_shortcut)}</kbd>
+                {createIssueShortcut ? (
+                  <ShortcutKeycaps shortcut={createIssueShortcut} decorative className="pointer-events-none ml-auto" />
+                ) : null}
               </SidebarMenuButton>
             </SidebarMenuItem>
             {searchSlot && (
@@ -1268,43 +1328,49 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               </SidebarMenuItem>
             )}
           </SidebarMenu>
-          <SidebarMenu className="grid grid-cols-6 gap-1">
-            {headerNav.map((item) => {
-              const href = p[item.key]();
-              const isActive = isNavActive(pathname, href);
-              const label = t(($) => $.nav[item.labelKey]);
-              const isInbox = item.key === "inbox";
-              return (
-                <SidebarMenuItem key={item.key}>
-                  <SidebarMenuButton
-                    size="sm"
-                    isActive={isActive}
-                    render={<AppLink href={href} aria-label={label} title={label} />}
-                    className={cn(
-                      "relative justify-center overflow-visible px-0 text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground",
-                      isInbox && [
-                        "bg-brand/10 text-brand ring-1 ring-brand/20",
-                        "hover:not-data-active:bg-brand/15 hover:not-data-active:text-brand",
-                      ],
-                    )}
-                  >
-                    <item.icon className={cn("size-4", isInbox && "stroke-[2.4]")} />
-                    {isInbox && unreadCount > 0 && (
-                      <span className="absolute right-0.5 top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-brand px-0.5 text-[8px] font-semibold leading-none text-primary-foreground shadow-sm ring-1 ring-sidebar tabular-nums">
-                        {unreadCount > 9 ? "9+" : unreadCount}
-                      </span>
-                    )}
-                    <span className="sr-only">{label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
         </SidebarHeader>
 
         {/* Navigation */}
         <SidebarContent ref={sidebarScrollRef} style={sidebarFadeStyle}>
-          {localPinned.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-0.5">
+                {personalNav.map((item) => {
+                  const href = p[item.key]();
+                  const Icon = routeIconForPath(href);
+                  const isActive = isNavActive(pathname, href);
+                  return (
+                    <SidebarMenuItem key={item.key}>
+                      <SidebarMenuButton
+                        isActive={isActive}
+                        render={<AppLink href={href} />}
+                        className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                      >
+                        <Icon />
+                        <span>{t(($) => $.nav[item.labelKey])}</span>
+                        {item.key === "inbox" && unreadCount > 0 && (
+                          <CappedNumberFlow
+                            value={unreadCount}
+                            animated={false}
+                            className="ml-auto text-caption"
+                          />
+                        )}
+                        {item.key === "chat" && chatUnreadCount > 0 && (
+                          <CappedNumberFlow
+                            value={chatUnreadCount}
+                            animated={false}
+                            className="ml-auto text-caption"
+                          />
+                        )}
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          {visiblePinned.length > 0 && (
             <Collapsible defaultOpen>
               <SidebarGroup className="group/pinned">
                 <SidebarGroupLabel
@@ -1313,18 +1379,18 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                 >
                   <span>{t(($) => $.sidebar.pinned_label)}</span>
                   <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
-                  <span className="ml-auto text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover/pinned:opacity-100">{localPinned.length}</span>
+                  <span className="ml-auto text-micro text-muted-foreground opacity-0 transition-opacity group-hover/pinned:opacity-100">{visiblePinned.length}</span>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
                   <SidebarGroupContent>
                     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-                      <SortableContext items={localPinned.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+                      <SortableContext items={visiblePinned.map((p) => p.id)} strategy={verticalListSortingStrategy}>
                         <SidebarMenu className="gap-0.5">
-                          {localPinned.map((pin: PinnedItem) => (
+                          {visiblePinned.map((pin: PinnedItem) => (
                             <PinRow
                               key={pin.id}
                               pin={pin}
-                              href={pin.item_type === "issue" ? p.issueDetail(pin.item_id) : p.projectDetail(pin.item_id)}
+                              href={getPinHref(pin)}
                               pathname={pathname}
                               onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
                               wsId={wsId ?? ""}
@@ -1388,7 +1454,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                           <SidebarMenuItem className="group/project-row">
                             <div
                               className={cn(
-                                "flex h-8 min-w-0 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                                "flex h-8 min-w-0 items-center gap-1 rounded-md px-1 text-body text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
                                 projectRowActive && "bg-sidebar-accent text-sidebar-accent-foreground",
                               )}
                             >
@@ -1460,7 +1526,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                                   <ListTodo className="size-3.5" />
                                   <span>{projectIssuesLabel}</span>
                                   {project.issue_count > 0 && (
-                                    <span className="ml-auto font-mono text-[10px] text-muted-foreground">{project.issue_count}</span>
+                                    <span className="ml-auto font-mono text-micro text-muted-foreground">{project.issue_count}</span>
                                   )}
                                 </SidebarMenuButton>
                               </SidebarMenuItem>
@@ -1543,7 +1609,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                             <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/unassigned:rotate-90" />
                             <Hash className="size-3.5" />
                             <span>{unassignedChannelsLabel}</span>
-                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">{unassignedChannels.length}</span>
+                            <span className="ml-auto font-mono text-micro text-muted-foreground">{unassignedChannels.length}</span>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                         <CollapsibleContent>
@@ -1589,7 +1655,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                     <MessageSquare />
                     <span>{t(($) => $.nav.conversations)}</span>
                     {conversationUnreadCount > 0 && (
-                      <span className="ml-auto text-xs">
+                      <span className="ml-auto text-caption">
                         {conversationUnreadCount > 99 ? "99+" : conversationUnreadCount}
                       </span>
                     )}
@@ -1647,7 +1713,8 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               <SidebarMenu className="gap-0.5">
                 {workspaceNav.map((item) => {
                   const href = p[item.key]();
-                  const isActive = isNavActive(pathname, href);
+                  const Icon = routeIconForPath(href);
+                  const isActive = !isActivePinnedRoute && isNavActive(pathname, href);
                   return (
                     <SidebarMenuItem key={item.key}>
                       <SidebarMenuButton
@@ -1655,7 +1722,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         render={<AppLink href={href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
-                        <item.icon />
+                        <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -1664,6 +1731,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
+
         </SidebarContent>
 
         <SidebarFooter className="p-2">
@@ -1681,7 +1749,10 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
-            <HelpLauncher />
+            <div className="flex shrink-0 items-center gap-1">
+              <JoinDiscordCard />
+              <HelpLauncher />
+            </div>
           </div>
         </SidebarFooter>
         <SidebarRail />

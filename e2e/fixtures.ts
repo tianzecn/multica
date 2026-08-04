@@ -57,12 +57,40 @@ interface TestProjectActivityEntry {
   details?: Record<string, unknown>;
 }
 
+export type TestIssueStatus =
+  | "backlog"
+  | "todo"
+  | "in_progress"
+  | "in_review"
+  | "done"
+  | "blocked"
+  | "cancelled";
+
+export type TestIssuePriority = "urgent" | "high" | "medium" | "low" | "none";
+
+export interface TestTableIssueSeed {
+  title: string;
+  status?: TestIssueStatus;
+  priority?: TestIssuePriority;
+  parentIssueId?: string | null;
+  position?: number;
+}
+
+export interface TestTableIssue {
+  id: string;
+  title: string;
+  status: TestIssueStatus;
+  number: number;
+}
+
 export class TestApiClient {
   private token: string | null = null;
   private userId: string | null = null;
   private workspaceSlug: string | null = null;
   private workspaceId: string | null = null;
+  private email: string | null = null;
   private createdIssueIds: string[] = [];
+  private seededIssueIds: string[] = [];
   private createdProjectIds: string[] = [];
 
   async login(email: string, name: string) {
@@ -91,6 +119,7 @@ export class TestApiClient {
 
       const user = result.rows[0];
       this.userId = user.id;
+      this.email = normalizedEmail;
       const now = Math.floor(Date.now() / 1000);
       this.token = signJwt({
         sub: user.id,
@@ -100,6 +129,9 @@ export class TestApiClient {
         iat: now,
       });
 
+      // Directly signed local JWTs keep setup deterministic and avoid the
+      // send-code rate limit. Remove stale verification rows so UI-auth E2E
+      // tests still begin from a clean address.
       await client.query("DELETE FROM verification_code WHERE email = $1", [
         normalizedEmail,
       ]);
@@ -129,7 +161,7 @@ export class TestApiClient {
     if (workspace) {
       this.workspaceId = workspace.id;
       this.workspaceSlug = workspace.slug;
-      await this.markOnboarded();
+      await this.markUserOnboarded();
       return workspace;
     }
 
@@ -141,7 +173,7 @@ export class TestApiClient {
       const created = (await res.json()) as TestWorkspace;
       this.workspaceId = created.id;
       this.workspaceSlug = created.slug;
-      await this.markOnboarded();
+      await this.markUserOnboarded();
       return created;
     }
 
@@ -150,11 +182,38 @@ export class TestApiClient {
     if (created) {
       this.workspaceId = created.id;
       this.workspaceSlug = created.slug;
-      await this.markOnboarded();
+      await this.markUserOnboarded();
       return created;
     }
 
     throw new Error(`Failed to ensure workspace ${slug}: ${res.status} ${res.statusText}`);
+  }
+
+  async markUserOnboarded() {
+    if (!this.email) {
+      throw new Error("Cannot mark E2E user onboarded before login");
+    }
+
+    const client = new pg.Client(DATABASE_URL);
+    await client.connect();
+    try {
+      const result = await client.query(
+        `
+          UPDATE "user"
+          SET
+            onboarded_at = COALESCE(onboarded_at, now()),
+            onboarding_questionnaire = COALESCE(onboarding_questionnaire, '{}'::jsonb)
+              || '{"source":["friends_colleagues"],"source_other":null,"source_skipped":false}'::jsonb
+          WHERE email = $1
+        `,
+        [this.email],
+      );
+      if (result.rowCount !== 1) {
+        throw new Error(`Failed to mark E2E user onboarded: ${this.email}`);
+      }
+    } finally {
+      await client.end();
+    }
   }
 
   async createIssue(title: string, opts?: Record<string, unknown>) {
@@ -168,8 +227,126 @@ export class TestApiClient {
     return issue;
   }
 
+  /**
+   * Insert a large, deterministic issue fixture in one transaction.
+   *
+   * Browser E2E coverage for cursor-backed Table views needs 1,000+ rows,
+   * which would make setup itself dominate the test if every row went through
+   * the HTTP create endpoint. These rows intentionally contain no dependent
+   * records; cleanup deletes exactly the returned IDs from the isolated E2E
+   * workspace.
+   */
+  async seedTableIssues(rows: TestTableIssueSeed[]): Promise<TestTableIssue[]> {
+    if (rows.length === 0) return [];
+    if (!this.workspaceId || !this.email) {
+      throw new Error("Cannot seed table issues before login and workspace setup");
+    }
+
+    const client = new pg.Client(DATABASE_URL);
+    await client.connect();
+    try {
+      await client.query("BEGIN");
+      const userResult = await client.query<{ id: string }>(
+        `SELECT id FROM "user" WHERE email = $1`,
+        [this.email],
+      );
+      const creatorId = userResult.rows[0]?.id;
+      if (!creatorId) {
+        throw new Error(`Cannot resolve E2E creator for ${this.email}`);
+      }
+
+      const counterResult = await client.query<{ issue_counter: number }>(
+        `
+          UPDATE workspace
+          SET issue_counter = issue_counter + $2
+          WHERE id = $1
+          RETURNING issue_counter
+        `,
+        [this.workspaceId, rows.length],
+      );
+      const finalCounter = Number(counterResult.rows[0]?.issue_counter);
+      if (!Number.isFinite(finalCounter)) {
+        throw new Error(`Cannot reserve issue numbers for workspace ${this.workspaceId}`);
+      }
+      const firstNumber = finalCounter - rows.length + 1;
+
+      const inserted = await client.query<TestTableIssue>(
+        `
+          INSERT INTO issue (
+            workspace_id,
+            title,
+            status,
+            priority,
+            creator_type,
+            creator_id,
+            parent_issue_id,
+            position,
+            number
+          )
+          SELECT
+            $1::uuid,
+            fixture.title,
+            fixture.status,
+            fixture.priority,
+            'member',
+            $2::uuid,
+            fixture.parent_issue_id,
+            fixture.position,
+            fixture.number
+          FROM unnest(
+            $3::text[],
+            $4::text[],
+            $5::text[],
+            $6::uuid[],
+            $7::double precision[],
+            $8::integer[]
+          ) WITH ORDINALITY AS fixture(
+            title,
+            status,
+            priority,
+            parent_issue_id,
+            position,
+            number,
+            ordinal
+          )
+          ORDER BY fixture.ordinal
+          RETURNING id, title, status, number
+        `,
+        [
+          this.workspaceId,
+          creatorId,
+          rows.map((row) => row.title),
+          rows.map((row) => row.status ?? "backlog"),
+          rows.map((row) => row.priority ?? "none"),
+          rows.map((row) => row.parentIssueId ?? null),
+          rows.map((row, index) => row.position ?? index + 1),
+          rows.map((_row, index) => firstNumber + index),
+        ],
+      );
+      await client.query("COMMIT");
+      this.seededIssueIds.push(...inserted.rows.map((row) => row.id));
+      return inserted.rows;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      await client.end();
+    }
+  }
+
   async deleteIssue(id: string) {
     await this.authedFetch(`/api/issues/${id}`, { method: "DELETE" });
+  }
+
+  async updateIssue(id: string, updates: Record<string, unknown>) {
+    const res = await this.authedFetch(`/api/issues/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      throw new Error(`update issue failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
   }
 
   async createProject(data: {
@@ -257,6 +434,19 @@ export class TestApiClient {
 
   /** Clean up all records created during this test. */
   async cleanup() {
+    if (this.seededIssueIds.length > 0 && this.workspaceId) {
+      const client = new pg.Client(DATABASE_URL);
+      await client.connect();
+      try {
+        await client.query(
+          `DELETE FROM issue WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+          [this.workspaceId, this.seededIssueIds],
+        );
+      } finally {
+        await client.end();
+      }
+      this.seededIssueIds = [];
+    }
     for (const id of this.createdIssueIds) {
       try {
         await this.deleteIssue(id);
@@ -279,21 +469,11 @@ export class TestApiClient {
     return this.token;
   }
 
-  private async markOnboarded() {
-    if (!this.userId) return;
-    const client = new pg.Client(DATABASE_URL);
-    await client.connect();
-    try {
-      await client.query(
-        `UPDATE "user"
-         SET onboarded_at = COALESCE(onboarded_at, now()),
-             updated_at = now()
-         WHERE id = $1`,
-        [this.userId],
-      );
-    } finally {
-      await client.end();
+  getEmail() {
+    if (!this.email) {
+      throw new Error("Test API client is not logged in");
     }
+    return this.email;
   }
 
   private async authedFetch(path: string, init?: RequestInit) {

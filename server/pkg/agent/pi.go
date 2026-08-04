@@ -174,18 +174,16 @@ func isPiToolNameByte(b byte) bool {
 }
 
 func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	execPath := b.cfg.ExecutablePath
-	if execPath == "" {
-		execPath = "pi"
+	execName := b.cfg.ExecutablePath
+	if execName == "" {
+		execName = "pi"
 	}
-	if _, err := exec.LookPath(execPath); err != nil {
-		return nil, fmt.Errorf("pi executable not found at %q: %w", execPath, err)
+	lookedUp, err := exec.LookPath(execName)
+	if err != nil {
+		return nil, fmt.Errorf("pi executable not found at %q: %w", execName, err)
 	}
 
 	timeout := opts.Timeout
-	if timeout == 0 {
-		timeout = 20 * time.Minute
-	}
 
 	// Pi's --session flag expects a file path where events are appended.
 	// The path doubles as our opaque session identifier: we return it as
@@ -202,13 +200,14 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 		return nil, fmt.Errorf("pi session file: %w", err)
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, cancel := runContext(ctx, timeout)
 
 	args := buildPiArgs(prompt, sessionPath, opts, b.cfg.Logger)
+	argv0, cmdArgs := choosePiInvocation(execName, lookedUp, args, b.cfg.Logger)
 
-	cmd := exec.CommandContext(runCtx, execPath, args...)
+	cmd := exec.CommandContext(runCtx, argv0, cmdArgs...)
 	hideAgentWindow(cmd)
-	b.cfg.Logger.Info("agent command", "exec", execPath, "args", args)
+	b.cfg.Logger.Info("agent command", "exec", argv0, "args", cmdArgs)
 	cmd.WaitDelay = 10 * time.Second
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
@@ -282,6 +281,10 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 			switch evt.Type {
 			case "agent_start":
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running"})
+
+			case "turn_start":
+				output.Reset()
+				textBuffer.Reset()
 
 			case "message_update":
 				if evt.AssistantMessageEvent == nil {
@@ -488,7 +491,6 @@ var piBlockedArgs = map[string]blockedArgMode{
 //	--session <path>            session log file (created upfront, reused on resume)
 //	--provider <name>           provider, when Model is "provider/id"
 //	--model <id>                model identifier
-//	--append-system-prompt <s>  extra system instructions
 //
 // Custom args appended before the positional prompt. The prompt is a
 // positional argument and must be last.
@@ -514,9 +516,11 @@ func buildPiArgs(prompt, sessionPath string, opts ExecOptions, logger *slog.Logg
 	// tools. Passing --tools acts as a restrictive allowlist that
 	// silently filters out extension-registered tools (#2379).
 	// Users who want to restrict tools can do so via custom_args.
-	if opts.SystemPrompt != "" {
-		args = append(args, "--append-system-prompt", opts.SystemPrompt)
-	}
+	//
+	// SystemPrompt is intentionally not forwarded as --append-system-prompt:
+	// Pi loads the per-task AGENTS.md the daemon writes into the workdir, so
+	// inlining the same runtime brief would duplicate it on every turn.
+	// Verified against Pi 0.67.2 (MUL-5392).
 	args = append(args, filterCustomArgs(opts.CustomArgs, piBlockedArgs, logger)...)
 	args = append(args, prompt)
 	return args

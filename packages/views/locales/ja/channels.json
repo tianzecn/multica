@@ -1,0 +1,56 @@
+{
+  "page": {
+    "title": "Channels",
+    "new_button": "New Channel",
+    "search_placeholder": "Search channels...",
+    "empty": "Create a channel to start a shared AI workroom.",
+    "empty_search": "No channels match this search."
+  },
+  "create": {
+    "title": "New Channel",
+    "description": "Create a long-lived space for agents and teammates. Sessions keep each topic isolated.",
+    "name_label": "Name",
+    "slug_label": "Slug",
+    "slug_placeholder": "design-review",
+    "group_label": "Group",
+    "group_none": "No group",
+    "description_label": "Description",
+    "instructions_label": "Channel instructions",
+    "cancel": "Cancel",
+    "submit": "Create",
+    "visibility": {
+      "private": {
+        "label": "Private",
+        "description": "Only invited members can see this channel."
+      },
+      "public": {
+        "label": "Public",
+        "description": "Anyone in the workspace can discover and join."
+      }
+    }
+  },
+  "detail": {
+    "sessions": "Sessions",
+    "new_session_placeholder": "New topic...",
+    "no_sessions": "Start a session before sending messages.",
+    "no_session_title": "No session selected",
+    "context_rule": "AI reads this session, summaries, channel instructions, and linked issues.",
+    "empty_messages": "No messages yet.",
+    "no_session_selected": "Create or select a session.",
+    "message_placeholder": "Write in this session...",
+    "linked_issues": "Linked Issues",
+    "issue_placeholder": "MUL-123 or issue UUID",
+    "link": "Link",
+    "no_issues": "No issue is linked. This channel can still stay topic-only.",
+    "approvals": "Approvals",
+    "no_approvals": "No approval requests yet."
+  },
+  "toast": {
+    "created": "Channel created",
+    "create_failed": "Failed to create channel",
+    "session_failed": "Failed to create session",
+    "message_failed": "Failed to send message",
+    "issue_linked": "Issue linked",
+    "issue_link_failed": "Failed to link issue"
+  }
+}

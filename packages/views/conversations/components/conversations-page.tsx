@@ -18,7 +18,6 @@ import { chatKeys, chatMessagesOptions, chatSessionOptions, chatSessionsOptions,
 import { useChatStore } from "@multica/core/chat";
 import { useArchiveChatSession, useCreateChatSession, useMarkChatSessionRead, useRestoreChatSession, useUpdateChatSession } from "@multica/core/chat/mutations";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { useAgentPresenceDetail, useWorkspaceAgentAvailability } from "@multica/core/agents";
@@ -193,58 +192,46 @@ export function ConversationsPage({
     [activeAgent, createSession, currentSession?.id, updateSession],
   );
 
-  const { uploadWithToast } = useFileUpload(api);
-  const handleUploadFile = useCallback(
-    async (file: File) => {
-      const newSessionId = await ensureSession("");
-      if (!newSessionId) return null;
-      qc.setQueryData<ChatMessage[]>(chatKeys.messages(newSessionId), (old) => old ?? []);
-      setActiveSession(newSessionId);
-      if (!currentSession?.id) push(p.conversationDetail(newSessionId));
-      return uploadWithToast(file, { chatSessionId: newSessionId });
-    },
-    [currentSession?.id, ensureSession, p, push, qc, setActiveSession, uploadWithToast],
-  );
-
   const handleSend = useCallback(
-    async (content: string, attachmentIds?: string[]) => {
-      if (!activeAgent) return;
+    async (
+      content: string,
+      attachmentIds: string[] | undefined,
+      commitInput: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
+      draftAttachments: import("@multica/core/types").Attachment[],
+    ): Promise<boolean> => {
+      if (!activeAgent) return false;
       const dirtyChoice = await confirmProjectDirtyContinue();
-      if (!dirtyChoice.proceed) return;
+      if (!dirtyChoice.proceed) return false;
       const newSessionId = await ensureSession(content);
-      if (!newSessionId) return;
-
-      const sentAt = new Date().toISOString();
-      const optimistic: ChatMessage = {
-        id: `optimistic-${Date.now()}`,
-        chat_session_id: newSessionId,
-        role: "user",
-        content,
-        task_id: null,
-        created_at: sentAt,
-      };
-      qc.setQueryData<ChatMessage[]>(chatKeys.messages(newSessionId), (old) =>
-        old ? [...old, optimistic] : [optimistic],
-      );
-      qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(newSessionId), {
-        task_id: `optimistic-${optimistic.id}`,
-        status: "queued",
-        created_at: sentAt,
-      });
-      setActiveSession(newSessionId);
-      if (!currentSession?.id) push(p.conversationDetail(newSessionId));
+      if (!newSessionId) return false;
 
       const result = await api.sendChatMessage(newSessionId, content, {
         attachmentIds,
         projectContinueOnDirty: dirtyChoice.projectContinueOnDirty,
       });
+      const sent: ChatMessage = {
+        id: result.message_id,
+        chat_session_id: newSessionId,
+        role: "user",
+        content,
+        task_id: result.task_id,
+        created_at: result.created_at,
+        attachments: draftAttachments,
+      };
+      qc.setQueryData<ChatMessage[]>(chatKeys.messages(newSessionId), (old) =>
+        old ? [...old, sent] : [sent],
+      );
       qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(newSessionId), {
         task_id: result.task_id,
         status: "queued",
         created_at: result.created_at,
       });
+      setActiveSession(newSessionId);
+      commitInput({ extraDraftKeys: [newSessionId], clearEditor: true });
+      if (!currentSession?.id) push(p.conversationDetail(newSessionId));
       qc.invalidateQueries({ queryKey: chatKeys.messages(newSessionId) });
       qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+      return true;
     },
     [
       activeAgent,
@@ -272,24 +259,24 @@ export function ConversationsPage({
     <main className="flex h-full min-h-0 flex-col bg-background">
       <div className="flex h-14 shrink-0 items-center gap-3 border-b px-5">
         {activeAgent ? (
-          <ActorAvatar actorType="agent" actorId={activeAgent.id} size={28} enableHoverCard showStatusDot profileLink={false} />
+          <ActorAvatar actorType="agent" actorId={activeAgent.id} size="md" enableHoverCard showStatusDot profileLink={false} />
         ) : (
           <div className="flex size-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
             <MessageSquare className="size-4" />
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">
+          <div className="truncate text-body font-semibold">
             {currentSession?.title?.trim() || (isDraft ? t(($) => $.conversations.new) : t(($) => $.conversations.no_selection_title))}
           </div>
-          <div className="truncate text-xs text-muted-foreground">
+          <div className="truncate text-caption text-muted-foreground">
             {activeAgent
               ? t(($) => $.conversations.agent_line, { agent: activeAgent.name })
               : t(($) => $.conversations.no_agent)}
           </div>
         </div>
         {currentSession?.has_unread && (
-          <span className="rounded-full bg-brand/10 px-2 py-0.5 text-xs font-medium text-brand">
+          <span className="rounded-full bg-brand/10 px-2 py-0.5 text-caption font-medium text-brand">
             {t(($) => $.conversations.unread)}
           </span>
         )}
@@ -329,14 +316,14 @@ export function ConversationsPage({
       ) : (
         <>
           {isSessionArchived && (
-            <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/40 px-5 py-2 text-xs text-muted-foreground">
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/40 px-5 py-2 text-caption text-muted-foreground">
               <span>{t(($) => $.conversations.archived_banner)}</span>
               {currentSession && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="h-7 px-2 text-xs"
+                  className="h-7 px-2 text-caption"
                   onClick={() => restoreSession.mutate(currentSession.id)}
                   disabled={restoreSession.isPending}
                 >
@@ -365,7 +352,7 @@ export function ConversationsPage({
 
           <ChatInput
             onSend={handleSend}
-            onUploadFile={handleUploadFile}
+            uploadEnabled={!!activeAgent}
             onStop={handleStop}
             isRunning={!!pendingTaskId}
             disabled={isSessionArchived || isSessionAgentUnavailable}
@@ -426,8 +413,8 @@ function EmptyConversationState({ title, body }: { title: string; body: string }
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
       <MessageSquare className="mb-3 size-8 text-muted-foreground" />
-      <h2 className="text-base font-semibold">{title}</h2>
-      <p className="mt-1 max-w-md text-sm text-muted-foreground">{body}</p>
+      <h2 className="text-title-sm font-semibold">{title}</h2>
+      <p className="mt-1 max-w-md text-body text-muted-foreground">{body}</p>
     </div>
   );
 }
@@ -446,7 +433,7 @@ function AiCoworkerMentionTray({
 
   return (
     <div className="mx-auto mb-2 flex w-full max-w-4xl min-w-0 flex-wrap items-center gap-1.5">
-      <span className="mr-1 text-xs text-muted-foreground">
+      <span className="mr-1 text-caption text-muted-foreground">
         {t(($) => $.conversations.ai_coworkers)}
       </span>
       {agents.slice(0, 8).map((agent) => (
@@ -463,7 +450,7 @@ function AiCoworkerMentionTray({
           }}
           className="h-6 cursor-pointer gap-1 rounded-md px-1.5 font-normal hover:bg-muted hover:text-muted-foreground aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
         >
-          <ActorAvatar actorType="agent" actorId={agent.id} size={16} enableHoverCard showStatusDot profileLink={false} />
+          <ActorAvatar actorType="agent" actorId={agent.id} size="xs" enableHoverCard showStatusDot profileLink={false} />
           <span className="max-w-28 truncate">{agent.name}</span>
         </Badge>
       ))}
@@ -473,10 +460,10 @@ function AiCoworkerMentionTray({
 
 function AgentStaticPill({ agent }: { agent: Agent | null }) {
   const { t } = useT("chat");
-  if (!agent) return <span className="px-1.5 text-xs text-muted-foreground">{t(($) => $.conversations.no_agent)}</span>;
+  if (!agent) return <span className="px-1.5 text-caption text-muted-foreground">{t(($) => $.conversations.no_agent)}</span>;
   return (
-    <div className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-medium text-muted-foreground">
-      <ActorAvatar actorType="agent" actorId={agent.id} size={20} enableHoverCard showStatusDot profileLink={false} />
+    <div className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-caption font-medium text-muted-foreground">
+      <ActorAvatar actorType="agent" actorId={agent.id} size="sm" enableHoverCard showStatusDot profileLink={false} />
       <span className="max-w-28 truncate">{agent.name}</span>
     </div>
   );
@@ -504,12 +491,12 @@ function AgentPicker({
     return { mine, others };
   }, [agents, userId]);
 
-  if (!activeAgent) return <span className="px-1.5 text-xs text-muted-foreground">{t(($) => $.window.no_agents)}</span>;
+  if (!activeAgent) return <span className="px-1.5 text-caption text-muted-foreground">{t(($) => $.window.no_agents)}</span>;
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger className="flex items-center gap-1.5 rounded-md px-1.5 py-1 -ml-1 text-xs font-medium text-muted-foreground outline-none hover:bg-accent aria-expanded:bg-accent">
-        <ActorAvatar actorType="agent" actorId={activeAgent.id} size={20} enableHoverCard showStatusDot profileLink={false} />
+      <DropdownMenuTrigger className="flex items-center gap-1.5 rounded-md px-1.5 py-1 -ml-1 text-caption font-medium text-muted-foreground outline-none hover:bg-accent aria-expanded:bg-accent">
+        <ActorAvatar actorType="agent" actorId={activeAgent.id} size="sm" enableHoverCard showStatusDot profileLink={false} />
         <span className="max-w-28 truncate">{activeAgent.name}</span>
         <ChevronDown className="size-3 shrink-0" />
       </DropdownMenuTrigger>
@@ -547,7 +534,7 @@ function AgentPickerItem({
 }) {
   return (
     <DropdownMenuItem onClick={() => onSelect(agent)} className="flex min-w-0 items-center gap-2">
-      <ActorAvatar actorType="agent" actorId={agent.id} size={24} enableHoverCard showStatusDot profileLink={false} />
+      <ActorAvatar actorType="agent" actorId={agent.id} size="md" enableHoverCard showStatusDot profileLink={false} />
       <span className="min-w-0 flex-1 truncate">{agent.name}</span>
       {current && <Check className="size-3.5 shrink-0 text-muted-foreground" />}
     </DropdownMenuItem>
@@ -571,7 +558,7 @@ function ProjectContextPill({
     <DropdownMenu>
       <DropdownMenuTrigger
         disabled={disabled}
-        className="inline-flex min-w-0 max-w-40 shrink items-center gap-1.5 rounded-md bg-muted px-1.5 py-1 text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-60"
+        className="inline-flex min-w-0 max-w-40 shrink items-center gap-1.5 rounded-md bg-muted px-1.5 py-1 text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {selected ? (
           <>

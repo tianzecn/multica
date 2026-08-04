@@ -1,3 +1,5 @@
+{{- $backendImageTag := default .Chart.AppVersion .Values.images.backend.tag -}}
+{{- if .Values.backend.uploads.persistence.enabled -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -6,7 +8,8 @@ metadata:
     {{- include "multica.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes:
+    {{- toYaml .Values.backend.uploads.persistence.accessModes | nindent 4 }}
   resources:
     requests:
       storage: {{ .Values.backend.uploads.persistence.size | quote }}
@@ -14,6 +17,7 @@ spec:
   storageClassName: {{ . | quote }}
   {{- end }}
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,8 +26,10 @@ metadata:
     {{- include "multica.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 spec:
-  # The backend entrypoint runs migrations before starting. Keep replicas at 1
-  # so two pods don't race on startup migrations.
+  # The backend entrypoint runs migrations before starting. Concurrent
+  # runs are protected by a Postgres advisory lock in cmd/migrate (see
+  # GitHub multica-ai/multica#3647), so multiple replicas no longer race;
+  # 1 is still the chart default (strategy: Recreate, no leader split).
   replicas: {{ .Values.backend.replicas }}
   strategy:
     type: Recreate
@@ -52,7 +58,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: "{{ .Values.images.backend.repository }}:{{ .Values.images.backend.tag }}"
+          image: "{{ .Values.images.backend.repository }}:{{ $backendImageTag }}"
           imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
           ports:
             - containerPort: 8080
@@ -62,12 +68,16 @@ spec:
                 name: {{ .Release.Name }}-config
             - secretRef:
                 name: {{ .Values.existingSecret }}
+          {{- if not .Values.postgres.external.enabled }}
           env:
             - name: DATABASE_URL
               value: {{ include "multica.databaseUrl" . | quote }}
+          {{- end }}
+          {{- if .Values.backend.uploads.persistence.enabled }}
           volumeMounts:
             - name: uploads
               mountPath: /app/data/uploads
+          {{- end }}
           # The entrypoint runs `./migrate up` before serving traffic. On a
           # cold cluster (Postgres still coming up) this can take minutes. The
           # startupProbe holds off liveness/readiness until /healthz is OK,
@@ -94,10 +104,20 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
+      {{- with .Values.backend.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backend.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.backend.uploads.persistence.enabled }}
       volumes:
         - name: uploads
           persistentVolumeClaim:
             claimName: {{ include "multica.backend.fullname" . }}-uploads
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -118,18 +138,15 @@ spec:
       name: http
 {{- if .Values.frontend.compatibility.backendAlias }}
 ---
-# DNS alias: the multica-web image bakes REMOTE_API_URL=http://backend:8080
-# at build time, and the Next.js standalone build does not re-evaluate the
-# rewrite destinations from runtime env. This ExternalName makes the bare
-# host "backend" resolve to the backend Service inside the cluster, so the
-# frontend's /api, /ws, /auth, and /uploads proxies work out of the box.
+# DNS alias for legacy multica-web images that baked
+# REMOTE_API_URL=http://backend:8080 at build time. Current images resolve
+# frontend.config.remoteApiUrl at runtime and do not need this Service.
 #
 # The name is intentionally unprefixed ("backend", not "{{ .Release.Name }}-backend")
 # because the baked-in host has no release prefix. As a result only ONE release
 # of this chart can run per namespace, and the name may collide with a
 # pre-existing Service/backend (see frontend.compatibility.backendAlias in
-# values.yaml). Operators running a web image built with a patched
-# REMOTE_API_URL can set that value to false to drop this Service entirely.
+# values.yaml).
 apiVersion: v1
 kind: Service
 metadata:

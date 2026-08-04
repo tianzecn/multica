@@ -1,84 +1,61 @@
-// @vitest-environment jsdom
-
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+/**
+ * @vitest-environment jsdom
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "../api";
-import { projectKeys } from "./queries";
-import { useRunProjectDeviceGitOperation } from "./mutations";
+import { setApiInstance } from "../api";
+import type { ApiClient } from "../api/client";
+import { setCurrentWorkspace } from "../platform/workspace-storage";
+import {
+  getIssueSurfaceViewStore,
+  pruneIssueSurfaceViewStates,
+} from "../issues/stores/surface-view-store";
+import { useDeleteProject } from "./mutations";
 
-vi.mock("../hooks", () => ({ useWorkspaceId: () => "ws-1" }));
-vi.mock("../api", () => ({
-  api: {
-    runProjectDeviceGitOperation: vi.fn(),
-  },
+vi.mock("../hooks", () => ({
+  useWorkspaceId: () => "ws-1",
 }));
 
-function createWrapper(queryClient: QueryClient) {
+function createWrapper(qc: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
   };
 }
 
-describe("project mutations", () => {
-  let queryClient: QueryClient;
+describe("useDeleteProject", () => {
+  let qc: QueryClient;
+  let deleteProject: ReturnType<typeof vi.fn<() => Promise<void>>>;
 
   beforeEach(() => {
-    vi.mocked(api.runProjectDeviceGitOperation).mockReset();
-    queryClient = new QueryClient({
-      defaultOptions: {
-        mutations: { retry: false },
-        queries: { retry: false },
-      },
-    });
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    deleteProject = vi.fn().mockResolvedValue(undefined);
+    setApiInstance({ deleteProject } as unknown as ApiClient);
+    setCurrentWorkspace("acme", "ws-1");
   });
 
-  it("invalidates device, workspace, and activity after a git operation", async () => {
-    vi.mocked(api.runProjectDeviceGitOperation).mockResolvedValue({
-      operation: "commit",
-      output: "Committed changes",
-      status: {
-        branch: "multica/project/task",
-        remote: "https://github.com/acme/app.git",
-        head_sha: "abc123",
-        ahead: 1,
-        behind: 0,
-        dirty_count: 0,
-        untracked_count: 0,
-        has_uncommitted: false,
-        files: [],
-        remotes: [],
-      },
-    });
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+  afterEach(() => {
+    qc.clear();
+    pruneIssueSurfaceViewStates([]);
+    setCurrentWorkspace(null, null);
+    vi.restoreAllMocks();
+  });
 
-    const { result } = renderHook(
-      () => useRunProjectDeviceGitOperation("project-1", "device-1"),
-      { wrapper: createWrapper(queryClient) },
-    );
+  it("clears the deleted project's issue surface view state", async () => {
+    const store = getIssueSurfaceViewStore("project:p1");
+    store.getState().setViewMode("list");
+    expect(store.getState().viewMode).toBe("list");
+
+    const { result } = renderHook(() => useDeleteProject(), {
+      wrapper: createWrapper(qc),
+    });
 
     await act(async () => {
-      await result.current.mutateAsync({
-        operation: "commit",
-        data: { message: "Review sync" },
-      });
+      await result.current.mutateAsync("p1");
     });
 
-    expect(api.runProjectDeviceGitOperation).toHaveBeenCalledWith(
-      "project-1",
-      "device-1",
-      "commit",
-      { message: "Review sync" },
-    );
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: projectKeys.device("ws-1", "project-1", "device-1"),
-    });
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: projectKeys.workspace("ws-1", "project-1"),
-    });
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: projectKeys.activity("ws-1", "project-1"),
-    });
+    expect(deleteProject).toHaveBeenCalledWith("p1");
+    expect(store.getState().viewMode).toBe("board");
   });
 });

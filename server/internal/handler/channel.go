@@ -1836,8 +1836,9 @@ func (h *Handler) CreateChannelMessage(w http.ResponseWriter, r *http.Request) {
 		})
 		if err == nil {
 			messageAttachments = make([]AttachmentResponse, len(attachments))
+			attachmentMode := attachmentURLModeFromRequest(r)
 			for i := range attachments {
-				messageAttachments[i] = h.attachmentToResponse(attachments[i])
+				messageAttachments[i] = h.attachmentToResponse(attachments[i], attachmentMode)
 			}
 		}
 	}

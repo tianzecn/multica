@@ -124,8 +124,8 @@ function ArchivedChannelRow({
             {channel.visibility === "private" ? <Lock className="size-4" /> : <Hash className="size-4" />}
           </div>
           <AppLink href={href} className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium">{title}</div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <div className="truncate text-body font-medium">{title}</div>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
               {project ? (
                 <span className="inline-flex min-w-0 items-center gap-1">
                   <ProjectIcon project={project} size="sm" />
@@ -237,11 +237,11 @@ export function ArchivedChannelsTab() {
       <section className="space-y-4">
         <div className="flex items-center gap-2">
           <Archive className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">
+          <h2 className="text-body font-semibold">
             {resolveArchivedChannelText(t(($) => $.archived_channels.title), "archived_channels.title", fallback.title)}
           </h2>
         </div>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-caption text-muted-foreground">
           {resolveArchivedChannelText(t(($) => $.archived_channels.description), "archived_channels.description", fallback.description)}
         </p>
 
@@ -264,10 +264,10 @@ export function ArchivedChannelsTab() {
           <Card>
             <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
               <Hash className="size-8 text-muted-foreground" />
-              <div className="text-sm font-medium">
+              <div className="text-body font-medium">
                 {resolveArchivedChannelText(t(($) => $.archived_channels.empty_title), "archived_channels.empty_title", fallback.emptyTitle)}
               </div>
-              <p className="max-w-sm text-xs text-muted-foreground">
+              <p className="max-w-sm text-caption text-muted-foreground">
                 {resolveArchivedChannelText(t(($) => $.archived_channels.empty_body), "archived_channels.empty_body", fallback.emptyBody)}
               </p>
             </CardContent>
@@ -284,7 +284,17 @@ export function ArchivedChannelsTab() {
                   className="pl-8"
                 />
               </div>
-              <Select value={projectFilter} onValueChange={(value) => setProjectFilter(value || ALL_PROJECTS_VALUE)}>
+              <Select
+                value={projectFilter}
+                onValueChange={(value) => setProjectFilter(value || ALL_PROJECTS_VALUE)}
+                items={[
+                  { value: ALL_PROJECTS_VALUE, label: fallback.allProjects },
+                  { value: UNASSIGNED_PROJECT_VALUE, label: fallback.unassignedProject },
+                  ...projects
+                    .filter((project) => archivedProjectIds.has(project.id))
+                    .map((project) => ({ value: project.id, label: project.title })),
+                ]}
+              >
                 <SelectTrigger size="sm">
                   <SelectValue>{projectFilterLabel}</SelectValue>
                 </SelectTrigger>
@@ -297,13 +307,13 @@ export function ArchivedChannelsTab() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="text-xs text-muted-foreground">{countLabel}</div>
+            <div className="text-caption text-muted-foreground">{countLabel}</div>
             {filteredChannels.length === 0 ? (
               <Card>
                 <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
                   <Search className="size-8 text-muted-foreground" />
-                  <div className="text-sm font-medium">{fallback.noResultsTitle}</div>
-                  <p className="max-w-sm text-xs text-muted-foreground">
+                  <div className="text-body font-medium">{fallback.noResultsTitle}</div>
+                  <p className="max-w-sm text-caption text-muted-foreground">
                     {hasFilters ? fallback.noResultsBody : fallback.emptyBody}
                   </p>
                 </CardContent>

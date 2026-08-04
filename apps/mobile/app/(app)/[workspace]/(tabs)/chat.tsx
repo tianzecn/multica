@@ -33,6 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  AppState,
   KeyboardAvoidingView,
   Platform,
   View,
@@ -62,6 +63,11 @@ import {
   taskMessagesOptions,
 } from "@/data/queries/chat";
 import {
+  ACTIVE_CHAT_POLL_INTERVAL_MS,
+  refetchActiveChat,
+  shouldPollActiveChat,
+} from "@/data/queries/chat-polling";
+import {
   useCreateChatSession,
   useDeleteChatSession,
   useMarkChatSessionRead,
@@ -82,7 +88,9 @@ import { ChatComposer } from "@/components/chat/chat-composer";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { OfflineBanner } from "@/components/chat/offline-banner";
+import { RuntimeRequiredBanner } from "@/components/chat/runtime-required-banner";
 import { useChatSelectStore } from "@/data/chat-select-store";
+import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 
 export default function ChatTab() {
   const qc = useQueryClient();
@@ -94,6 +102,19 @@ export default function ChatTab() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [isAppActive, setIsAppActive] = useState(
+    () => AppState.currentState === "active",
+  );
+
+  // React Navigation tracks tab focus, not whether iOS has backgrounded the
+  // app. Keep the pull fallback strictly foreground-only so it never turns
+  // into background polling when timers happen to survive a transition.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (nextState) => {
+      setIsAppActive(nextState === "active");
+    });
+    return () => sub.remove();
+  }, []);
 
   // Bridge to the chat-sessions formSheet route. Mirror local
   // activeSessionId into the store so the picker can render the current
@@ -195,6 +216,8 @@ export default function ChatTab() {
   const presenceAvailability =
     presenceDetail === "loading" ? undefined : presenceDetail.availability;
   const isArchived = activeSession?.status === "archived";
+  const runtimeBound =
+    currentAgent !== null && isAgentRuntimeBound(currentAgent);
   const sending = !!pendingTask?.task_id;
   const projectIdForContext = activeSession?.project_id ?? draftProjectId;
   const { data: projectWorkspace } = useQuery(
@@ -258,6 +281,43 @@ export default function ChatTab() {
     setActiveSessionId(null);
   });
 
+  const isFocused = useIsFocused();
+
+  // A chat that becomes visible must not depend on a reconnect or a fresh WS
+  // event to catch up. This also recovers a session after a tab/app switch.
+  useFocusEffect(
+    useCallback(() => {
+      if (isAppActive && activeSessionId) {
+        void refetchActiveChat(qc, activeSessionId);
+      }
+    }, [activeSessionId, isAppActive, qc]),
+  );
+
+  // WebSocket is the fast path, not the sole source of truth. While an active
+  // task is visible, pull its messages, task pointer, and persisted progress
+  // every four seconds. Stop immediately if the tab loses focus or the task
+  // completes, so idle/background chats consume no polling traffic.
+  useEffect(() => {
+    if (
+      !activeSessionId ||
+      !shouldPollActiveChat(
+        isFocused,
+        isAppActive,
+        activeSessionId,
+        pendingTask?.task_id,
+      )
+    ) {
+      return;
+    }
+    const sessionId = activeSessionId;
+    const refresh = () => {
+      void refetchActiveChat(qc, sessionId, pendingTask?.task_id);
+    };
+    refresh();
+    const timer = setInterval(refresh, ACTIVE_CHAT_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [activeSessionId, isAppActive, isFocused, pendingTask?.task_id, qc]);
+
   // Exit text-selection mode whenever the chat tab loses focus. Expo
   // Router bottom tabs stay mounted across tab switches, so a plain
   // useEffect cleanup wouldn't fire — useFocusEffect is the navigation-
@@ -267,7 +327,6 @@ export default function ChatTab() {
   );
 
   // ── Auto markRead while viewing a session with unread state ──────────
-  const isFocused = useIsFocused();
   const markRead = useMarkChatSessionRead();
   useEffect(() => {
     if (!isFocused) return;
@@ -308,8 +367,19 @@ export default function ChatTab() {
   );
 
   const handleSend = useCallback(
-    async (content: string, attachmentIds: string[] = []) => {
+    async (
+      content: string,
+      attachmentIds: string[] = [],
+      options: { clearDraft?: boolean } = {},
+    ) => {
       if (!currentAgent) return;
+      if (!runtimeBound) {
+        Alert.alert(
+          "Runtime required",
+          "Bind a runtime to this agent on web or desktop before sending a message.",
+        );
+        return;
+      }
       const dirtyChoice = await confirmProjectDirtyContinue();
       if (!dirtyChoice.proceed) return;
 
@@ -351,7 +421,9 @@ export default function ChatTab() {
           created_at: result.created_at,
         });
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
-        clearDraft(sessionId);
+        if (options.clearDraft !== false) {
+          clearDraft(sessionId);
+        }
       } catch (err) {
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old ? old.filter((m) => m.id !== optimistic.id) : old,
@@ -364,6 +436,7 @@ export default function ChatTab() {
       activeSessionId,
       confirmProjectDirtyContinue,
       currentAgent,
+      runtimeBound,
       ensureSession,
       qc,
       promoteNewDraft,
@@ -427,13 +500,18 @@ export default function ChatTab() {
 
   // ── Composer disabled-state ────────────────────────────────────────────
   const disabled =
-    !currentAgent || availability === "none" || isArchived === true;
+    !currentAgent ||
+    availability === "none" ||
+    isArchived === true ||
+    !runtimeBound;
   const disabledReason = !currentAgent
     ? "No agent selected"
     : availability === "none"
       ? "No agents in this workspace"
       : isArchived
         ? "This chat is archived"
+        : !runtimeBound
+          ? "Agent needs a runtime"
         : undefined;
 
   return (
@@ -471,14 +549,22 @@ export default function ChatTab() {
           hasSessions={sessions.length > 0}
           agentName={currentAgent?.name}
           onPickPrompt={(text) => setDraft(draftKey, text)}
+          onQuickAction={(action) =>
+            handleSend(action.prompt, [], { clearDraft: false })
+          }
+          quickActionsDisabled={sending || disabled}
           pendingTask={pendingTask}
           liveTaskMessages={liveTaskMessages}
           availability={presenceAvailability}
         />
-        <OfflineBanner
-          agentName={currentAgent?.name}
-          availability={presenceAvailability}
-        />
+        {runtimeBound ? (
+          <OfflineBanner
+            agentName={currentAgent?.name}
+            availability={presenceAvailability}
+          />
+        ) : currentAgent ? (
+          <RuntimeRequiredBanner agentName={currentAgent.name} />
+        ) : null}
         <ChatComposer
           value={draft}
           onChangeText={(next) => setDraft(draftKey, next)}

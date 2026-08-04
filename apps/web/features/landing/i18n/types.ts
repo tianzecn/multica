@@ -1,18 +1,23 @@
 import type { SupportedLocale } from "@multica/core/i18n";
+export { docsHrefForLocale } from "@/lib/docs-href";
 
 export type Locale = SupportedLocale;
-export type LandingDictionaryLocale = "en" | "zh";
+export type LandingDictionaryLocale = "en" | "zh" | "ko" | "ja";
 
-export const locales: Locale[] = ["en", "zh-Hans"];
+export const locales: Locale[] = ["en", "zh-Hans", "ko", "ja"];
 
 export const localeLabels: Record<Locale, string> = {
   en: "EN",
   "zh-Hans": "\u4e2d\u6587",
+  ko: "\ud55c\uad6d\uc5b4",
+  ja: "\u65e5\u672c\u8a9e",
 };
 
 export function toLandingDictionaryLocale(
   locale: Locale,
 ): LandingDictionaryLocale {
+  if (locale === "ko") return "ko";
+  if (locale === "ja") return "ja";
   return locale === "zh-Hans" ? "zh" : "en";
 }
 
@@ -140,8 +145,8 @@ export type LandingDict = {
       macIntel: {
         title: string;
         sub: string;
-        disabledCta: string;
-        intelHint: string;
+        primary: string;
+        altZip: string;
       };
       winX64: { title: string; sub: string; primary: string };
       winArm64: { title: string; sub: string; primary: string };
@@ -157,7 +162,8 @@ export type LandingDict = {
     };
     allPlatforms: {
       title: string;
-      macLabel: string;
+      macArm64Label: string;
+      macX64Label: string;
       winX64Label: string;
       winArm64Label: string;
       linuxX64Label: string;
@@ -168,7 +174,6 @@ export type LandingDict = {
       formatAppImage: string;
       formatDeb: string;
       formatRpm: string;
-      intelNote: string;
       unavailable: string;
     };
     cli: {

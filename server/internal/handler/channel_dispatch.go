@@ -487,7 +487,7 @@ func (h *Handler) dispatchChannelDispatchStep(
 		h.publishChannelDispatchStep(ctx, workspaceID, step.PlanID)
 		return false
 	}
-	task, err := h.TaskService.EnqueueChatTask(ctx, chatSession)
+	task, err := h.TaskService.EnqueueChatTask(ctx, chatSession, requesterID, false)
 	if err != nil {
 		h.markChannelDispatchStep(ctx, step.ID, "failed", "无法派发给 AI 运行时。", "")
 		h.publishChannelDispatchStep(ctx, workspaceID, step.PlanID)

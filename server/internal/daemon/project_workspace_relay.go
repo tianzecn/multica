@@ -12,7 +12,11 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-func (d *Daemon) handleWSProjectWorkspaceRequest(ctx context.Context, req protocol.DaemonProjectWorkspaceRequestPayload, writes chan<- []byte) {
+func (d *Daemon) handleWSProjectWorkspaceRequest(
+	ctx context.Context,
+	req protocol.DaemonProjectWorkspaceRequestPayload,
+	sendFrame func([]byte) (*wsOutbound, error),
+) {
 	resp := d.executeProjectWorkspaceRelayRequest(ctx, req)
 	frame, err := json.Marshal(protocol.Message{
 		Type:    protocol.EventDaemonProjectWorkspaceResponse,
@@ -22,9 +26,8 @@ func (d *Daemon) handleWSProjectWorkspaceRequest(ctx context.Context, req protoc
 		d.logger.Debug("project workspace relay response marshal failed", "error", err, "request_id", req.RequestID)
 		return
 	}
-	select {
-	case writes <- frame:
-	case <-ctx.Done():
+	if _, err := sendFrame(frame); err != nil {
+		d.logger.Debug("project workspace relay response send failed", "error", err, "request_id", req.RequestID)
 	}
 }
 

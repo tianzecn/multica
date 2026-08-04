@@ -241,7 +241,7 @@ func (h *Handler) GetProjectPullRequestReview(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, GitHubPullRequestReviewResponse{
-		PullRequest:                 githubPullRequestToResponse(pr),
+		PullRequest:                 githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		GitHubPullRequestReviewData: review,
 	})
 }

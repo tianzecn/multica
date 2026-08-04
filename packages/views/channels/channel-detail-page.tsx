@@ -145,8 +145,8 @@ export function ChannelDetailPage() {
           </AppLink>
           {channel.visibility === "private" ? <Lock className="size-4 text-muted-foreground" /> : <Hash className="size-4 text-muted-foreground" />}
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-medium">{channel.name}</h1>
-            <p className="truncate font-mono text-xs text-muted-foreground">#{channel.slug}</p>
+            <h1 className="truncate text-body font-medium">{channel.name}</h1>
+            <p className="truncate font-mono text-caption text-muted-foreground">#{channel.slug}</p>
           </div>
         </div>
       </PageHeader>
@@ -244,20 +244,20 @@ function SessionRail({
   return (
     <aside className="flex min-h-0 flex-col border-b bg-muted/20 lg:border-b-0 lg:border-r">
       <div className="flex h-12 shrink-0 items-center justify-between border-b px-3">
-        <span className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{t(($) => $.detail.sessions)}</span>
+        <span className="text-caption font-medium uppercase tracking-normal text-muted-foreground">{t(($) => $.detail.sessions)}</span>
         <div className="flex items-center gap-2">
           {canManageChannel && (
             <Button
               type="button"
               size="sm"
               variant={showArchived ? "secondary" : "ghost"}
-              className="h-7 px-2 text-xs"
+              className="h-7 px-2 text-caption"
               onClick={() => onShowArchivedChange(!showArchived)}
             >
               已归档
             </Button>
           )}
-          <span className="font-mono text-[11px] text-muted-foreground">{sessions.length}</span>
+          <span className="font-mono text-micro text-muted-foreground">{sessions.length}</span>
         </div>
       </div>
       {!showArchived ? (
@@ -269,20 +269,20 @@ function SessionRail({
               if (event.key === "Enter") submit();
             }}
             placeholder={t(($) => $.detail.new_session_placeholder)}
-            className="h-8 text-sm"
+            className="h-8 text-body"
           />
           <Button size="icon" variant="outline" onClick={submit} disabled={createSession.isPending}>
             <Plus className="size-3.5" />
           </Button>
         </div>
       ) : (
-        <div className="border-b px-3 py-2 text-xs leading-5 text-muted-foreground">
+        <div className="border-b px-3 py-2 text-caption leading-5 text-muted-foreground">
           归档会话默认隐藏，恢复后可继续讨论。
         </div>
       )}
       <div className="flex min-h-0 flex-1 gap-1 overflow-y-auto p-2 lg:flex-col">
         {sessions.length === 0 ? (
-          <p className="px-2 py-4 text-xs leading-5 text-muted-foreground">
+          <p className="px-2 py-4 text-caption leading-5 text-muted-foreground">
             {showArchived ? "还没有归档会话" : t(($) => $.detail.no_sessions)}
           </p>
         ) : (
@@ -290,14 +290,14 @@ function SessionRail({
             <div
               key={session.id}
               className={cn(
-                "group/session flex min-w-48 items-start gap-1 rounded-md text-sm transition-colors lg:min-w-0",
+                "group/session flex min-w-48 items-start gap-1 rounded-md text-body transition-colors lg:min-w-0",
                 selectedSessionId === session.id ? "bg-background shadow-sm" : "text-muted-foreground hover:bg-background/60",
               )}
             >
               {showArchived ? (
                 <div className="min-w-0 flex-1 px-2.5 py-2 text-left">
                   <span className="block truncate font-medium">{session.title}</span>
-                  {session.summary && <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{session.summary}</span>}
+                  {session.summary && <span className="mt-1 line-clamp-2 text-caption leading-5 text-muted-foreground">{session.summary}</span>}
                 </div>
               ) : (
                 <button
@@ -306,7 +306,7 @@ function SessionRail({
                   className="min-w-0 flex-1 px-2.5 py-2 text-left"
                 >
                   <span className="block truncate font-medium">{session.title}</span>
-                  {session.summary && <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{session.summary}</span>}
+                  {session.summary && <span className="mt-1 line-clamp-2 text-caption leading-5 text-muted-foreground">{session.summary}</span>}
                 </button>
               )}
               {canManageChannel && (
@@ -553,15 +553,15 @@ function MessagePane({
     <main className="flex min-h-0 flex-col border-b lg:border-b-0">
       <div className="flex h-12 shrink-0 items-center border-b px-4">
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-medium">{session?.title ?? t(($) => $.detail.no_session_title)}</h2>
-          <p className="truncate text-xs text-muted-foreground">{t(($) => $.detail.context_rule)}</p>
+          <h2 className="truncate text-body font-medium">{session?.title ?? t(($) => $.detail.no_session_title)}</h2>
+          <p className="truncate text-caption text-muted-foreground">{t(($) => $.detail.context_rule)}</p>
         </div>
       </div>
       <div className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto px-4 py-3">
         <div className="grid gap-3">
           {sessionId ? (
             messages.length === 0 ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">
+              <div className="py-12 text-center text-body text-muted-foreground">
                 {channelAgentMembers.length > 0
                   ? "输入消息并 @AI 同事，或 @all 让频道内 AI 一起响应。"
                   : t(($) => $.detail.empty_messages)}
@@ -604,14 +604,14 @@ function MessagePane({
               </>
             )
           ) : (
-            <div className="py-12 text-center text-sm text-muted-foreground">{t(($) => $.detail.no_session_selected)}</div>
+            <div className="py-12 text-center text-body text-muted-foreground">{t(($) => $.detail.no_session_selected)}</div>
           )}
         </div>
       </div>
       <div className="shrink-0 border-t p-3">
         {channelAgentMembers.length > 0 && (
           <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className="mr-1 text-xs text-muted-foreground">AI 同事</span>
+            <span className="mr-1 text-caption text-muted-foreground">AI 同事</span>
             {channelAgentMembers.slice(0, 8).map((agent) => (
               <Badge
                 key={agent.id}
@@ -624,7 +624,7 @@ function MessagePane({
                 onClick={() => insertAgentMention(agent)}
                 className="h-6 cursor-pointer gap-1 rounded-md px-1.5 font-normal hover:bg-muted hover:text-muted-foreground aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
-                <ActorAvatar actorType="agent" actorId={agent.id} size={14} showStatusDot />
+                <ActorAvatar actorType="agent" actorId={agent.id} size="xs" showStatusDot />
                 <span className="max-w-24 truncate">{agent.name}</span>
               </Badge>
             ))}
@@ -652,7 +652,6 @@ function MessagePane({
               placeholder="输入消息，@AI 同事或 @all 协作"
               className="min-h-16"
               showBubbleMenu={false}
-              submitOnEnter
               mentionItems={channelMentionItems}
               mentionSearchIssues={channel.mention_issue_search_enabled !== false}
               mentionIssueProjectId={channel.project_id}
@@ -714,7 +713,7 @@ function ChannelAttachmentTray({
             ) : (
               <div className="flex size-full flex-col items-center justify-center gap-1 px-2 text-center">
                 <FileIcon className="size-5 text-muted-foreground" />
-                <span className="w-full truncate text-[11px] text-muted-foreground">{attachment.filename}</span>
+                <span className="w-full truncate text-micro text-muted-foreground">{attachment.filename}</span>
               </div>
             )}
             <button
@@ -731,7 +730,7 @@ function ChannelAttachmentTray({
       {Array.from({ length: pendingUploads }).map((_, index) => (
         <div
           key={`uploading-${index}`}
-          className="flex size-20 animate-pulse items-center justify-center rounded-xl border bg-muted text-[11px] text-muted-foreground"
+          className="flex size-20 animate-pulse items-center justify-center rounded-xl border bg-muted text-micro text-muted-foreground"
         >
           上传中
         </div>
@@ -805,13 +804,13 @@ function ChannelDispatchPlanCard({
         className="flex w-full min-w-0 items-center gap-2 text-left"
       >
         <GitBranch className="size-4 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">协作计划</span>
-        <Badge variant="outline" className="h-5 rounded-[4px] px-1.5 text-[10px]">{plan.mode}</Badge>
-        <Badge variant={plan.status === "paused" || plan.status === "failed" ? "destructive" : "secondary"} className="h-5 rounded-[4px] px-1.5 text-[10px]">
+        <span className="min-w-0 flex-1 truncate text-body font-medium">协作计划</span>
+        <Badge variant="outline" className="h-5 rounded-[4px] px-1.5 text-micro">{plan.mode}</Badge>
+        <Badge variant={plan.status === "paused" || plan.status === "failed" ? "destructive" : "secondary"} className="h-5 rounded-[4px] px-1.5 text-micro">
           {plan.status}
         </Badge>
       </button>
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-muted-foreground">
         <span>{Math.round(plan.confidence * 100)}% · {plan.planner_source}</span>
         <span>{plan.participant_count} 位 AI</span>
         <span>{activeCount} 个运行中</span>
@@ -819,14 +818,14 @@ function ChannelDispatchPlanCard({
       </div>
       {expanded && (
         <div className="mt-3 grid gap-3">
-          {plan.reason && <p className="text-xs leading-5 text-muted-foreground">{plan.reason}</p>}
+          {plan.reason && <p className="text-caption leading-5 text-muted-foreground">{plan.reason}</p>}
           <div className="flex flex-wrap gap-1.5">
             {(["single", "parallel", "serial", "roundtable"] as ChannelDispatchMode[]).map((mode) => (
               <Button
                 key={mode}
                 size="sm"
                 variant={plan.mode === mode ? "secondary" : "outline"}
-                className="h-7 rounded-md px-2 text-xs"
+                className="h-7 rounded-md px-2 text-caption"
                 disabled={disabled || plan.mode === mode}
                 onClick={() => changeMode.mutate({ planId: plan.id, mode })}
               >
@@ -834,7 +833,7 @@ function ChannelDispatchPlanCard({
               </Button>
             ))}
             {plan.status !== "completed" && plan.status !== "cancelled" && (
-              <Button size="sm" variant="outline" className="ml-auto h-7 rounded-md px-2 text-xs" disabled={disabled} onClick={() => cancelPlan.mutate(plan.id)}>
+              <Button size="sm" variant="outline" className="ml-auto h-7 rounded-md px-2 text-caption" disabled={disabled} onClick={() => cancelPlan.mutate(plan.id)}>
                 <X className="mr-1 size-3" />取消
               </Button>
             )}
@@ -856,7 +855,7 @@ function ChannelDispatchPlanCard({
               <select
                 value={agentToAdd}
                 onChange={(event) => setAgentToAdd(event.target.value)}
-                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs"
+                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-caption"
               >
                 <option value="">追加 AI...</option>
                 {availableAgents.map((agent) => (
@@ -894,15 +893,15 @@ function ChannelDispatchStepRow({
   const canSkip = ["pending", "queued"].includes(step.status);
   return (
     <div className="flex min-w-0 items-start gap-2 rounded-md border bg-background p-2">
-      <ActorAvatar actorType="agent" actorId={step.agent_id} size={22} showStatusDot enableHoverCard />
+      <ActorAvatar actorType="agent" actorId={step.agent_id} size="sm" showStatusDot enableHoverCard />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-sm font-medium">{agent?.name ?? "AI 同事"}</span>
-          <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">{step.role === "summarizer" ? "总结" : "AI"}</Badge>
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">{statusLabel(status)}</span>
+          <span className="truncate text-body font-medium">{agent?.name ?? "AI 同事"}</span>
+          <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-micro">{step.role === "summarizer" ? "总结" : "AI"}</Badge>
+          <span className="ml-auto shrink-0 text-caption text-muted-foreground">{statusLabel(status)}</span>
         </div>
         {(step.skip_reason || step.error || step.instruction) && (
-          <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+          <p className="mt-1 line-clamp-2 text-caption leading-5 text-muted-foreground">
             {step.error || step.skip_reason || step.instruction}
           </p>
         )}
@@ -969,17 +968,17 @@ function ChannelAgentRunCard({
 
   return (
     <div className="max-w-3xl rounded-lg border border-dashed bg-muted/35 p-3" aria-live="polite">
-      <div className="mb-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-        <ActorAvatar actorType="agent" actorId={run.agent_id} size={20} enableHoverCard showStatusDot />
+      <div className="mb-2 flex min-w-0 items-center gap-2 text-caption text-muted-foreground">
+        <ActorAvatar actorType="agent" actorId={run.agent_id} size="sm" enableHoverCard showStatusDot />
         <span className="truncate font-medium text-foreground">{agentName}</span>
-        <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">AI</Badge>
+        <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-micro">AI</Badge>
         <span className="ml-auto flex min-w-0 items-center gap-1.5">
           <Loader2 className="size-3 animate-spin" />
           <span className="truncate">{stage} · {formatChannelElapsed(elapsedSecs)}</span>
         </span>
       </div>
       {recentMessages.length > 0 ? (
-        <div className="grid gap-1.5 text-xs text-muted-foreground">
+        <div className="grid gap-1.5 text-caption text-muted-foreground">
           {recentMessages.map((message) => (
             <div key={`${message.task_id}-${message.seq}`} className="flex min-w-0 items-start gap-2 rounded-md bg-background/70 px-2 py-1.5">
               <Terminal className="mt-0.5 size-3 shrink-0" />
@@ -988,7 +987,7 @@ function ChannelAgentRunCard({
           ))}
         </div>
       ) : (
-        <p className="text-xs leading-5 text-muted-foreground">已接单，正在准备当前会话上下文。</p>
+        <p className="text-caption leading-5 text-muted-foreground">已接单，正在准备当前会话上下文。</p>
       )}
     </div>
   );
@@ -1070,12 +1069,12 @@ function ChannelMessageCard({
         isSystem && "border-dashed bg-muted/40",
       )}
     >
-      <div className="mb-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+      <div className="mb-2 flex min-w-0 items-center gap-2 text-caption text-muted-foreground">
         {authorId ? (
           <ActorAvatar
             actorType={message.author_type}
             actorId={authorId}
-            size={20}
+            size="sm"
             enableHoverCard
             showStatusDot={message.author_type === "agent"}
           />
@@ -1085,8 +1084,8 @@ function ChannelMessageCard({
           </div>
         )}
         <span className="truncate font-medium text-foreground">{authorName}</span>
-        {message.author_type === "agent" && <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">AI</Badge>}
-        {isSystem && <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">系统</Badge>}
+        {message.author_type === "agent" && <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-micro">AI</Badge>}
+        {isSystem && <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-micro">系统</Badge>}
         <span className="shrink-0">{new Date(message.created_at).toLocaleString()}</span>
       </div>
       <ReadonlyContent
@@ -1213,20 +1212,20 @@ function ContextPane({
       <section className="border-b p-4">
         <div className="mb-3 flex items-center gap-2">
           <Users className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">频道成员</h2>
-          <span className="ml-auto font-mono text-xs text-muted-foreground">{channelMembers.length}</span>
+          <h2 className="text-body font-medium">频道成员</h2>
+          <span className="ml-auto font-mono text-caption text-muted-foreground">{channelMembers.length}</span>
         </div>
         <div className="grid gap-2">
           {aiMembers.length === 0 ? (
-            <p className="text-xs leading-5 text-muted-foreground">还没有 AI 同事，聊天不会自动派发任务。</p>
+            <p className="text-caption leading-5 text-muted-foreground">还没有 AI 同事，聊天不会自动派发任务。</p>
           ) : (
             aiMembers.map((member) => {
               const agent = agentById.get(member.member_id);
               return (
                 <div key={member.id} className="flex min-w-0 items-center gap-2 rounded-md border bg-background p-2">
-                  <ActorAvatar actorType="agent" actorId={member.member_id} size={22} showStatusDot enableHoverCard />
-                  <span className="min-w-0 flex-1 truncate text-sm">{agent?.name ?? member.member_id}</span>
-                  <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-[10px]">AI</Badge>
+                  <ActorAvatar actorType="agent" actorId={member.member_id} size="sm" showStatusDot enableHoverCard />
+                  <span className="min-w-0 flex-1 truncate text-body">{agent?.name ?? member.member_id}</span>
+                  <Badge variant="outline" className="h-4 rounded-[4px] px-1 text-micro">AI</Badge>
                   <Button
                     type="button"
                     size="icon"
@@ -1248,8 +1247,8 @@ function ContextPane({
               {humanMembers.map((member) => {
                 const human = memberByUserId.get(member.member_id);
                 return (
-                  <div key={member.id} className="flex min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground">
-                    <ActorAvatar actorType="member" actorId={member.member_id} size={18} />
+                  <div key={member.id} className="flex min-w-0 items-center gap-2 px-1 py-1 text-caption text-muted-foreground">
+                    <ActorAvatar actorType="member" actorId={member.member_id} size="xs" />
                     <span className="truncate">{human?.name ?? "用户"}</span>
                     <span className="ml-auto">{member.role}</span>
                     <Button
@@ -1274,7 +1273,7 @@ function ContextPane({
               <select
                 value={agentToAdd}
                 onChange={(event) => setAgentToAdd(event.target.value)}
-                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs"
+                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-caption"
               >
                 <option value="">添加 AI 同事...</option>
                 {addableAgents.map((agent) => (
@@ -1291,13 +1290,13 @@ function ContextPane({
       <section className="border-b p-4">
         <div className="mb-3 flex items-center gap-2">
           <Hash className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">频道设置</h2>
+          <h2 className="text-body font-medium">频道设置</h2>
         </div>
         <div className="rounded-md border bg-background p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-sm font-medium">Issue @ 补全</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              <p className="text-body font-medium">Issue @ 补全</p>
+              <p className="mt-1 text-caption leading-5 text-muted-foreground">
                 开启后，输入 @ 可搜索 Issue；关闭后只显示频道成员。
               </p>
             </div>
@@ -1310,20 +1309,20 @@ function ContextPane({
           </div>
           {projects.length > 0 && (
             <div className="mt-3 border-t pt-3">
-              <label htmlFor="channel-project-setting" className="text-sm font-medium">所属项目</label>
+              <label htmlFor="channel-project-setting" className="text-body font-medium">所属项目</label>
               <select
                 id="channel-project-setting"
                 value={channel.project_id ?? ""}
                 onChange={(event) => updateProject(event.target.value)}
                 disabled={updateChannel.isPending}
-                className="mt-2 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                className="mt-2 h-8 w-full rounded-md border bg-background px-2 text-body"
               >
                 <option value="">未归属项目</option>
                 {projects.map((project) => (
                   <option key={project.id} value={project.id}>{project.title}</option>
                 ))}
               </select>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">只影响未来新建 Issue 和频道内搜索上下文。</p>
+              <p className="mt-1 text-caption leading-5 text-muted-foreground">只影响未来新建 Issue 和频道内搜索上下文。</p>
             </div>
           )}
         </div>
@@ -1331,21 +1330,21 @@ function ContextPane({
       <section className="border-b p-4">
         <div className="mb-3 flex items-center gap-2">
           <GitBranch className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">当前协作</h2>
-          <span className="ml-auto font-mono text-xs text-muted-foreground">{activePlans.length}</span>
+          <h2 className="text-body font-medium">当前协作</h2>
+          <span className="ml-auto font-mono text-caption text-muted-foreground">{activePlans.length}</span>
         </div>
         <div className="grid gap-2">
           {activePlans.length === 0 ? (
-            <p className="text-xs leading-5 text-muted-foreground">没有正在执行的协作计划。</p>
+            <p className="text-caption leading-5 text-muted-foreground">没有正在执行的协作计划。</p>
           ) : (
             activePlans.slice(0, 4).map((plan) => (
               <div key={plan.id} className="rounded-md border bg-background p-2">
                 <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="h-5 rounded-[4px] px-1.5 text-[10px]">{plan.mode}</Badge>
-                  <span className="truncate text-xs text-muted-foreground">{plan.status}</span>
-                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">{plan.steps.length}</span>
+                  <Badge variant="outline" className="h-5 rounded-[4px] px-1.5 text-micro">{plan.mode}</Badge>
+                  <span className="truncate text-caption text-muted-foreground">{plan.status}</span>
+                  <span className="ml-auto font-mono text-micro text-muted-foreground">{plan.steps.length}</span>
                 </div>
-                <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{plan.reason}</p>
+                <p className="mt-1 line-clamp-2 text-caption leading-5 text-muted-foreground">{plan.reason}</p>
               </div>
             ))
           )}
@@ -1354,15 +1353,15 @@ function ContextPane({
       <section className="border-b p-4">
         <div className="mb-3 flex items-center gap-2">
           <Link2 className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">{t(($) => $.detail.linked_issues)}</h2>
-          <span className="ml-auto font-mono text-xs text-muted-foreground">{issues.length}</span>
+          <h2 className="text-body font-medium">{t(($) => $.detail.linked_issues)}</h2>
+          <span className="ml-auto font-mono text-caption text-muted-foreground">{issues.length}</span>
         </div>
         <div className="mb-3 flex gap-2">
           <Input
             value={issueId}
             onChange={(event) => setIssueId(event.target.value)}
             placeholder={t(($) => $.detail.issue_placeholder)}
-            className="h-8 text-sm"
+            className="h-8 text-body"
           />
           <Button size="sm" variant="outline" onClick={submitIssue} disabled={!issueId.trim() || linkIssue.isPending}>
             {t(($) => $.detail.link)}
@@ -1370,12 +1369,12 @@ function ContextPane({
         </div>
         <div className="grid gap-2">
           {issues.length === 0 ? (
-            <p className="text-xs leading-5 text-muted-foreground">{t(($) => $.detail.no_issues)}</p>
+            <p className="text-caption leading-5 text-muted-foreground">{t(($) => $.detail.no_issues)}</p>
           ) : (
             issues.map((issue) => (
               <div key={issue.issue_id} className="rounded-md border bg-background p-2">
-                <p className="truncate text-sm font-medium">{issue.identifier} {issue.title}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{issue.status}</p>
+                <p className="truncate text-body font-medium">{issue.identifier} {issue.title}</p>
+                <p className="mt-1 text-caption text-muted-foreground">{issue.status}</p>
               </div>
             ))
           )}
@@ -1384,12 +1383,12 @@ function ContextPane({
       <section className="p-4">
         <div className="mb-3 flex items-center gap-2">
           <ShieldCheck className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">{t(($) => $.detail.approvals)}</h2>
-          <span className="ml-auto font-mono text-xs text-muted-foreground">{pendingApprovals.length}</span>
+          <h2 className="text-body font-medium">{t(($) => $.detail.approvals)}</h2>
+          <span className="ml-auto font-mono text-caption text-muted-foreground">{pendingApprovals.length}</span>
         </div>
         <div className="grid gap-2">
           {approvals.length === 0 ? (
-            <p className="text-xs leading-5 text-muted-foreground">{t(($) => $.detail.no_approvals)}</p>
+            <p className="text-caption leading-5 text-muted-foreground">{t(($) => $.detail.no_approvals)}</p>
           ) : (
             approvals.map((approval) => <ApprovalRow key={approval.id} channelId={channelId} approval={approval} />)
           )}
@@ -1406,8 +1405,8 @@ function ApprovalRow({ channelId, approval }: { channelId: string; approval: App
     <div className="rounded-md border bg-background p-2">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{approval.action_type}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{approval.status}</p>
+          <p className="truncate text-body font-medium">{approval.action_type}</p>
+          <p className="mt-1 text-caption text-muted-foreground">{approval.status}</p>
         </div>
         {approval.status === "pending" && (
           <div className="flex shrink-0 gap-1">

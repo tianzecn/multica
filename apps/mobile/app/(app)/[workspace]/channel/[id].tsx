@@ -210,6 +210,7 @@ export default function ChannelDetailScreen() {
         filename: result.filename,
         url: result.url,
         download_url: result.url,
+        markdown_url: result.markdownUrl,
         content_type: "",
         size_bytes: 0,
         created_at: "",
@@ -217,7 +218,7 @@ export default function ChannelDetailScreen() {
     ]);
     setDraft((current) => {
       const prefix = current.trim().length > 0 ? "\n" : "";
-      return `${current}${prefix}!file[${result.filename}](${result.url})`;
+      return `${current}${prefix}!file[${result.filename}](${result.markdownUrl})`;
     });
   };
 

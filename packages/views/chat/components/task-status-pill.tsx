@@ -26,6 +26,7 @@ type StageKey =
   | "offline"
   | "reconnecting"
   | "queued"
+  | "waiting_local_directory"
   | "starting_up"
   | "thinking"
   | "typing";
@@ -56,7 +57,7 @@ const TOOL_KEY_BY_SLUG: Record<string, Exclude<ToolKey, "fallback">> = {
 // Pure stage decision returning translation keys. The hook below maps these
 // keys into localized labels — keeping the decision pure makes it easy to
 // follow the priority rules without translation noise.
-function pickStageKeys(
+export function pickStageKeys(
   status: string | undefined,
   taskMessages: readonly TaskMessagePayload[],
   availability: AgentAvailability | undefined,
@@ -72,6 +73,14 @@ function pickStageKeys(
     availability === "unstable"
   ) {
     return { stageKey: "reconnecting" };
+  }
+  // Daemon-emitted hold state for the local_directory flow: the project is
+  // pinned to a path that another task currently owns. The daemon publishes
+  // this status string when it dequeues a task but can't acquire the path
+  // lock; the renderer surfaces a dedicated label so the user understands
+  // why a queued task isn't moving.
+  if (status === "waiting_local_directory") {
+    return { stageKey: "waiting_local_directory", static: true };
   }
   if (status === "queued") return { stageKey: "queued" };
   if (status === "dispatched") return { stageKey: "starting_up" };
@@ -155,7 +164,7 @@ export function TaskStatusPill({
 
   return (
     <div
-      className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground"
+      className="flex items-center gap-1.5 px-1 text-caption text-muted-foreground"
       aria-live="polite"
     >
       {!stage.static && (
@@ -165,7 +174,7 @@ export function TaskStatusPill({
         <span className={cn(!stage.static && "animate-chat-text-shimmer")}>
           {stage.label}
         </span>
-        <span className="opacity-70"> · {formatElapsedSecs(elapsedSecs)}</span>
+        <span className="opacity-70 tabular-nums"> · {formatElapsedSecs(elapsedSecs)}</span>
       </span>
     </div>
   );

@@ -119,18 +119,18 @@ export function ProjectWorkspaceSection({
   return (
     <div>
       <button
-        className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${open ? "" : "text-muted-foreground hover:text-foreground"}`}
+        className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${open ? "" : "text-muted-foreground hover:text-foreground"}`}
         onClick={() => setOpen(!open)}
       >
         {t(($) => $.workspace.section_header)}
         <span className="ml-auto flex items-center gap-1">
           {activeTasks.length > 0 && (
-            <span className="rounded-sm border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] text-amber-700">
+            <span className="rounded-sm border border-amber-500/40 bg-amber-500/10 px-1 text-micro text-amber-700">
               {t(($) => $.workspace.active_task_badge, { count: activeTasks.length })}
             </span>
           )}
           {bindings.length > 0 && (
-            <span className="rounded-sm bg-muted px-1 text-[10px] text-muted-foreground">
+            <span className="rounded-sm bg-muted px-1 text-micro text-muted-foreground">
               {onlineCount}/{bindings.length}
             </span>
           )}
@@ -185,7 +185,7 @@ export function ProjectWorkspaceSection({
               <ProjectTerminalPanel projectId={projectId} bindings={onlineBindings} />
               <ProjectActivityList projectId={projectId} />
               {bindings.length === 0 ? (
-                <p className="text-xs leading-5 text-muted-foreground">
+                <p className="text-caption leading-5 text-muted-foreground">
                   {data?.primary_repo_url
                     ? t(($) => $.workspace.empty_bound)
                     : t(($) => $.workspace.empty_no_primary)}
@@ -300,7 +300,7 @@ function CreateGitHubRepoPanel({
 
   if (installationsQuery.isLoading) {
     return (
-      <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+      <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
         <Skeleton className="h-4 w-40" />
       </div>
     );
@@ -308,7 +308,7 @@ function CreateGitHubRepoPanel({
 
   if (installationsQuery.data && !installationsQuery.data.configured) {
     return (
-      <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs text-muted-foreground">
+      <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption text-muted-foreground">
         {t(($) => $.workspace.github_not_configured)}
       </div>
     );
@@ -316,25 +316,25 @@ function CreateGitHubRepoPanel({
 
   if (installations.length === 0) {
     return (
-      <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs text-muted-foreground">
+      <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption text-muted-foreground">
         {t(($) => $.workspace.github_no_installations)}
       </div>
     );
   }
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <GitBranch className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.github_create_header)}</span>
       </div>
       <div className="space-y-2">
         <label className="block space-y-1">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="text-micro uppercase tracking-wide text-muted-foreground">
             {t(($) => $.workspace.github_owner)}
           </span>
           <select
-            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring"
+            className="h-8 w-full rounded-md border border-input bg-background px-2 text-caption outline-none focus-visible:border-ring"
             value={owner}
             onChange={(event) => setOwner(event.target.value)}
           >
@@ -349,7 +349,7 @@ function CreateGitHubRepoPanel({
           </select>
         </label>
         <label className="block space-y-1">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="text-micro uppercase tracking-wide text-muted-foreground">
             {t(($) => $.workspace.github_repo_name)}
           </span>
           <Input
@@ -376,7 +376,7 @@ function CreateGitHubRepoPanel({
         </div>
         <Button
           size="xs"
-          className="h-7 w-full text-xs"
+          className="h-7 w-full text-caption"
           disabled={!canCreate}
           onClick={() => void submit()}
         >
@@ -416,7 +416,7 @@ function ProjectDeviceOptions({
 function ProjectDeviceSelectionRequired() {
   const { t } = useT("projects");
   return (
-    <p className="rounded-sm bg-background/70 p-2 text-[11px] leading-5 text-muted-foreground">
+    <p className="rounded-sm bg-background/70 p-2 text-micro leading-5 text-muted-foreground">
       {t(($) => $.workspace.device_select_required)}
     </p>
   );
@@ -496,12 +496,12 @@ function ProjectScriptPanel({
   const busy = runScript.isPending || stopScript.isPending;
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <SquareTerminal className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.scripts_header)}</span>
         <select
-          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-xs"
+          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-caption"
           value={deviceId}
           onChange={(event) => setDeviceId(event.target.value)}
           disabled={busy}
@@ -522,7 +522,7 @@ function ProjectScriptPanel({
           />
         </Button>
       </div>
-      <div className="mb-2 truncate text-[10px] text-muted-foreground">
+      <div className="mb-2 truncate text-micro text-muted-foreground">
         {selectedName}
       </div>
       {needsDeviceChoice && <ProjectDeviceSelectionRequired />}
@@ -580,7 +580,7 @@ function ProjectScriptRunRow({
     <div className="rounded-sm bg-background/70 p-1.5">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate font-medium">{run.name}</span>
-        <span className="shrink-0 text-[10px] text-muted-foreground">
+        <span className="shrink-0 text-micro text-muted-foreground">
           {statusLabels[run.status] ?? run.status}
         </span>
         {canStop && (
@@ -603,7 +603,7 @@ function ProjectScriptRunRow({
 	              href={port.url}
 	              target="_blank"
 	              rel="noreferrer"
-	              className="inline-flex h-6 items-center gap-1 rounded border border-border bg-muted/40 px-1.5 text-[10px] text-foreground hover:bg-muted"
+	              className="inline-flex h-6 items-center gap-1 rounded border border-border bg-muted/40 px-1.5 text-micro text-foreground hover:bg-muted"
 	            >
 	              <ExternalLink className="size-3" />
 	              :{port.port}
@@ -612,7 +612,7 @@ function ProjectScriptRunRow({
 	        </div>
 	      )}
 	      {run.log && (
-	        <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap text-[10px] leading-4 text-muted-foreground">
+	        <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap text-micro leading-4 text-muted-foreground">
           {run.log}
         </pre>
       )}
@@ -719,12 +719,12 @@ function ProjectTerminalPanel({
   const canStop = !!active && (active.status === "running" || active.status === "stopping");
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <SquareTerminal className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.terminal_header)}</span>
         <select
-          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-xs"
+          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-caption"
           value={deviceId}
           onChange={(event) => setDeviceId(event.target.value)}
           disabled={busy}
@@ -814,7 +814,7 @@ function ProjectTerminalSessionView({
     <div className="rounded-sm bg-background/70 p-1.5">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate font-medium">{session.shell}</span>
-        <span className="shrink-0 text-[10px] text-muted-foreground">
+        <span className="shrink-0 text-micro text-muted-foreground">
           {statusLabels[session.status] ?? session.status}
         </span>
       </div>
@@ -944,12 +944,12 @@ function DeviceRelayGitPanel({
     : "";
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <Workflow className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.device_header)}</span>
         <select
-          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-xs"
+          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-caption"
           value={deviceId}
           onChange={(event) => setDeviceId(event.target.value)}
           disabled={operation.isPending}
@@ -983,7 +983,7 @@ function DeviceRelayGitPanel({
         </p>
       ) : git ? (
         <div className="space-y-2">
-          <div className="truncate text-[10px] text-muted-foreground">
+          <div className="truncate text-micro text-muted-foreground">
             {selectedName}
           </div>
           <GitStatusSummary git={git} />
@@ -1018,7 +1018,7 @@ function DeviceRelayGitPanel({
             loading={snapshotsQuery.isLoading || snapshotsQuery.isFetching}
           />
           {lastOutput && (
-            <pre className="max-h-24 overflow-auto rounded bg-background/80 p-1.5 text-[10px] leading-4 text-muted-foreground">
+            <pre className="max-h-24 overflow-auto rounded bg-background/80 p-1.5 text-micro leading-4 text-muted-foreground">
               {lastOutput}
             </pre>
           )}
@@ -1093,14 +1093,14 @@ function RemoteWorkspaceSetupPanel({
   if (isLoading || candidates.length === 0) return null;
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <HardDrive className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.remote_setup_header)}</span>
       </div>
       <div className="space-y-2">
         <select
-          className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+          className="h-8 w-full rounded-md border border-border bg-background px-2 text-caption"
           value={runtimeId}
           onChange={(event) => setRuntimeId(event.target.value)}
           disabled={busy}
@@ -1359,7 +1359,7 @@ function DesktopGitPanel({
   );
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <HardDrive className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.local_header)}</span>
@@ -1432,7 +1432,7 @@ function DesktopGitPanel({
             loading={snapshotsQuery.isLoading || snapshotsQuery.isFetching}
           />
           {lastOutput && (
-            <pre className="max-h-24 overflow-auto rounded bg-background/80 p-1.5 text-[10px] leading-4 text-muted-foreground">
+            <pre className="max-h-24 overflow-auto rounded bg-background/80 p-1.5 text-micro leading-4 text-muted-foreground">
               {lastOutput}
             </pre>
           )}
@@ -1567,11 +1567,11 @@ function GitRemoteList({
   if (remotes.length === 0) return null;
   return (
     <div className="space-y-1 rounded-sm bg-background/70 p-1.5">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="text-micro font-medium uppercase tracking-wide text-muted-foreground">
         {t(($) => $.workspace.remotes_header)}
       </div>
       {remotes.map((remote) => (
-        <div key={remote.name} className="min-w-0 text-[10px] leading-4">
+        <div key={remote.name} className="min-w-0 text-micro leading-4">
           <div className="font-medium text-foreground">{remote.name}</div>
           <div className="truncate text-muted-foreground">
             {remote.fetch_url || remote.push_url}
@@ -1740,7 +1740,7 @@ function GitSyncPlan({
 
   return (
     <div className="rounded bg-background/60 p-1.5">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+      <div className="mb-1 flex items-center gap-1.5 text-micro font-medium text-muted-foreground">
         <Workflow className="size-3" />
         {t(($) => $.workspace.sync_header)}
       </div>
@@ -1772,7 +1772,7 @@ function GitSyncPlan({
             />
             {dirtyFiles.length > 0 && (
               <div className="mt-1 max-h-28 overflow-y-auto rounded-sm bg-background/70 p-1">
-                <div className="mb-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                <div className="mb-1 flex items-center justify-between gap-2 text-micro text-muted-foreground">
                   <span>
                     {t(($) => $.workspace.commit_files_header, {
                       selected: selectedCommitPaths.length,
@@ -1780,7 +1780,7 @@ function GitSyncPlan({
                     })}
                   </span>
                   <Button
-                    className="h-5 px-1.5 text-[10px]"
+                    className="h-5 px-1.5 text-micro"
                     size="xs"
                     variant="ghost"
                     disabled={operationPending}
@@ -1801,7 +1801,7 @@ function GitSyncPlan({
                   {dirtyFiles.map((file) => (
                     <label
                       key={`${file.status}:${file.path}`}
-                      className="flex min-w-0 items-center gap-1.5 rounded-sm px-1 py-0.5 text-[10px] hover:bg-accent/50"
+                      className="flex min-w-0 items-center gap-1.5 rounded-sm px-1 py-0.5 text-micro hover:bg-accent/50"
                     >
                       <input
                         type="checkbox"
@@ -1819,13 +1819,13 @@ function GitSyncPlan({
               </div>
             )}
             <Textarea
-              className="mt-1 min-h-14 resize-none text-xs"
+              className="mt-1 min-h-14 resize-none text-caption"
               value={commitMessage}
               onChange={(event) => onCommitMessageChange(event.target.value)}
               placeholder={t(($) => $.workspace.commit_placeholder)}
             />
             <Button
-              className="mt-1 h-7 w-full text-xs"
+              className="mt-1 h-7 w-full text-caption"
               size="xs"
               disabled={!canCommit || operationPending}
               onClick={() => onRun("commit", commitPayload)}
@@ -1945,7 +1945,7 @@ function CreatePullRequestBox({
 
   return (
     <div className="rounded bg-background/60 p-1.5">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+      <div className="mb-1 flex items-center gap-1.5 text-micro font-medium text-muted-foreground">
         <GitPullRequestArrow className="size-3" />
         {t(($) => $.workspace.create_pr_header)}
       </div>
@@ -1957,7 +1957,7 @@ function CreatePullRequestBox({
           disabled={createPullRequest.isPending}
         />
         <Textarea
-          className="min-h-14 resize-none text-xs"
+          className="min-h-14 resize-none text-caption"
           value={body}
           onChange={(event) => setBody(event.target.value)}
           placeholder={t(($) => $.workspace.create_pr_body)}
@@ -1970,7 +1970,7 @@ function CreatePullRequestBox({
           disabled={createPullRequest.isPending}
         />
         <div className="flex min-w-0 items-center gap-2">
-          <label className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
+          <label className="flex min-w-0 flex-1 items-center gap-1.5 text-micro text-muted-foreground">
             <input
               type="checkbox"
               checked={draft}
@@ -1980,7 +1980,7 @@ function CreatePullRequestBox({
             <span>{t(($) => $.workspace.create_pr_draft)}</span>
           </label>
           <Button
-            className="h-7 shrink-0 px-2 text-xs"
+            className="h-7 shrink-0 px-2 text-caption"
             size="xs"
             variant="outline"
             disabled={!canCreate}
@@ -2000,7 +2000,7 @@ function CreatePullRequestBox({
               : t(($) => $.workspace.create_pr_submit)}
           </Button>
         </div>
-        <p className="text-[10px] leading-4 text-muted-foreground">{hint}</p>
+        <p className="text-micro leading-4 text-muted-foreground">{hint}</p>
       </div>
     </div>
   );
@@ -2025,7 +2025,7 @@ function GitSyncStep({
     <div className="flex min-w-0 items-center gap-2 rounded-sm border border-border/70 p-1.5">
       <GitSyncStepHeader icon={icon} title={title} hint={hint} />
       <Button
-        className="h-7 shrink-0 px-2 text-xs"
+        className="h-7 shrink-0 px-2 text-caption"
         size="xs"
         variant="outline"
         disabled={disabled}
@@ -2050,8 +2050,8 @@ function GitSyncStepHeader({
     <div className="flex min-w-0 flex-1 items-start gap-1.5">
       <span className="mt-0.5 shrink-0 text-muted-foreground">{icon}</span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[11px] font-medium">{title}</div>
-        <div className="text-[10px] leading-4 text-muted-foreground">{hint}</div>
+        <div className="truncate text-micro font-medium">{title}</div>
+        <div className="text-micro leading-4 text-muted-foreground">{hint}</div>
       </div>
     </div>
   );
@@ -2068,18 +2068,18 @@ function SafetySnapshotList({
   if (loading) return <Skeleton className="h-12 w-full" />;
   return (
     <div className="rounded bg-background/60 p-1.5">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+      <div className="mb-1 flex items-center gap-1.5 text-micro font-medium text-muted-foreground">
         <ShieldCheck className="size-3" />
         {t(($) => $.workspace.snapshots_header)}
       </div>
       {snapshots.length === 0 ? (
-        <div className="text-[10px] text-muted-foreground">
+        <div className="text-micro text-muted-foreground">
           {t(($) => $.workspace.snapshots_empty)}
         </div>
       ) : (
         <div className="space-y-1">
           {snapshots.slice(0, 3).map((snapshot) => (
-            <div key={snapshot.ref} className="min-w-0 text-[10px] leading-4">
+            <div key={snapshot.ref} className="min-w-0 text-micro leading-4">
               <div className="truncate">{snapshot.message}</div>
               <div className="truncate text-muted-foreground">
                 {snapshot.ref} · {new Date(snapshot.created_at).toLocaleString()}
@@ -2149,11 +2149,11 @@ function GitLogGraph({
   if (loading) return <Skeleton className="h-24 w-full" />;
   return (
     <div className="space-y-1 rounded-md border border-border/70 bg-background/70 p-2">
-      <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="flex items-center gap-2 text-micro font-medium uppercase tracking-wide text-muted-foreground">
         <GitCommitHorizontal className="size-3" />
         <span>{t(($) => $.workspace.commit_graph_header)}</span>
       </div>
-      <pre className="max-h-48 overflow-auto whitespace-pre rounded bg-background/80 p-2 text-[10px] leading-4 text-muted-foreground">
+      <pre className="max-h-48 overflow-auto whitespace-pre rounded bg-background/80 p-2 text-micro leading-4 text-muted-foreground">
         {graph || t(($) => $.workspace.commit_graph_empty)}
       </pre>
     </div>
@@ -2335,12 +2335,12 @@ function ProjectFilePanel({
   };
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <FolderOpen className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.files_header)}</span>
         <select
-          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-xs"
+          className="ml-auto h-7 min-w-0 rounded-md border border-border bg-background px-2 text-caption"
           value={deviceId}
           onChange={(event) => setDeviceId(event.target.value)}
           disabled={busy}
@@ -2361,11 +2361,11 @@ function ProjectFilePanel({
           />
         </Button>
       </div>
-      <div className="mb-2 flex min-w-0 items-center gap-2 text-[10px] text-muted-foreground">
+      <div className="mb-2 flex min-w-0 items-center gap-2 text-micro text-muted-foreground">
         <span className="truncate">{selectedName}</span>
         {currentPath && (
           <Button
-            className="ml-auto h-6 px-2 text-[10px]"
+            className="ml-auto h-6 px-2 text-micro"
             variant="ghost"
             size="xs"
             disabled={busy}
@@ -2395,7 +2395,7 @@ function ProjectFilePanel({
                 <Skeleton className="h-6 w-4/5" />
               </div>
             ) : entries.length === 0 ? (
-              <p className="px-2 py-3 text-center text-[10px] text-muted-foreground">
+              <p className="px-2 py-3 text-center text-micro text-muted-foreground">
                 {t(($) => $.workspace.files_empty)}
               </p>
             ) : (
@@ -2411,7 +2411,7 @@ function ProjectFilePanel({
           </div>
           <div className="rounded bg-background/70 p-1.5">
             {!selectedPath ? (
-              <p className="py-4 text-center text-[10px] text-muted-foreground">
+              <p className="py-4 text-center text-micro text-muted-foreground">
                 {t(($) => $.workspace.file_no_selection)}
               </p>
             ) : fileQuery.isLoading ? (
@@ -2421,12 +2421,12 @@ function ProjectFilePanel({
                 {t(($) => $.workspace.files_error)} {fileQuery.error.message}
               </p>
             ) : selectedFile?.binary ? (
-              <p className="py-4 text-center text-[10px] text-muted-foreground">
+              <p className="py-4 text-center text-micro text-muted-foreground">
                 {t(($) => $.workspace.file_binary)}
               </p>
             ) : selectedFile ? (
               <div className="space-y-1.5">
-                <div className="flex min-w-0 items-center gap-2 text-[10px] text-muted-foreground">
+                <div className="flex min-w-0 items-center gap-2 text-micro text-muted-foreground">
                   <FileText className="size-3 shrink-0" />
                   <span className="truncate">{selectedFile.path}</span>
                   <span className="ml-auto shrink-0">
@@ -2471,7 +2471,7 @@ function ProjectFileEntryRow({
   return (
     <button
       className={cn(
-        "flex h-7 w-full min-w-0 items-center gap-1.5 rounded-sm px-2 text-left text-[11px]",
+        "flex h-7 w-full min-w-0 items-center gap-1.5 rounded-sm px-2 text-left text-micro",
         selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
       )}
       onClick={onOpen}
@@ -2479,7 +2479,7 @@ function ProjectFileEntryRow({
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
       {!isDirectory && (
-        <span className="shrink-0 text-[10px] text-muted-foreground">
+        <span className="shrink-0 text-micro text-muted-foreground">
           {formatProjectFileSize(entry.size)}
         </span>
       )}
@@ -2526,7 +2526,7 @@ function ProjectPullRequestPanel({ projectId }: { projectId: string }) {
   }, [prs, selectedPrId]);
 
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs space-y-2">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption space-y-2">
       <div className="mb-2 flex items-center gap-2">
         <GitPullRequestArrow className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.pull_requests_header)}</span>
@@ -2566,7 +2566,7 @@ function ProjectPullRequestPicker({
   const { t } = useT("projects");
   return (
     <div className="rounded bg-background/70 p-1.5">
-      <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+      <div className="mb-1 text-micro uppercase tracking-wide text-muted-foreground">
         {t(($) => $.workspace.review_select)}
       </div>
       <div className="flex gap-1 overflow-x-auto pb-0.5">
@@ -2575,7 +2575,7 @@ function ProjectPullRequestPicker({
             key={pr.id}
             type="button"
             className={cn(
-              "shrink-0 rounded-sm border px-2 py-1 text-[11px]",
+              "shrink-0 rounded-sm border px-2 py-1 text-micro",
               selectedPrId === pr.id
                 ? "border-primary bg-primary text-primary-foreground"
                 : "border-border hover:bg-accent/60",
@@ -2707,7 +2707,7 @@ function ProjectPullRequestReviewDetail({
   }
   if (error instanceof Error) {
     return (
-      <p className="rounded bg-background/70 p-2 text-[11px] leading-5 text-destructive">
+      <p className="rounded bg-background/70 p-2 text-micro leading-5 text-destructive">
         {t(($) => $.workspace.review_error)} {error.message}
       </p>
     );
@@ -2763,7 +2763,7 @@ function ProjectPullRequestReviewDetail({
   };
   return (
     <div className="space-y-2 rounded bg-background/70 p-2">
-      <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-2 text-micro text-muted-foreground">
         <FileDiff className="size-3.5" />
         <span>{t(($) => $.workspace.review_files_count, { count: files.length })}</span>
         <span>{t(($) => $.workspace.review_comments_count, { count: data.comments.length })}</span>
@@ -2777,10 +2777,10 @@ function ProjectPullRequestReviewDetail({
         }}
       >
         <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_5rem]">
-          <label className="grid gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          <label className="grid gap-1 text-micro uppercase tracking-wide text-muted-foreground">
             {t(($) => $.workspace.review_comment_file)}
             <select
-              className="min-h-8 rounded-md border border-input bg-background px-2 text-[11px] normal-case text-foreground"
+              className="min-h-8 rounded-md border border-input bg-background px-2 text-micro normal-case text-foreground"
               value={commentFile}
               onChange={(event) => setCommentFile(event.target.value)}
               disabled={files.length === 0 || createReviewComment.isPending}
@@ -2792,10 +2792,10 @@ function ProjectPullRequestReviewDetail({
               ))}
             </select>
           </label>
-          <label className="grid gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          <label className="grid gap-1 text-micro uppercase tracking-wide text-muted-foreground">
             {t(($) => $.workspace.review_comment_line)}
             <Input
-              className="h-8 text-[11px]"
+              className="h-8 text-micro"
               inputMode="numeric"
               min={1}
               type="number"
@@ -2805,10 +2805,10 @@ function ProjectPullRequestReviewDetail({
             />
           </label>
         </div>
-        <label className="grid gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        <label className="grid gap-1 text-micro uppercase tracking-wide text-muted-foreground">
           {t(($) => $.workspace.review_comment_body)}
           <Textarea
-            className="min-h-20 text-[11px] normal-case text-foreground"
+            className="min-h-20 text-micro normal-case text-foreground"
             value={commentBody}
             placeholder={t(($) => $.workspace.review_comment_placeholder)}
             onChange={(event) => setCommentBody(event.target.value)}
@@ -2818,7 +2818,7 @@ function ProjectPullRequestReviewDetail({
         <Button
           type="submit"
           size="sm"
-          className="h-7 justify-self-end text-xs"
+          className="h-7 justify-self-end text-caption"
           disabled={!canSubmitComment}
         >
           {t(($) => $.workspace.review_comment_submit)}
@@ -2826,7 +2826,7 @@ function ProjectPullRequestReviewDetail({
       </form>
       <div className="rounded border border-border/70 p-1.5">
         <div className="mb-1 flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="text-micro uppercase tracking-wide text-muted-foreground">
             {t(($) => $.workspace.review_hunk_selection, {
               selected: selectedHunkCount,
               total: allHunkIds.length,
@@ -2834,7 +2834,7 @@ function ProjectPullRequestReviewDetail({
           </span>
           <button
             type="button"
-            className="ml-auto rounded px-1.5 py-0.5 text-[10px] hover:bg-accent"
+            className="ml-auto rounded px-1.5 py-0.5 text-micro hover:bg-accent"
             onClick={toggleAllHunks}
             disabled={allHunkIds.length === 0}
           >
@@ -2904,21 +2904,21 @@ function ProjectPullRequestFileReview({
         onClick={onToggleFile}
         disabled={hunks.length === 0}
       >
-        <span className="shrink-0 text-[10px]">
+        <span className="shrink-0 text-micro">
           {selectionMarker}
         </span>
-        <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
+        <span className="min-w-0 flex-1 truncate text-micro font-medium">
           {file.filename}
         </span>
-        <span className="shrink-0 text-[10px] text-muted-foreground">
+        <span className="shrink-0 text-micro text-muted-foreground">
           {selectedHunkCount}/{hunks.length}
         </span>
-        <span className="shrink-0 text-[10px] text-emerald-600">+{file.additions}</span>
-        <span className="shrink-0 text-[10px] text-rose-600">-{file.deletions}</span>
+        <span className="shrink-0 text-micro text-emerald-600">+{file.additions}</span>
+        <span className="shrink-0 text-micro text-rose-600">-{file.deletions}</span>
       </button>
       <div className="border-t border-border/60 bg-background">
         {hunks.length === 0 ? (
-          <p className="p-2 text-[11px] text-muted-foreground">
+          <p className="p-2 text-micro text-muted-foreground">
             {t(($) => $.workspace.review_hunks_empty)}
           </p>
         ) : (
@@ -2934,10 +2934,10 @@ function ProjectPullRequestFileReview({
                       className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
                       onClick={() => onToggleHunk(hunk)}
                     >
-                      <span className="shrink-0 text-[10px]">
+                      <span className="shrink-0 text-micro">
                         {selected ? "[x]" : "[ ]"}
                       </span>
-                      <code className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
+                      <code className="min-w-0 flex-1 truncate text-micro text-muted-foreground">
                         {hunk.header}
                       </code>
                     </button>
@@ -2945,7 +2945,7 @@ function ProjectPullRequestFileReview({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-6 shrink-0 px-2 text-[10px]"
+                      className="h-6 shrink-0 px-2 text-micro"
                       disabled={hunk.startLine === null}
                       onClick={() => onCommentAtHunk(hunk)}
                     >
@@ -2953,7 +2953,7 @@ function ProjectPullRequestFileReview({
                     </Button>
                   </div>
                   {selected ? (
-                    <pre className="max-h-52 overflow-auto border-t border-border/50 p-2 text-[10px] leading-4">
+                    <pre className="max-h-52 overflow-auto border-t border-border/50 p-2 text-micro leading-4">
                       {hunk.patch}
                     </pre>
                   ) : null}
@@ -2982,11 +2982,11 @@ function ProjectPullRequestComments({
   return (
     <div className="grid gap-2">
       <div className="rounded border border-border/70 p-1.5">
-        <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        <div className="mb-1 text-micro uppercase tracking-wide text-muted-foreground">
           {t(($) => $.workspace.review_comments)}
         </div>
         {comments.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground">{t(($) => $.workspace.review_comments_empty)}</p>
+          <p className="text-micro text-muted-foreground">{t(($) => $.workspace.review_comments_empty)}</p>
         ) : (
           <div className="space-y-1.5">
             {comments.slice(0, 8).map((comment) => (
@@ -3001,11 +3001,11 @@ function ProjectPullRequestComments({
         )}
       </div>
       <div className="rounded border border-border/70 p-1.5">
-        <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        <div className="mb-1 text-micro uppercase tracking-wide text-muted-foreground">
           {t(($) => $.workspace.review_summaries)}
         </div>
         {reviews.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground">{t(($) => $.workspace.review_summaries_empty)}</p>
+          <p className="text-micro text-muted-foreground">{t(($) => $.workspace.review_summaries_empty)}</p>
         ) : (
           <div className="space-y-1.5">
             {reviews.slice(0, 6).map((review) => (
@@ -3016,12 +3016,12 @@ function ProjectPullRequestComments({
                 rel="noreferrer noopener"
                 className="block rounded-sm p-1 hover:bg-accent/60"
               >
-                <div className="flex gap-2 text-[11px]">
+                <div className="flex gap-2 text-micro">
                   <span className="font-medium">@{review.user_login}</span>
                   <span className="text-muted-foreground">{review.state}</span>
                 </div>
                 {review.body ? (
-                  <div className="line-clamp-2 text-[11px] text-muted-foreground">
+                  <div className="line-clamp-2 text-micro text-muted-foreground">
                     {review.body}
                   </div>
                 ) : null}
@@ -3053,7 +3053,7 @@ function PullRequestCommentRow({
 
   return (
     <div className="rounded-sm p-1 hover:bg-accent/60">
-      <div className="flex items-center gap-1 text-[11px] font-medium">
+      <div className="flex items-center gap-1 text-micro font-medium">
         <a
           href={comment.html_url}
           target="_blank"
@@ -3063,13 +3063,13 @@ function PullRequestCommentRow({
           {comment.path}
           {comment.line ? `:${comment.line}` : ""}
         </a>
-        <span className="shrink-0 rounded-sm border border-border/70 px-1 py-0.5 text-[10px] font-normal text-muted-foreground">
+        <span className="shrink-0 rounded-sm border border-border/70 px-1 py-0.5 text-micro font-normal text-muted-foreground">
           {resolution}
         </span>
         {comment.resolved === false && onResolve ? (
           <button
             type="button"
-            className="shrink-0 rounded-sm border border-border/70 px-1 py-0.5 text-[10px] font-normal text-foreground hover:bg-background disabled:opacity-60"
+            className="shrink-0 rounded-sm border border-border/70 px-1 py-0.5 text-micro font-normal text-foreground hover:bg-background disabled:opacity-60"
             disabled={resolving}
             onClick={() => onResolve(comment.id)}
           >
@@ -3081,7 +3081,7 @@ function PullRequestCommentRow({
         href={comment.html_url}
         target="_blank"
         rel="noreferrer noopener"
-        className="line-clamp-2 text-[11px] text-muted-foreground hover:underline"
+        className="line-clamp-2 text-micro text-muted-foreground hover:underline"
       >
         @{comment.user_login}: {comment.body}
       </a>
@@ -3191,12 +3191,12 @@ function WorkspaceConfigRows({
 
   const isBusy = updateConfig.isPending;
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <Workflow className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.config_header)}</span>
         <Button
-          className="ml-auto h-6 px-2 text-[10px]"
+          className="ml-auto h-6 px-2 text-micro"
           size="xs"
           variant="ghost"
           disabled={isBusy}
@@ -3222,22 +3222,22 @@ function WorkspaceConfigRows({
       {editing ? (
         <div className="mt-2 space-y-2">
           <label className="block space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className="text-micro uppercase tracking-wide text-muted-foreground">
               {t(($) => $.workspace.base_branch)}
             </span>
             <Input
-              className="h-7 text-xs"
+              className="h-7 text-caption"
               value={baseBranchDraft}
               disabled={isBusy}
               onChange={(event) => setBaseBranchDraft(event.target.value)}
             />
           </label>
           <label className="block space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className="text-micro uppercase tracking-wide text-muted-foreground">
               {t(($) => $.workspace.scope_path)}
             </span>
             <Input
-              className="h-7 text-xs"
+              className="h-7 text-caption"
               value={scopePathDraft}
               disabled={isBusy}
               placeholder="packages/app"
@@ -3245,11 +3245,11 @@ function WorkspaceConfigRows({
             />
           </label>
           <label className="block space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className="text-micro uppercase tracking-wide text-muted-foreground">
               {t(($) => $.workspace.verification_commands)}
             </span>
             <Textarea
-              className="min-h-16 resize-y font-mono text-[11px]"
+              className="min-h-16 resize-y font-mono text-micro"
               value={verificationDraft}
               disabled={isBusy}
               placeholder="pnpm typecheck"
@@ -3257,11 +3257,11 @@ function WorkspaceConfigRows({
             />
           </label>
           <label className="block space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className="text-micro uppercase tracking-wide text-muted-foreground">
               {t(($) => $.workspace.run_scripts)}
             </span>
             <Textarea
-              className="min-h-16 resize-y font-mono text-[11px]"
+              className="min-h-16 resize-y font-mono text-micro"
               value={scriptsDraft}
               disabled={isBusy}
               placeholder="dev: pnpm dev"
@@ -3319,14 +3319,14 @@ function ProjectActiveTaskNotice({ tasks }: { tasks: ProjectActiveTask[] }) {
       : t(($) => $.workspace.active_task_notice_plural, { count: tasks.length });
 
   return (
-    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-900 dark:text-amber-200">
+    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-caption text-amber-900 dark:text-amber-200">
       <div className="flex items-center gap-2">
         <Clock3 className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1">
           {notice}
         </span>
       </div>
-      <div className="mt-1 truncate pl-5 text-[11px] text-amber-800/80 dark:text-amber-200/80">
+      <div className="mt-1 truncate pl-5 text-micro text-amber-800/80 dark:text-amber-200/80">
         #{task.id.slice(0, 8)} · {task.status}
         {startedAt
           ? ` · ${t(($) => $.workspace.active_task_started, {
@@ -3385,7 +3385,7 @@ function ProjectActivityList({ projectId }: { projectId: string }) {
   }
   if (entries.length === 0) return null;
   return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-xs">
+    <div className="rounded-md border border-border/70 bg-muted/20 p-2 text-caption">
       <div className="mb-2 flex items-center gap-2">
         <Clock3 className="size-3.5 text-muted-foreground" />
         <span className="font-medium">{t(($) => $.workspace.activity_header)}</span>
@@ -3447,9 +3447,9 @@ function ProjectActivityRow({ entry }: { entry: TimelineEntry }) {
           {label}
           {subject ? <span className="text-muted-foreground"> · {subject}</span> : null}
         </div>
-        <div className="truncate text-[10px] text-muted-foreground">{when}</div>
+        <div className="truncate text-micro text-muted-foreground">{when}</div>
         {detailText ? (
-          <pre className="mt-1 max-h-40 overflow-auto rounded-sm border border-border/60 bg-background p-2 text-[10px] leading-4 text-muted-foreground whitespace-pre-wrap">
+          <pre className="mt-1 max-h-40 overflow-auto rounded-sm border border-border/60 bg-background p-2 text-micro leading-4 text-muted-foreground whitespace-pre-wrap">
             {detailText}
           </pre>
         ) : null}
@@ -3593,7 +3593,7 @@ function DeviceBindingRow({ binding }: { binding: ProjectDeviceBinding }) {
   const statusLabel = statusLabels[binding.status];
   const name = binding.path_alias || binding.path_basename || binding.device_id;
   return (
-    <div className="flex items-center gap-2 rounded-md py-1 text-xs">
+    <div className="flex items-center gap-2 rounded-md py-1 text-caption">
       <Circle
         className={cn(
           "size-2.5 shrink-0 fill-current stroke-current",
@@ -3609,7 +3609,7 @@ function DeviceBindingRow({ binding }: { binding: ProjectDeviceBinding }) {
           <TooltipTrigger render={<div className="truncate">{name}</div>} />
           <TooltipContent side="top">{binding.device_id}</TooltipContent>
         </Tooltip>
-        <div className="truncate text-[10px] text-muted-foreground">
+        <div className="truncate text-micro text-muted-foreground">
           {statusLabel}
           {binding.runtime_name ? ` · ${binding.runtime_name}` : ""}
         </div>
@@ -3628,7 +3628,7 @@ function TinyRow({
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-6 items-center gap-2 text-xs">
+    <div className="flex min-h-6 items-center gap-2 text-caption">
       <span className="shrink-0 text-muted-foreground">{icon}</span>
       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
       <div className="min-w-0 flex-1">{children}</div>
