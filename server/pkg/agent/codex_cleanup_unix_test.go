@@ -63,8 +63,10 @@ func TestCodexInitializeTimeoutReapsDetachedStdioDescendant(t *testing.T) {
 	tempDir := t.TempDir()
 	pidFile := filepath.Join(tempDir, "descendant.pid")
 	fakePath := writeFakeCodexAppServer(t, ""+
-		`read line`+"\n"+
 		`sleep 30 >/dev/null 2>&1 & echo $! > "`+pidFile+`"`+"\n"+
+		// Start the detached descendant before the first protocol read so the
+		// fixture cannot race its own three-second initialize timeout under load.
+		`read line`+"\n"+
 		`sleep 3.2`+"\n"+
 		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
 		`read line`+"\n")
